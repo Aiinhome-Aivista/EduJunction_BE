@@ -172,14 +172,15 @@ def misconception_to_dict(m: Misconception) -> dict:
 
 def normalize_blog_image_path(val: str | None) -> str | None:
     """Normalize blog image path before saving to the database.
-    Ensures that host URL is stripped and only relative path is saved.
+    Ensures that host URL is stripped and only relative path starting with /edujunction/uploads/ is saved.
     Examples:
-        'http://localhost:5000/uploads/blogs/abc.png' -> '/uploads/blogs/abc.png'
-        '/uploads/blogs/abc.png'                      -> '/uploads/blogs/abc.png'
-        'uploads/blogs/abc.png'                       -> '/uploads/blogs/abc.png'
-        'abc.png'                                     -> '/uploads/blogs/abc.png'
-        'https://external.com/image.png'              -> 'https://external.com/image.png'
-        None or ''                                    -> None
+        'http://localhost:5000/edujunction/uploads/blogs/abc.png' -> '/edujunction/uploads/blogs/abc.png'
+        'http://localhost:5000/uploads/blogs/abc.png'             -> '/edujunction/uploads/blogs/abc.png'
+        '/edujunction/uploads/blogs/abc.png'                      -> '/edujunction/uploads/blogs/abc.png'
+        '/uploads/blogs/abc.png'                                  -> '/edujunction/uploads/blogs/abc.png'
+        'abc.png'                                                 -> '/edujunction/uploads/blogs/abc.png'
+        'https://external.com/image.png'                          -> 'https://external.com/image.png'
+        None or ''                                                -> None
     """
     if not val:
         return None
@@ -187,12 +188,18 @@ def normalize_blog_image_path(val: str | None) -> str | None:
     if not val_str:
         return None
 
-    # If it contains /uploads/, extract and save only the relative path starting from /uploads/
+    if "/edujunction/uploads/" in val_str:
+        idx = val_str.find("/edujunction/uploads/")
+        return val_str[idx:]
+    if "edujunction/uploads/" in val_str:
+        idx = val_str.find("edujunction/uploads/")
+        return "/" + val_str[idx:]
+
     if "/uploads/" in val_str:
         idx = val_str.find("/uploads/")
-        return val_str[idx:]
+        return "/edujunction" + val_str[idx:]
     if val_str.startswith("uploads/"):
-        return "/" + val_str
+        return "/edujunction/" + val_str
 
     # Preserve external URLs (e.g. Unsplash or external CDN)
     if val_str.startswith("http://") or val_str.startswith("https://"):
@@ -201,15 +208,15 @@ def normalize_blog_image_path(val: str | None) -> str | None:
     # Plain filename or subpath (e.g. uuid_filename.png or blogs/uuid_filename.png)
     clean_val = val_str.lstrip("/")
     if clean_val.startswith("blogs/"):
-        return f"/uploads/{clean_val}"
-    return f"/uploads/blogs/{clean_val}"
+        return f"/edujunction/uploads/{clean_val}"
+    return f"/edujunction/uploads/blogs/{clean_val}"
 
 
 def resolve_blog_image_url(image_path: str | None) -> str:
-    """Dynamically attaches the current request's HOST URL when returning blog images.
-    If image_path is relative (/uploads/blogs/abc.png), prepends request.host_url.
-    If image_path has a legacy host URL with /uploads/, extracts /uploads/ and attaches current host_url.
-    If image_path is an external URL, returns it as is.
+    """Dynamically attaches the current request's HOST URL with /edujunction prefix when returning blog images.
+    Examples:
+        '/edujunction/uploads/blogs/abc.png' -> 'http://localhost:5000/edujunction/uploads/blogs/abc.png'
+        '/uploads/blogs/abc.png'             -> 'http://localhost:5000/edujunction/uploads/blogs/abc.png'
     """
     if not image_path:
         return ""
@@ -217,16 +224,31 @@ def resolve_blog_image_url(image_path: str | None) -> str:
     if not val_str:
         return ""
 
-    # If it contains /uploads/ (including legacy records saved with old host), extract relative path and attach host
-    if "/uploads/" in val_str:
-        idx = val_str.find("/uploads/")
+    # Check for edujunction/uploads
+    if "/edujunction/uploads/" in val_str:
+        idx = val_str.find("/edujunction/uploads/")
         rel_path = val_str[idx:]
         if has_request_context() and request:
             return f"{request.host_url.rstrip('/')}{rel_path}"
         return rel_path
 
+    if "edujunction/uploads/" in val_str:
+        idx = val_str.find("edujunction/uploads/")
+        rel_path = "/" + val_str[idx:]
+        if has_request_context() and request:
+            return f"{request.host_url.rstrip('/')}{rel_path}"
+        return rel_path
+
+    # If it contains /uploads/ without edujunction
+    if "/uploads/" in val_str:
+        idx = val_str.find("/uploads/")
+        rel_path = "/edujunction" + val_str[idx:]
+        if has_request_context() and request:
+            return f"{request.host_url.rstrip('/')}{rel_path}"
+        return rel_path
+
     if val_str.startswith("uploads/"):
-        rel_path = "/" + val_str
+        rel_path = "/edujunction/" + val_str
         if has_request_context() and request:
             return f"{request.host_url.rstrip('/')}{rel_path}"
         return rel_path
@@ -237,7 +259,7 @@ def resolve_blog_image_url(image_path: str | None) -> str:
 
     # Plain filename or subpath
     clean_val = val_str.lstrip("/")
-    rel_path = f"/uploads/{clean_val}" if clean_val.startswith("blogs/") else f"/uploads/blogs/{clean_val}"
+    rel_path = f"/edujunction/uploads/{clean_val}" if clean_val.startswith("blogs/") else f"/edujunction/uploads/blogs/{clean_val}"
     if has_request_context() and request:
         return f"{request.host_url.rstrip('/')}{rel_path}"
     return rel_path

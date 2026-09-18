@@ -30,7 +30,7 @@ def upload_blog_image():
     upload_dir = os.path.join(config.UPLOAD_DIR, "blogs")
     os.makedirs(upload_dir, exist_ok=True)
     image.save(os.path.join(upload_dir, filename))
-    return success({"url": f"/uploads/blogs/{filename}", "filename": filename}, 201)
+    return success({"url": f"/edujunction/uploads/blogs/{filename}", "filename": filename}, 201)
 
 
 @token_required

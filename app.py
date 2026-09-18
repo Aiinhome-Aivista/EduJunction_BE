@@ -475,6 +475,7 @@ def create_app() -> Flask:
         return upload_file_controller.upload_blog_image()
 
     @app.route("/uploads/<path:filename>", methods=["GET"])
+    @app.route("/edujunction/uploads/<path:filename>", methods=["GET"])
     def uploaded_file(filename):
         return send_from_directory(config.UPLOAD_DIR, filename)
 
