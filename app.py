@@ -3,7 +3,7 @@
 app.py defines all API route endpoints explicitly with @app.route
 and delegates execution directly to their respective controller functions.
 """
-from flask import send_from_directory
+from flask import jsonify, send_from_directory
 import time
 
 from flask import Flask, g, request
@@ -51,6 +51,13 @@ def create_app() -> Flask:
         g._start_time = time.time()
         if request.path != "/api/v1/health":
             rate_limit()
+
+    @app.route("/", methods=["GET"])
+    def health():
+        return jsonify({
+        "status": "UP",
+        "message": "API is running"
+    })
 
     @app.after_request
     def _after(response):
