@@ -1,3 +1,4 @@
+from flask import has_request_context, request
 from model.models import Student, ExamSubmission, LearningPathNode, Badge, Misconception, AuthorMaster, CategoryMaster, Blog
 from utils.date_helper import to_iso_ist
 
@@ -169,7 +170,81 @@ def misconception_to_dict(m: Misconception) -> dict:
         "status": m.status,
     }
 
+def normalize_blog_image_path(val: str | None) -> str | None:
+    """Normalize blog image path before saving to the database.
+    Ensures that host URL is stripped and only relative path is saved.
+    Examples:
+        'http://localhost:5000/uploads/blogs/abc.png' -> '/uploads/blogs/abc.png'
+        '/uploads/blogs/abc.png'                      -> '/uploads/blogs/abc.png'
+        'uploads/blogs/abc.png'                       -> '/uploads/blogs/abc.png'
+        'abc.png'                                     -> '/uploads/blogs/abc.png'
+        'https://external.com/image.png'              -> 'https://external.com/image.png'
+        None or ''                                    -> None
+    """
+    if not val:
+        return None
+    val_str = str(val).strip()
+    if not val_str:
+        return None
+
+    # If it contains /uploads/, extract and save only the relative path starting from /uploads/
+    if "/uploads/" in val_str:
+        idx = val_str.find("/uploads/")
+        return val_str[idx:]
+    if val_str.startswith("uploads/"):
+        return "/" + val_str
+
+    # Preserve external URLs (e.g. Unsplash or external CDN)
+    if val_str.startswith("http://") or val_str.startswith("https://"):
+        return val_str
+
+    # Plain filename or subpath (e.g. uuid_filename.png or blogs/uuid_filename.png)
+    clean_val = val_str.lstrip("/")
+    if clean_val.startswith("blogs/"):
+        return f"/uploads/{clean_val}"
+    return f"/uploads/blogs/{clean_val}"
+
+
+def resolve_blog_image_url(image_path: str | None) -> str:
+    """Dynamically attaches the current request's HOST URL when returning blog images.
+    If image_path is relative (/uploads/blogs/abc.png), prepends request.host_url.
+    If image_path has a legacy host URL with /uploads/, extracts /uploads/ and attaches current host_url.
+    If image_path is an external URL, returns it as is.
+    """
+    if not image_path:
+        return ""
+    val_str = str(image_path).strip()
+    if not val_str:
+        return ""
+
+    # If it contains /uploads/ (including legacy records saved with old host), extract relative path and attach host
+    if "/uploads/" in val_str:
+        idx = val_str.find("/uploads/")
+        rel_path = val_str[idx:]
+        if has_request_context() and request:
+            return f"{request.host_url.rstrip('/')}{rel_path}"
+        return rel_path
+
+    if val_str.startswith("uploads/"):
+        rel_path = "/" + val_str
+        if has_request_context() and request:
+            return f"{request.host_url.rstrip('/')}{rel_path}"
+        return rel_path
+
+    # External absolute URLs (Unsplash, etc.)
+    if val_str.startswith("http://") or val_str.startswith("https://"):
+        return val_str
+
+    # Plain filename or subpath
+    clean_val = val_str.lstrip("/")
+    rel_path = f"/uploads/{clean_val}" if clean_val.startswith("blogs/") else f"/uploads/blogs/{clean_val}"
+    if has_request_context() and request:
+        return f"{request.host_url.rstrip('/')}{rel_path}"
+    return rel_path
+
+
 def blog_to_dict(blog: Blog) -> dict:
+    resolved_img = resolve_blog_image_url(blog.image_url)
     return {
         "id": blog.id,
         "title": blog.title,
@@ -177,8 +252,8 @@ def blog_to_dict(blog: Blog) -> dict:
         "introduction": blog.introduction or "",
         "content": blog.content or "",
         "contentPreview": (blog.introduction or blog.content or "")[:240],
-        "imageUrl": blog.image_url or "",
-        "image": blog.image_url or "",
+        "imageUrl": resolved_img,
+        "image": resolved_img,
         "isPinned": bool(blog.is_pinned),
         "tags": blog.tags or [],
         "metaTitle": blog.meta_title or "",

@@ -16,7 +16,7 @@ from utils.errors import NotFoundError, ValidationError, UnauthorizedError
 from utils.pagination import paginated_response
 from utils.response import success
 from utils.security import decode_token
-from utils.serializers import blog_to_dict, category_to_dict, author_to_dict
+from utils.serializers import blog_to_dict, category_to_dict, author_to_dict, normalize_blog_image_path
 from utils.validators import require_fields
 from utils.audit_helper import log_audit
 
@@ -228,6 +228,9 @@ def create_blog():
     status = _normalize_status(payload.get("status"))
     blog_date = _parse_date(payload.get("date"))
 
+    raw_img = payload.get("image_url") or payload.get("imageUrl")
+    image_url = normalize_blog_image_path(raw_img)
+
     with get_session() as session:
         author = _resolve_author(session, payload)
         category = _resolve_category(session, payload)
@@ -236,8 +239,7 @@ def create_blog():
             title=title,
             introduction=introduction,
             content=content,
-            # image_url=str(payload.get("image_url") or payload.get("imageUrl") or "").strip() or None,
-            image_url=request.host_url.rstrip("/") + "/" + str(payload.get("image_url") or payload.get("imageUrl") or "").lstrip("/"),
+            image_url=image_url,
             is_pinned=bool(payload.get("is_pinned", payload.get("isPinned", False))),
             tags=_normalize_list(payload.get("tags")),
             meta_title=str(payload.get("meta_title") or payload.get("metaTitle") or "").strip() or None,
@@ -291,11 +293,11 @@ def update_blog(blog_id: int):
         if "content" in payload:
             blog.content = str(payload.get("content") or "").strip()
 
+        if "image_url" in payload or "imageUrl" in payload:
+            raw_img = payload.get("image_url") or payload.get("imageUrl")
+            blog.image_url = normalize_blog_image_path(raw_img)
+
         field_map = {
-            # "image_url": "image_url",
-            "image_url": request.host_url.rstrip("/") + "/" + str(payload.get("image_url") or payload.get("imageUrl") or "").lstrip("/"),
-            # "imageUrl": "image_url",
-            "imageUrl": request.host_url.rstrip("/") + "/" + str(payload.get("image_url") or payload.get("imageUrl") or "").lstrip("/"),
             "tags": "tags",
             "meta_title": "meta_title",
             "metaTitle": "meta_title",
