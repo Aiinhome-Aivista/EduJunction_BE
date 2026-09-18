@@ -38,7 +38,7 @@ def create_app() -> Flask:
     app = Flask(__name__)
     app.url_map.strict_slashes = False
 
-    CORS(app, origins=config.CORS_ORIGINS, supports_credentials=True)
+    CORS(app)
 
     register_error_handlers(app)
     register_db_teardown(app)
