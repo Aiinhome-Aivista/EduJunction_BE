@@ -35,4 +35,9 @@ schema.sql
 seed_db.py
 runbooks.py
 runbooks.json
-*env    
+*env
+
+# Vector Store / ChromaDB & SQLite
+vector_store/
+*.sqlite3
+chroma.sqlite3
