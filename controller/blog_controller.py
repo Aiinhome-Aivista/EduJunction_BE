@@ -236,7 +236,8 @@ def create_blog():
             title=title,
             introduction=introduction,
             content=content,
-            image_url=str(payload.get("image_url") or payload.get("imageUrl") or "").strip() or None,
+            # image_url=str(payload.get("image_url") or payload.get("imageUrl") or "").strip() or None,
+            image_url=request.host_url.rstrip("/") + "/" + str(payload.get("image_url") or payload.get("imageUrl") or "").lstrip("/"),
             is_pinned=bool(payload.get("is_pinned", payload.get("isPinned", False))),
             tags=_normalize_list(payload.get("tags")),
             meta_title=str(payload.get("meta_title") or payload.get("metaTitle") or "").strip() or None,
@@ -291,8 +292,10 @@ def update_blog(blog_id: int):
             blog.content = str(payload.get("content") or "").strip()
 
         field_map = {
-            "image_url": "image_url",
-            "imageUrl": "image_url",
+            # "image_url": "image_url",
+            "image_url": request.host_url.rstrip("/") + "/" + str(payload.get("image_url") or payload.get("imageUrl") or "").lstrip("/"),
+            # "imageUrl": "image_url",
+            "imageUrl": request.host_url.rstrip("/") + "/" + str(payload.get("image_url") or payload.get("imageUrl") or "").lstrip("/"),
             "tags": "tags",
             "meta_title": "meta_title",
             "metaTitle": "meta_title",
