@@ -1,0 +1,38 @@
+# Environment & Secrets
+.env
+*.env
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+backend/venv/
+venv/
+ENV/
+
+# Node / Frontend
+frontend/node_modules/
+node_modules/
+frontend/dist/
+dist/
+
+# Zip / Uploads
+backend/uploads/*
+!backend/uploads/.gitkeep
+*.zip
+
+# OS / IDE
+.vscode/
+.idea/
+.DS_Store
+
+# Logs
+*.log
+
+schema.sql
+seed_db.py
+runbooks.py
+runbooks.json
+*env    
