@@ -26,6 +26,9 @@ from controller import (
     blog_controller,
     notification_controller,
     curriculum_controller,
+    mock_test_controller,
+    subscription_controller,
+    llm_config_controller,
 )
 from middleware.dbContext import register_db_teardown
 from middleware.errorMiddleware import register_error_handlers
@@ -451,6 +454,46 @@ def create_app() -> Flask:
     def api_admin_rag_save_questions():
         return upload_file_controller.save_generated_questions_api()
 
+    @app.route("/api/v1/admin/rag/analyze-book", methods=["POST"])
+    def api_admin_rag_analyze_book():
+        return upload_file_controller.analyze_and_extract_book_api()
+
+
+    # ============================================================
+    # 11.8 Mock Test & Blueprint Endpoints
+    # ============================================================
+    @app.route("/api/v1/admin/mock-tests/blueprints", methods=["GET"])
+    def api_admin_get_blueprints():
+        return mock_test_controller.get_blueprints()
+
+    @app.route("/api/v1/admin/mock-tests/blueprints/<int:blueprint_id>", methods=["PUT"])
+    def api_admin_update_blueprint(blueprint_id):
+        return mock_test_controller.update_blueprint(blueprint_id)
+
+    @app.route("/api/v1/admin/mock-tests/generate", methods=["POST"])
+    def api_admin_generate_mock_test():
+        return mock_test_controller.generate_mock_test()
+
+    @app.route("/api/v1/mock-tests/free/generate", methods=["POST"])
+    def api_generate_free_mock_test():
+        return mock_test_controller.generate_free_mock_test()
+
+    @app.route("/api/v1/admin/mock-tests", methods=["GET"])
+    def api_admin_list_mock_tests():
+        return mock_test_controller.list_mock_tests()
+
+    @app.route("/api/v1/admin/mock-tests/<test_id>/toggle-auto-assign", methods=["POST"])
+    def api_admin_toggle_mock_auto_assign(test_id):
+        return mock_test_controller.toggle_auto_assign(test_id)
+
+    @app.route("/api/v1/admin/mock-tests/<test_id>/assign-bulk", methods=["POST"])
+    def api_admin_bulk_assign_mock(test_id):
+        return mock_test_controller.bulk_assign(test_id)
+
+    @app.route("/api/v1/admin/mock-tests/<test_id>", methods=["DELETE"])
+    def api_admin_delete_mock_test(test_id):
+        return mock_test_controller.delete_mock_test(test_id)
+
 
     # ============================================================
     # 12. Chat Endpoints
@@ -530,9 +573,76 @@ def create_app() -> Flask:
     def api_blog_create_author():
         return blog_controller.create_author()
 
-    @app.route("/api/v1/blogs/<int:blog_id>/share", methods=["POST"])
-    def api_blog_share(blog_id):
-        return blog_controller.increment_blog_share(blog_id)
+    # ============================================================
+    # 20. Subscription & Pricing Plan Endpoints (₹300 Per Model Test)
+    # ============================================================
+    @app.route("/api/v1/subscription-plans/active", methods=["GET"])
+    def api_subscription_get_active_plans():
+        return subscription_controller.get_active_subscription_plans()
+
+    @app.route("/api/v1/subscriptions/subject/create-order", methods=["POST"])
+    def api_subscription_create_order():
+        return subscription_controller.create_subject_order()
+
+    @app.route("/api/v1/subscriptions/subject/verify", methods=["POST"])
+    def api_subscription_verify():
+        return subscription_controller.verify_subject_payment()
+
+    @app.route("/api/v1/subscriptions/subject/my-subscriptions", methods=["GET"])
+    def api_subscription_my_subscriptions():
+        return subscription_controller.get_user_subject_subscriptions()
+
+    @app.route("/api/v1/subscriptions/subject/<int:subscription_id>/download-paper", methods=["GET"])
+    def api_subscription_download_paper(subscription_id):
+        return subscription_controller.download_subject_model_paper(subscription_id)
+
+    # Admin Subscription Plan Management & Payment History
+    @app.route("/api/v1/admin/subscription-plans", methods=["GET"])
+    def api_admin_get_subscription_plans():
+        return subscription_controller.admin_get_subscription_plans()
+
+    @app.route("/api/v1/admin/subscription-plans", methods=["POST"])
+    def api_admin_create_subscription_plan():
+        return subscription_controller.admin_create_subscription_plan()
+
+    @app.route("/api/v1/admin/subscription-plans/<int:plan_id>", methods=["PUT"])
+    def api_admin_update_subscription_plan(plan_id):
+        return subscription_controller.admin_update_subscription_plan(plan_id)
+
+    @app.route("/api/v1/admin/subscription-plans/<int:plan_id>", methods=["DELETE"])
+    def api_admin_delete_subscription_plan(plan_id):
+        return subscription_controller.admin_delete_subscription_plan(plan_id)
+
+    @app.route("/api/v1/admin/subscription-history", methods=["GET"])
+    def api_admin_get_subscription_history():
+        return subscription_controller.admin_get_subscription_history()
+
+    # ============================================================
+    # 21. Admin LLM Configuration Endpoints
+    # ============================================================
+    @app.route("/api/v1/admin/llm-config", methods=["GET"])
+    def api_admin_get_llm_configs():
+        return llm_config_controller.get_llm_configs()
+
+    @app.route("/api/v1/admin/llm-config", methods=["POST"])
+    def api_admin_create_llm_config():
+        return llm_config_controller.create_llm_config()
+
+    @app.route("/api/v1/admin/llm-config/<config_id>", methods=["PUT"])
+    def api_admin_update_llm_config(config_id):
+        return llm_config_controller.update_llm_config(config_id)
+
+    @app.route("/api/v1/admin/llm-config/<config_id>", methods=["DELETE"])
+    def api_admin_delete_llm_config(config_id):
+        return llm_config_controller.delete_llm_config(config_id)
+
+    @app.route("/api/v1/admin/llm-config/<config_id>/activate", methods=["POST"])
+    def api_admin_activate_llm_config(config_id):
+        return llm_config_controller.set_active_llm_config(config_id)
+
+    @app.route("/api/v1/admin/llm-config/<config_id>/test", methods=["POST"])
+    def api_admin_test_llm_config(config_id):
+        return llm_config_controller.test_llm_connection(config_id)
 
     return app
 

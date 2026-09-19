@@ -260,6 +260,7 @@ class QuestionEvaluation(Base):
     submission_id = Column(String(36), ForeignKey("exam_submissions.id", ondelete="CASCADE"), nullable=False)
     question_id = Column(String(36), ForeignKey("questions.id", ondelete="CASCADE"), nullable=False)
     student_answer = Column(String(500), nullable=False)
+    time_spent_seconds = Column(Integer, default=0, nullable=True)
     is_correct = Column(Boolean, nullable=False)
     marks_awarded = Column(Numeric(4, 2), default=0.0, nullable=False)
     misconception_identified = Column(String(255), nullable=True)
@@ -612,4 +613,149 @@ class QuestionUploadBatch(Base):
     uploaded_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     created_at = Column(DateTime, default=get_ist_now)
 
-    uploader = relationship("User", foreign_keys=[uploaded_by])
+    uploader = relationship("User", foreign_keys=[uploaded_by])
+
+
+# ------------------------------------------------------------
+# 14. Exam Blueprint Master & Mock Test Master
+# ------------------------------------------------------------
+class ExamBlueprintMaster(Base):
+    __tablename__ = "exam_blueprint_master"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    tier_name = Column(String(50), nullable=False) # e.g. "Kids Tier", "Secondary Tier", "Senior Tier"
+    class_grade = Column(String(50), nullable=False) # e.g. "Class 1-4", "Class 5-10", "Class 11-12"
+    total_questions = Column(Integer, default=10, nullable=False)
+    mcq_count = Column(Integer, default=5, nullable=False)
+    saq_count = Column(Integer, default=5, nullable=False)
+    marks_per_mcq = Column(Integer, default=1, nullable=False)
+    marks_per_saq = Column(Integer, default=2, nullable=False)
+    total_marks = Column(Integer, default=15, nullable=False)
+    duration_minutes = Column(Integer, default=20, nullable=False)
+    description = Column(Text, nullable=True)
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=get_ist_now)
+    updated_at = Column(DateTime, default=get_ist_now, onupdate=get_ist_now)
+
+
+class MockTestMaster(Base):
+    __tablename__ = "mock_test_master"
+
+    id = Column(String(36), primary_key=True, default=gen_uuid)
+    title = Column(String(255), nullable=False)
+    board_id = Column(Integer, ForeignKey("board_master.id", ondelete="SET NULL"), nullable=True)
+    board = Column(String(50), nullable=False)
+    class_id = Column(Integer, ForeignKey("class_master.id", ondelete="SET NULL"), nullable=True)
+    class_grade = Column(String(50), nullable=False)
+    subject_id = Column(Integer, nullable=True)
+    subject = Column(String(100), nullable=False)
+    chapter_id = Column(Integer, nullable=True)
+    chapter_name = Column(String(190), nullable=True)
+    topic_id = Column(Integer, nullable=True)
+    topic_name = Column(String(190), nullable=True)
+    academic_year = Column(String(20), nullable=False, default="2026-2027")
+    session_type = Column(String(20), nullable=False, default="CURRENT") # "CURRENT" or "UPCOMING"
+    blueprint_id = Column(Integer, ForeignKey("exam_blueprint_master.id", ondelete="SET NULL"), nullable=True)
+    difficulty = Column(String(20), default="medium")
+    total_questions = Column(Integer, default=10, nullable=False)
+    mcq_count = Column(Integer, default=5, nullable=False)
+    saq_count = Column(Integer, default=5, nullable=False)
+    total_marks = Column(Integer, default=15, nullable=False)
+    duration_minutes = Column(Integer, default=20, nullable=False)
+    questions_json = Column(JSON, nullable=True)
+    is_auto_assign = Column(Boolean, default=True, nullable=False) # Auto-assign upon student registration
+    assigned_count = Column(Integer, default=0, nullable=False)
+    status = Column(String(20), default="ACTIVE") # "ACTIVE", "DRAFT", "ARCHIVED"
+    created_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    created_at = Column(DateTime, default=get_ist_now)
+    updated_at = Column(DateTime, default=get_ist_now, onupdate=get_ist_now)
+
+    creator = relationship("User", foreign_keys=[created_by])
+    blueprint = relationship("ExamBlueprintMaster", foreign_keys=[blueprint_id])
+
+
+# ------------------------------------------------------------
+# 15. Dynamic Exam Config Table
+# ------------------------------------------------------------
+class ExamConfig(Base):
+    __tablename__ = "exam_config"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    class_grade = Column(String(50), default="ALL")
+    total_marks = Column(Integer, default=10)
+    duration_minutes = Column(Integer, default=15)
+    total_questions = Column(Integer, default=10)
+
+
+# ------------------------------------------------------------
+# 16. Subscription Plans (Admin Pricing & Model Test Pass)
+# ------------------------------------------------------------
+class SubscriptionPlan(Base):
+    __tablename__ = "subscription_plans"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    plan_name = Column(String(150), nullable=False)
+    plan_code = Column(String(50), unique=True, nullable=False)
+    plan_type = Column(String(50), default="PER_MODEL_TEST")  # PER_MODEL_TEST, SUBJECT_PASS
+    price_inr = Column(Numeric(10, 2), default=300.00, nullable=False)
+    duration_minutes = Column(Integer, default=150, nullable=False)  # 150 mins (2.5 Hours / 2 Hours 30 Mins)
+    total_marks = Column(Integer, default=80, nullable=False)  # 80 / 100 marks
+    board_code = Column(String(50), nullable=True)  # CBSE / ICSE / ISC or NULL
+    class_name = Column(String(50), nullable=True)  # Class 5-12 or NULL
+    subject_name = Column(String(100), nullable=True)
+    description = Column(Text, nullable=True)
+    features_json = Column(JSON, nullable=True)
+    is_active = Column(Boolean, default=True, nullable=False)
+    created_at = Column(DateTime, default=get_ist_now)
+    updated_at = Column(DateTime, default=get_ist_now, onupdate=get_ist_now)
+
+
+class UserSubscription(Base):
+    __tablename__ = "user_subscriptions"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    student_id = Column(Integer, ForeignKey("students.id", ondelete="SET NULL"), nullable=True)
+    plan_id = Column(Integer, ForeignKey("subscription_plans.id", ondelete="SET NULL"), nullable=True)
+    board = Column(String(50), nullable=False)
+    class_grade = Column(String(50), nullable=False)
+    subject = Column(String(100), nullable=False)
+    model_test_id = Column(String(100), nullable=True)
+    amount_paid = Column(Numeric(10, 2), default=300.00, nullable=False)
+    currency = Column(String(10), default="INR")
+    razorpay_order_id = Column(String(100), nullable=True)
+    razorpay_payment_id = Column(String(100), nullable=True)
+    razorpay_signature = Column(String(255), nullable=True)
+    status = Column(String(50), default="ACTIVE")  # ACTIVE, ATTEMPTED, EXPIRED
+    exam_status = Column(String(50), default="UNATTEMPTED")  # UNATTEMPTED, IN_PROGRESS, COMPLETED
+    start_date = Column(DateTime, default=get_ist_now)
+    expiry_date = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=get_ist_now)
+
+    user = relationship("User", foreign_keys=[user_id])
+    student = relationship("Student", foreign_keys=[student_id])
+    plan = relationship("SubscriptionPlan", foreign_keys=[plan_id])
+
+
+# ------------------------------------------------------------
+# 17. Dynamic LLM Configuration Table
+# ------------------------------------------------------------
+class LLMConfig(Base):
+    __tablename__ = "llm_config"
+
+    id = Column(String(36), primary_key=True, default=gen_uuid)
+    provider_name = Column(String(50), nullable=False)  # 'gemini', 'openai', 'claude', 'ollama', 'deepseek', 'groq', 'custom'
+    display_title = Column(String(100), nullable=False)
+    base_url = Column(String(255), nullable=True)
+    api_key = Column(String(255), nullable=True)
+    model_name = Column(String(100), nullable=False)  # 'gemini-2.0-flash', 'gpt-4o', etc.
+    max_tokens = Column(Integer, default=4096)
+    temperature = Column(Numeric(3, 2), default=0.30)
+    timeout_seconds = Column(Integer, default=30)
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=get_ist_now)
+    updated_at = Column(DateTime, default=get_ist_now, onupdate=get_ist_now)
+
+
+
+

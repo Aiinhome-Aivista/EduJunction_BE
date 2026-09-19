@@ -344,3 +344,65 @@ def validate_curriculum_metadata(
                     f"Subject Mismatch: Document content/filename indicates '{detected_other_subject}', "
                     f"but '{target_subject}' was selected in the dropdown. Please select '{detected_other_subject}'."
                 )
+
+
+def validate_book_and_question_bank(
+    filename: str,
+    raw_text: str,
+    board: str | None = None,
+    class_grade: str | None = None,
+    subject: str | None = None,
+    year_declared: str | None = None,
+):
+    """Validates that uploaded file is a structured Book or Question Bank from the last 10-15 years (2011-2026)."""
+    clean_fn = (filename or "").lower()
+    ext = clean_fn.rsplit(".", 1)[-1].lower() if "." in clean_fn else ""
+    if ext not in {"pdf", "docx", "doc"}:
+        raise ValidationError(f"Invalid file format '.{ext}'. Only structured PDF, DOC, and DOCX files are supported.")
+
+    sample_text = (raw_text or "")[:15000].lower()
+    combined = f"{clean_fn} {sample_text}"
+
+    # 1. Year Validation (2011 to 2026 - last 10-15 years)
+    current_year = 2026
+    min_allowed_year = current_year - 15  # 2011
+    max_allowed_year = current_year + 1   # 2027
+
+    # Check if year is declared in form
+    declared_yr = None
+    if year_declared and str(year_declared).strip().isdigit():
+        declared_yr = int(year_declared.strip())
+        if declared_yr < min_allowed_year or declared_yr > max_allowed_year:
+            raise ValidationError(
+                f"Year Restriction: Only Books and Question Banks from the last 10–15 years ({min_allowed_year}–{current_year}) are accepted. "
+                f"Declared year {declared_yr} is outside the allowed curriculum range."
+            )
+
+    # Detect 4-digit years in filename and header text
+    found_years = [int(y) for y in re.findall(r'\b(19\d{2}|20\d{2})\b', combined)]
+    if found_years:
+        valid_years = [y for y in found_years if min_allowed_year <= y <= max_allowed_year]
+        outdated_years = [y for y in found_years if y < min_allowed_year]
+        if not valid_years and outdated_years and not declared_yr:
+            earliest = min(outdated_years)
+            raise ValidationError(
+                f"Outdated Document: Document indicates publication year {earliest}. "
+                f"Only Books and Question Banks from the last 10–15 years ({min_allowed_year}–{current_year}) are accepted."
+            )
+
+    # 2. Board Validation (Only CBSE, ICSE, ISC)
+    if board:
+        norm_board = board.upper().strip()
+        if norm_board not in {"CBSE", "ICSE", "ISC", "NCERT"}:
+            raise ValidationError(f"Scope Restriction: Only CBSE, ICSE, and ISC boards are supported. Found: {board}")
+
+    # 3. Class Validation (Class 5 to 10)
+    if class_grade:
+        match = re.search(r'(?:class|grade)?\s*(\d+)', class_grade.lower())
+        if match:
+            cnum = int(match.group(1))
+            if cnum < 5 or cnum > 10:
+                raise ValidationError(f"Scope Restriction: Supported classes are Class 5 to Class 10. Found: {class_grade}")
+
+    return True
+

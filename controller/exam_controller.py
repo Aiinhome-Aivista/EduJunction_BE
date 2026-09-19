@@ -423,11 +423,15 @@ def submit_exam(exam_id):
         session.add(submission)
         session.flush()
 
+        per_q_time = payload.get("timeSpentPerQuestion") or {}
         for ev in evaluations:
+            q_time = per_q_time.get(str(ev["questionId"])) or per_q_time.get(ev["questionId"]) or 0
             session.add(
                 QuestionEvaluation(
                     id=str(uuid.uuid4()), submission_id=submission.id, question_id=ev["questionId"],
-                    student_answer=ev["studentAnswer"], is_correct=ev["isCorrect"],
+                    student_answer=ev["studentAnswer"],
+                    time_spent_seconds=int(q_time) if str(q_time).isdigit() else 0,
+                    is_correct=ev["isCorrect"],
                     marks_awarded=ev["marksAwarded"], misconception_identified=ev["misconceptionIdentified"],
                     feedback=ev.get("feedback"),
                 )
@@ -527,6 +531,50 @@ def submit_exam(exam_id):
                         "accuracy": accuracy_percentage,
                     }
                 )
+
+        # Automatic PDF Report Generation & Parent Email Dispatch
+        parent_email = None
+        if student and student.parent and student.parent.user:
+            parent_email = student.parent.user.email
+        elif student and student.user:
+            parent_email = student.user.email
+
+        if parent_email:
+            try:
+                from helper.pdf_report_generator import generate_exam_report_pdf
+                from controller.email_controller import send_student_exam_report_email
+
+                sub_date_str = submission.submitted_at.strftime("%d %b %Y, %I:%M %p") if submission.submitted_at else "Today"
+                pdf_bytes = generate_exam_report_pdf(
+                    student_name=student_name,
+                    board=exam.board,
+                    class_grade=exam.class_grade,
+                    subject=exam.subject,
+                    exam_title=exam.title or "Adaptive Diagnostic Test",
+                    exam_date=sub_date_str,
+                    marks_obtained=marks_obtained,
+                    total_marks=exam.total_marks,
+                    accuracy_percentage=accuracy_percentage,
+                    time_taken_seconds=time_taken_seconds,
+                    evaluations=evaluations,
+                    analysis=analysis,
+                )
+
+                send_student_exam_report_email(
+                    to_email=parent_email,
+                    student_name=student_name,
+                    board=exam.board,
+                    class_grade=exam.class_grade,
+                    subject_name=exam.subject,
+                    exam_title=exam.title or "Adaptive Diagnostic Test",
+                    exam_date=sub_date_str,
+                    marks_obtained=marks_obtained,
+                    total_marks=exam.total_marks,
+                    accuracy_percentage=accuracy_percentage,
+                    pdf_bytes=pdf_bytes,
+                )
+            except Exception as email_err:
+                logger.warning(f"Failed to generate/email exam report PDF: {email_err}")
 
         log_audit(
             session,

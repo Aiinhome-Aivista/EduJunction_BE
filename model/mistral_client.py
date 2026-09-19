@@ -49,15 +49,45 @@ def _headers() -> dict:
     }
 
 
-def call_llm_chat(messages: list, json_mode: bool = False, temperature: float = 0.3) -> str:
-    print(f"[LLM Client] Using ACTIVE_LLM: {config.ACTIVE_LLM}")
+def _get_active_db_llm_config() -> dict | None:
+    """Fetches the active LLM configuration from the database dynamically."""
     try:
-        # 1. Gemini Cloud
-        if config.ACTIVE_LLM == "gemini":
+        from database.dbConnection import get_session
+        from model.models import LLMConfig
+        with get_session() as session:
+            active = session.query(LLMConfig).filter(LLMConfig.is_active == True).first()
+            if active:
+                return {
+                    "provider": (active.provider_name or "gemini").lower().strip(),
+                    "display_title": active.display_title,
+                    "base_url": active.base_url,
+                    "api_key": active.api_key,
+                    "model_name": active.model_name,
+                    "max_tokens": active.max_tokens or 4096,
+                    "temperature": float(active.temperature) if active.temperature is not None else 0.30,
+                    "timeout": active.timeout_seconds or 30,
+                }
+    except Exception as e:
+        pass
+    return None
+
+
+def call_llm_chat(messages: list, json_mode: bool = False, temperature: float = 0.3) -> str:
+    db_cfg = _get_active_db_llm_config()
+    active_provider = db_cfg["provider"] if db_cfg else config.ACTIVE_LLM
+    print(f"[LLM Client] Active Provider: {active_provider} (from DB: {bool(db_cfg)})")
+
+    try:
+        # 1. Google Gemini Cloud
+        if "gemini" in active_provider:
             genai = _get_genai()
             if not genai:
                 raise MistralUnavailableError("google-generativeai package is not installed.")
-            genai.configure(api_key=config.GEMINI_API_KEY)
+            
+            effective_key = (db_cfg["api_key"] if db_cfg and db_cfg["api_key"] else None) or config.GEMINI_API_KEY
+            effective_model = (db_cfg["model_name"] if db_cfg and db_cfg["model_name"] else None) or config.MODEL_NAME or "gemini-2.0-flash"
+
+            genai.configure(api_key=effective_key)
             
             system_instruction = None
             contents = []
@@ -76,75 +106,135 @@ def call_llm_chat(messages: list, json_mode: bool = False, temperature: float = 
                 generation_config["response_mime_type"] = "application/json"
             if temperature is not None:
                 generation_config["temperature"] = temperature
+            elif db_cfg:
+                generation_config["temperature"] = db_cfg.get("temperature", 0.3)
 
             model = genai.GenerativeModel(
-                model_name=config.MODEL_NAME or "gemini-2.5-flash",
+                model_name=effective_model,
                 system_instruction=system_instruction,
                 generation_config=generation_config
             )
             response = model.generate_content(contents)
             return response.text.strip()
 
-        # 2. Mistral Cloud API
-        elif config.ACTIVE_LLM == "mistral_cloud":
-            url = config.MISTRAL_CHAT_URL
-            headers = _headers()
+        # 2. Native Ollama (Local Engine)
+        elif active_provider == "ollama" and db_cfg and db_cfg.get("base_url") and ("/api/chat" in db_cfg["base_url"] or "11434" in db_cfg["base_url"]):
+            base_url = db_cfg["base_url"].rstrip("/")
+            url = f"{base_url}/api/chat" if not base_url.endswith("/api/chat") else base_url
             payload = {
-                "model": config.MISTRAL_MODEL,
-                "messages": messages,
-                "temperature": temperature
-            }
-            if json_mode:
-                payload["response_format"] = {"type": "json_object"}
-                
-            res = requests.post(url, json=payload, headers=headers, timeout=config.LLM_TIMEOUT_SECONDS)
-            res.raise_for_status()
-            data = res.json()
-            return data["choices"][0]["message"]["content"].strip()
-
-        # 3. 🧠 Local Ollama
-        elif config.ACTIVE_LLM == "mistral_local":
-            start_time = time.time()
-            payload = {
-                "model": config.MISTRAL_LOCAL_MODEL,
+                "model": db_cfg["model_name"],
                 "messages": messages,
                 "stream": False,
-                "options": {"temperature": temperature}
+                "options": {"temperature": temperature if temperature is not None else db_cfg.get("temperature", 0.3)}
             }
             if json_mode:
                 payload["format"] = "json"
 
-            url = f"{config.MISTRAL_LOCAL_URL}/api/chat"
-            try:
-                res = requests.post(url, json=payload, timeout=config.LLM_LOCAL_TIMEOUT_SECONDS)
-                res.raise_for_status()
-                data = res.json()
-                print(f"[LLM Client] Local Mistral responded in {time.time() - start_time:.2f} seconds (Remote IP)")
-                return data["message"]["content"].strip()
-            except (requests.exceptions.ConnectTimeout, requests.exceptions.ConnectionError, requests.exceptions.HTTPError) as e:
-                print(f"[LLM Client] Remote IP failed ({e}), trying fallback URL...")
-                fallback_url = f"{config.MISTRAL_LOCAL_FALLBACK_URL}/api/chat"
-                res = requests.post(fallback_url, json=payload, timeout=config.LLM_LOCAL_TIMEOUT_SECONDS)
-                res.raise_for_status()
-                data = res.json()
-                print(f"[LLM Client] Local Mistral responded in {time.time() - start_time:.2f} seconds (Fallback Localhost)")
-                return data["message"]["content"].strip()
+            res = requests.post(url, json=payload, timeout=db_cfg.get("timeout", 60))
+            res.raise_for_status()
+            return res.json().get("message", {}).get("content", "").strip()
 
+        # 3. Anthropic Claude API
+        elif "anthropic" in active_provider or "claude" in active_provider:
+            base_url = db_cfg.get("base_url") if db_cfg else None
+            url = f"{base_url.rstrip('/')}/v1/messages" if base_url else "https://api.anthropic.com/v1/messages"
+            headers = {
+                "x-api-key": (db_cfg.get("api_key") if db_cfg else None) or "",
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json",
+            }
+            system_text = None
+            claude_messages = []
+            for msg in messages:
+                if msg.get("role") == "system":
+                    system_text = msg.get("content")
+                else:
+                    claude_messages.append({"role": msg.get("role"), "content": msg.get("content")})
+
+            payload = {
+                "model": (db_cfg.get("model_name") if db_cfg else None) or "claude-3-5-sonnet-20241022",
+                "max_tokens": (db_cfg.get("max_tokens") if db_cfg else None) or 4096,
+                "messages": claude_messages,
+                "temperature": temperature if temperature is not None else (db_cfg.get("temperature", 0.3) if db_cfg else 0.3),
+            }
+            if system_text:
+                payload["system"] = system_text
+
+            res = requests.post(url, headers=headers, json=payload, timeout=db_cfg.get("timeout", 40) if db_cfg else 40)
+            res.raise_for_status()
+            return res.json()["content"][0]["text"].strip()
+
+        # 4. Standard OpenAI-Compatible API (OpenAI, Groq, Mistral Cloud, DeepSeek, Custom)
         else:
-            raise ValueError(f"Invalid ACTIVE_LLM configuration: {config.ACTIVE_LLM}")
+            base_url = (db_cfg.get("base_url") if db_cfg else None) or (config.MISTRAL_CHAT_URL if active_provider == "mistral_cloud" else "https://api.openai.com/v1")
+            url = f"{base_url.rstrip('/')}/chat/completions" if not base_url.endswith("/chat/completions") else base_url
+            
+            headers = {"Content-Type": "application/json"}
+            api_key = (db_cfg.get("api_key") if db_cfg else None) or config.MISTRAL_API_KEY
+            if api_key:
+                headers["Authorization"] = f"Bearer {api_key}"
+
+            model_name = (db_cfg.get("model_name") if db_cfg else None) or config.MISTRAL_MODEL or "gpt-4o-mini"
+            timeout = (db_cfg.get("timeout") if db_cfg else None) or config.LLM_TIMEOUT_SECONDS or 30
+
+            payload = {
+                "model": model_name,
+                "messages": messages,
+                "temperature": temperature if temperature is not None else (db_cfg.get("temperature", 0.3) if db_cfg else 0.3)
+            }
+            if json_mode:
+                payload["response_format"] = {"type": "json_object"}
+
+            res = requests.post(url, json=payload, headers=headers, timeout=timeout)
+            res.raise_for_status()
+            data = res.json()
+            return data["choices"][0]["message"]["content"].strip()
 
     except Exception as e:
-        raise MistralUnavailableError(f"LLM Error: {str(e)}") from e
+        raise MistralUnavailableError(f"LLM Error ({active_provider}): {str(e)}") from e
 
 
 def call_llm(prompt: str) -> str:
     return call_llm_chat([{"role": "user", "content": prompt}], json_mode=False)
 
 
+def _clean_and_parse_json(raw_text: str) -> dict:
+    """Robust JSON extractor with guardrails against markdown wrappers, preamble text, and trailing commas."""
+    text = raw_text.strip()
+    # Strip markdown fences
+    if text.startswith("```json"):
+        text = text[7:]
+    elif text.startswith("```"):
+        text = text[3:]
+    if text.endswith("```"):
+        text = text[:-3]
+    text = text.strip()
+
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        # Locate outermost brackets { ... }
+        start_idx = text.find("{")
+        end_idx = text.rfind("}")
+        if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
+            sub = text[start_idx : end_idx + 1]
+            return json.loads(sub)
+        raise
+
+
 def generate_json(system_prompt: str, user_prompt: str, *, temperature: float = 0.4) -> dict:
-    """Calls the active LLM with JSON-object response formatting and returns the parsed dict."""
+    """Calls the active LLM with JSON-object response formatting and returns the parsed dict with guardrails."""
+    # Ensure system prompt explicitly reinforces JSON output guardrails
+    strict_system_prompt = (
+        f"{system_prompt}\n\n"
+        "STRICT GUARDRAIL INSTRUCTION:\n"
+        "1. Output MUST be 100% valid, parseable JSON conforming to the requested schema.\n"
+        "2. Do NOT output any markdown commentary, prefix, or explanation outside the JSON object.\n"
+        "3. Strictly adhere to standard syllabus for national boards (CBSE, ICSE, ISC) without hallucinating unverified questions."
+    )
+
     messages = [
-        {"role": "system", "content": system_prompt},
+        {"role": "system", "content": strict_system_prompt},
         {"role": "user", "content": user_prompt},
     ]
 
@@ -155,11 +245,11 @@ def generate_json(system_prompt: str, user_prompt: str, *, temperature: float = 
             content = call_llm_chat(messages, json_mode=True, temperature=temperature)
             duration_ms = (time.time() - start) * 1000
             
-            parsed = json.loads(content)
+            parsed = _clean_and_parse_json(content)
             log_ai_call("llm_generate_json", duration_ms, success=True)
             return parsed
 
-        except (json.JSONDecodeError, MistralUnavailableError) as exc:
+        except (json.JSONDecodeError, MistralUnavailableError, Exception) as exc:
             duration_ms = (time.time() - start) * 1000
             last_error = str(exc)
             log_ai_call("llm_generate_json", duration_ms, success=False)

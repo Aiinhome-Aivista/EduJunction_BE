@@ -272,3 +272,98 @@ def save_generated_questions_api():
     }, 201)
 
 
+@token_required
+@roles_required("ADMIN", "SUPER_ADMIN", "TEACHER")
+def analyze_and_extract_book_api():
+    """Uploads a Book/Question Bank (PDF/DOC/DOCX), validates 10-15 years criteria,
+
+    and generates Summary, Concept Relationships, and Important Questions using LLM.
+    """
+    from helper import document_processor
+    from helper.pdf_question_generator import analyze_book_and_question_bank
+    from helper.rag_ingestion import ingest_document
+
+    if "file" not in request.files:
+        raise ValidationError("No file supplied in the request")
+    file = request.files["file"]
+    if not file.filename:
+        raise ValidationError("No file selected")
+
+    board = request.form.get("board", "CBSE")
+    class_grade = request.form.get("classGrade", "Class 10")
+    subject = request.form.get("subject", "Mathematics")
+    year_declared = request.form.get("yearDeclared")
+    doc_type = request.form.get("documentType", "Textbook")
+
+    file_bytes = file.read()
+    ext = document_processor.validate_upload(file.filename, len(file_bytes))
+    if ext not in ["pdf", "docx", "doc"]:
+        raise ValidationError(f"Invalid file format '.{ext}'. Only PDF, DOC, and DOCX files are supported.")
+
+    raw_text = document_processor.extract_text(file_bytes, ext)
+
+    # Validate 10-15 years constraint and curriculum suitability
+    document_processor.validate_book_and_question_bank(
+        filename=file.filename,
+        raw_text=raw_text,
+        board=board,
+        class_grade=class_grade,
+        subject=subject,
+        year_declared=year_declared,
+    )
+
+    with get_session() as session:
+        # Ingest into document repository
+        document = ingest_document(
+            session,
+            filename=file.filename,
+            file_bytes=file_bytes,
+            content_type=file.mimetype or f"application/{ext}",
+            board=board,
+            class_grade=class_grade,
+            subject=subject,
+            runbook_id=None,
+            uploaded_by=g.current_user_id,
+        )
+
+        # Run pedagogical LLM analysis (Summary, Relationships, Questions)
+        analysis = analyze_book_and_question_bank(
+            session,
+            document_id=document.id,
+            target_board=board,
+            target_class=class_grade,
+            target_subject=subject,
+        )
+
+        # Automatic ArangoDB Knowledge Graph synchronization
+        relationships = analysis.get("relationships", [])
+        if relationships:
+            try:
+                from database import graph_db
+                for rel in relationships:
+                    src = rel.get("source_concept") or rel.get("source")
+                    tgt = rel.get("target_concept") or rel.get("target")
+                    rel_type = rel.get("relationship_type") or "PREREQUISITE"
+                    desc = rel.get("description") or ""
+                    if src and tgt:
+                        graph_db.upsert_topic_relationship_edge(str(src), str(tgt), str(rel_type), str(desc))
+            except Exception as graph_err:
+                from utils.logger import logger
+                logger.warning(f"ArangoDB automatic relationship sync skipped/failed: {graph_err}")
+
+        return success({
+            "document_id": document.id,
+            "filename": document.filename,
+            "board": board,
+            "class_grade": class_grade,
+            "subject": subject,
+            "document_type": doc_type,
+            "summary": analysis.get("summary"),
+            "relationships": relationships,
+            "important_questions": analysis.get("important_questions", []),
+            "questions_count": analysis.get("questions_count", 0),
+        }, 201)
+
+
+
+

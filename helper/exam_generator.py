@@ -10,13 +10,69 @@ from sqlalchemy.orm import Session
 
 from helper import fallback_exam_bank, rag_engine
 from model import mistral_client
-from model.models import Exam, Question, Mastery
+from model.models import Exam, Question, Mastery, ExamConfig, QuestionEvaluation, ExamSubmission
 from prompts import exam_generation_prompt
 from utils.ai_schemas import GeneratedExamSchema
 from utils.constants import (
     DEFAULT_EXAM_QUESTION_COUNT, DEFAULT_EXAM_TOTAL_MARKS, DEFAULT_EXAM_TIME_LIMIT_MINUTES,
 )
 from utils.logger import logger
+
+
+def get_exam_config_for_class(session: Session, class_grade: str = "ALL") -> dict:
+    """Fetches total_marks, duration_minutes, total_questions from exam_config table."""
+    try:
+        config = session.query(ExamConfig).filter(
+            (ExamConfig.class_grade == class_grade) | (ExamConfig.class_grade == "ALL")
+        ).order_by(
+            (ExamConfig.class_grade == class_grade).desc()
+        ).first()
+        if config:
+            return {
+                "total_marks": config.total_marks or 10,
+                "duration_minutes": config.duration_minutes or 15,
+                "total_questions": config.total_questions or 10,
+            }
+    except Exception as e:
+        logger.warning(f"Could not fetch exam_config from DB: {e}")
+
+    return {
+        "total_marks": 10,
+        "duration_minutes": 15,
+        "total_questions": 10,
+    }
+
+
+def get_student_weak_chapter_or_topic(session: Session, student_id: int | str, subject: str = None) -> tuple[str | None, str | None]:
+    """Finds the most recent chapter/topic and difficulty where the student answered incorrectly or struggled."""
+    try:
+        subquery = (
+            session.query(Question.topic, Question.difficulty)
+            .join(QuestionEvaluation, QuestionEvaluation.question_id == Question.id)
+            .join(ExamSubmission, ExamSubmission.id == QuestionEvaluation.submission_id)
+            .join(Exam, Exam.id == ExamSubmission.exam_id)
+            .filter(ExamSubmission.student_id == student_id, QuestionEvaluation.is_correct == False)
+        )
+        if subject:
+            subquery = subquery.filter(Exam.subject.ilike(f"%{subject}%"))
+
+        row = subquery.order_by(ExamSubmission.submitted_at.desc()).first()
+        if row and row[0]:
+            return row[0], row[1]
+    except Exception as e:
+        logger.warning(f"Error resolving student weakness: {e}")
+
+    try:
+        m_row = session.query(Mastery).filter(
+            Mastery.student_id == student_id,
+            Mastery.mastery_score < 60
+        ).order_by(Mastery.mastery_score.asc()).first()
+        if m_row and m_row.topic:
+            return m_row.topic, "simple"
+    except Exception:
+        pass
+
+    return None, None
 
 
 def get_weak_topics(session: Session, student_id: str, threshold: float = 75.0) -> list[str]:
@@ -223,9 +279,20 @@ def generate_exam(
     is_assigned: bool = False,
     chapter_topic: str | None = None,
 ) -> Exam:
+    if not chapter_topic:
+        weak_ch, weak_df = get_student_weak_chapter_or_topic(session, student_id, subject)
+        if weak_ch:
+            chapter_topic = weak_ch
+
     weak_topics = get_weak_topics(session, student_id)
     matching_runbooks = rag_engine.retrieve_runbooks(session, board, class_grade, subject)
     rag_context = rag_engine.runbooks_to_context(matching_runbooks, difficulty)
+
+    # Dynamic Exam Config from exam_config Table
+    cfg = get_exam_config_for_class(session, class_grade)
+    cfg_marks = cfg.get("total_marks", 10)
+    cfg_duration = cfg.get("duration_minutes", 15)
+    cfg_q_count = cfg.get("total_questions", 10)
 
     # Determine class-based marks blueprint
     tier = _get_grade_tier(class_grade)
@@ -236,17 +303,14 @@ def generate_exam(
         default_grade_marks = 5
         default_duration_mins = 10
     elif tier == "senior":
-        default_q_count = 10
-        default_grade_marks = 20
-        default_duration_mins = 25
-    elif any(c in cg_lower for c in ["class 9", "class 10"]):
-        default_q_count = 10
-        default_grade_marks = 15
-        default_duration_mins = 20
+        default_q_count = cfg_q_count
+        default_grade_marks = cfg_marks
+        default_duration_mins = cfg_duration
     else:
-        default_q_count = 10
-        default_grade_marks = 15
-        default_duration_mins = 15
+        # Class 5 to 10
+        default_q_count = cfg_q_count
+        default_grade_marks = cfg_marks
+        default_duration_mins = cfg_duration
 
     is_assigned_challenge = bool(is_assigned)
     target_question_count = question_count or default_q_count

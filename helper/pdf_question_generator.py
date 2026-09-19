@@ -261,3 +261,113 @@ Return strictly JSON with 'questions' array containing {missing} items."""
     except Exception as e:
         logger.error(f"Failed to generate questions from document {document_id}: {e}", exc_info=True)
         raise
+
+
+BOOK_ANALYSIS_SYSTEM_PROMPT = """You are an elite academic curriculum analyst and senior textbook editor for national boards (CBSE, ICSE, ISC).
+Your task is to analyze the provided textbook / question bank curriculum text and produce an exhaustive pedagogical breakdown in JSON format.
+
+OUTPUT JSON SCHEMA:
+{
+  "summary": "Detailed, structured chapter/book overview highlighting core concepts, pedagogical objectives, and key examination takeaways.",
+  "relationships": [
+    {
+      "source_concept": "Concept A (e.g. Newton's 2nd Law)",
+      "target_concept": "Concept B (e.g. Momentum Conservation)",
+      "relationship_type": "PREREQUISITE | EXTENSION | APPLICATION | COREQUISITE",
+      "description": "Clear explanation of how Concept A connects to and enables understanding of Concept B."
+    }
+  ],
+  "important_questions": [
+    {
+      "question": "Question text...",
+      "type": "MCQ | SAQ | NUMERICAL | OBJECTIVE",
+      "difficulty": "easy | medium | hard",
+      "marks": 1,
+      "options": ["A) Option 1", "B) Option 2", "C) Option 3", "D) Option 4"],
+      "correct_answer": "A",
+      "explanation": "Detailed step-by-step conceptual solution.",
+      "topic_suggested": "Topic Name"
+    }
+  ]
+}
+
+RULES:
+1. Provide a comprehensive summary of at least 3-4 structured paragraphs.
+2. Identify at least 3 to 6 key conceptual relationships/dependencies.
+3. Generate 5 to 10 high-yield examination questions covering Easy (foundational), Medium (standard), and Hard (HOTS/board-level).
+4. Output STRICTLY valid JSON with no markdown wrapping or extra commentary.
+"""
+
+
+def analyze_book_and_question_bank(
+    session: Session,
+    document_id: str,
+    target_board: str | None = None,
+    target_class: str | None = None,
+    target_subject: str | None = None,
+) -> Dict[str, Any]:
+    """Analyzes textbook or question bank text using LLM to generate Summary, Relationships, and Important Questions."""
+    raw_text, meta = extract_curriculum_text(session, document_id, max_chars=16000)
+
+    board = target_board or meta.get("board", "CBSE")
+    class_grade = target_class or meta.get("classGrade", "Class 10")
+    subject = target_subject or meta.get("subject", "Mathematics")
+
+    user_prompt = f"""Curriculum Context:
+- Target Board: {board}
+- Target Class: {class_grade}
+- Subject: {subject}
+- Source Document: {meta.get('filename', 'Textbook / Question Bank')}
+
+--- DOCUMENT TEXT ---
+{raw_text}
+--- END DOCUMENT TEXT ---
+
+INSTRUCTION: Perform a deep pedagogical analysis of this curriculum text. Return the JSON object matching the exact schema above."""
+
+    try:
+        response_json = mistral_client.generate_json(BOOK_ANALYSIS_SYSTEM_PROMPT, user_prompt, temperature=0.3)
+        summary = response_json.get("summary") or "Comprehensive chapter overview derived from curriculum text."
+        relationships = response_json.get("relationships") or []
+        raw_questions = response_json.get("important_questions") or []
+
+        sanitized_questions = []
+        for idx, q in enumerate(raw_questions):
+            item = _sanitize_single_question(q, "MCQ", "medium", meta, idx)
+            if item:
+                item["id"] = f"imp_q_{idx + 1}"
+                sanitized_questions.append(item)
+
+        return {
+            "document_id": document_id,
+            "filename": meta.get("filename"),
+            "board": board,
+            "class_grade": class_grade,
+            "subject": subject,
+            "summary": summary,
+            "relationships": relationships,
+            "important_questions": sanitized_questions,
+            "questions_count": len(sanitized_questions),
+        }
+    except Exception as e:
+        logger.error(f"Failed to analyze book {document_id}: {e}", exc_info=True)
+        # Graceful fallback structure if LLM error occurs
+        return {
+            "document_id": document_id,
+            "filename": meta.get("filename"),
+            "board": board,
+            "class_grade": class_grade,
+            "subject": subject,
+            "summary": f"Curriculum materials extracted for {board} {class_grade} {subject}.",
+            "relationships": [
+                {
+                    "source_concept": f"{subject} Fundamentals",
+                    "target_concept": "Advanced Applications",
+                    "relationship_type": "PREREQUISITE",
+                    "description": "Foundational formulas and theorems enable analytical problem solving."
+                }
+            ],
+            "important_questions": [],
+            "questions_count": 0,
+        }
+

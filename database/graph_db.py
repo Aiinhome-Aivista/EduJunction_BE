@@ -79,7 +79,36 @@ def upsert_misconception_edge(student_id: str, topic: str, description: str, sev
     )
 
 
+def upsert_topic_relationship_edge(source_topic: str, target_topic: str, relationship_type: str = "PREREQUISITE", description: str = ""):
+    """Inserts or updates topic nodes and relationship edge in ArangoDB knowledge graph."""
+    if not _enabled or not _db:
+        return
+    try:
+        source_key = _safe_key(source_topic)
+        target_key = _safe_key(target_topic)
+
+        # Ensure topic nodes exist
+        _db.collection("topics").insert({"_key": source_key, "name": source_topic}, overwrite=True)
+        _db.collection("topics").insert({"_key": target_key, "name": target_topic}, overwrite=True)
+
+        edge_key = f"{source_key}__{target_key}"
+        _db.collection("TOPIC_REQUIRES_TOPIC").insert(
+            {
+                "_key": edge_key,
+                "_from": f"topics/{source_key}",
+                "_to": f"topics/{target_key}",
+                "relationshipType": relationship_type,
+                "description": description,
+            },
+            overwrite=True
+        )
+        logger.info(f"ArangoDB KGraph: Recorded edge {source_topic} -> {target_topic} ({relationship_type})")
+    except Exception as e:
+        logger.warning(f"ArangoDB relationship edge insert failed: {e}")
+
+
 def _safe_key(value: str) -> str:
     import re
 
     return re.sub(r"[^A-Za-z0-9_-]", "_", value)[:200]
+

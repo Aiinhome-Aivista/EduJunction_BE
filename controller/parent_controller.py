@@ -239,6 +239,16 @@ def add_child():
             daily_exams_taken_today=0,
         )
         session.add(student)
+        session.flush()
+
+        # Auto-assign active Mock Tests for this board and class
+        from controller.mock_test_controller import auto_assign_mock_tests_for_new_student
+        try:
+            auto_assign_mock_tests_for_new_student(session, student)
+        except Exception as e:
+            from utils.logger import logger
+            logger.warning(f"Auto-assign mock tests failed for student {student.id}: {e}")
+
         log_audit(
             session,
             action="CHILD_CREATED",

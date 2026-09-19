@@ -106,8 +106,14 @@ def render_email_template(title: str, content_html: str) -> str:
 """
 
 
-def _send_email_sync(to_email: str, subject: str, content_html: str, plain_text: str = "") -> bool:
-    """Synchronously dispatches the email via SMTP."""
+def _send_email_sync(
+    to_email: str,
+    subject: str,
+    content_html: str,
+    plain_text: str = "",
+    attachments: list[dict] | None = None,
+) -> bool:
+    """Synchronously dispatches the email via SMTP with optional attachments."""
     try:
         smtp_server = config.SMTP_SERVER or os.getenv("SMTP_SERVER", "smtp.gmail.com")
         smtp_port = int(config.SMTP_PORT or os.getenv("SMTP_PORT", "587"))
@@ -134,6 +140,16 @@ def _send_email_sync(to_email: str, subject: str, content_html: str, plain_text:
         # HTML version
         message.add_alternative(html_body, subtype="html")
 
+        # Attachments
+        if attachments:
+            for att in attachments:
+                message.add_attachment(
+                    att["content"],
+                    maintype=att.get("maintype", "application"),
+                    subtype=att.get("subtype", "octet-stream"),
+                    filename=att["filename"],
+                )
+
         with smtplib.SMTP(smtp_server, smtp_port, timeout=20) as server:
             if smtp_use_tls:
                 server.starttls()
@@ -148,11 +164,17 @@ def _send_email_sync(to_email: str, subject: str, content_html: str, plain_text:
         return False
 
 
-def send_email_async(to_email: str, subject: str, content_html: str, plain_text: str = "") -> None:
+def send_email_async(
+    to_email: str,
+    subject: str,
+    content_html: str,
+    plain_text: str = "",
+    attachments: list[dict] | None = None,
+) -> None:
     """Dispatches email asynchronously in a background thread so the HTTP request is not blocked."""
     thread = threading.Thread(
         target=_send_email_sync,
-        args=(to_email, subject, content_html, plain_text),
+        args=(to_email, subject, content_html, plain_text, attachments),
         daemon=True,
     )
     thread.start()
@@ -364,4 +386,74 @@ def send_school_student_registered_email(
 
     send_email_async(to_school_email.strip(), subject, content_html, plain_text)
     return True
+
+
+def send_student_exam_report_email(
+    to_email: str,
+    student_name: str,
+    board: str,
+    class_grade: str,
+    subject_name: str,
+    exam_title: str,
+    exam_date: str,
+    marks_obtained: float,
+    total_marks: float,
+    accuracy_percentage: float,
+    pdf_bytes: bytes,
+) -> bool:
+    """Dispatches a detailed Exam Result Performance Report PDF attached to the parent/student email."""
+    if not to_email or not to_email.strip():
+        return False
+
+    display_name = student_name.strip() if student_name else "Student"
+    subject = f"📊 Performance Report: {display_name}'s {subject_name} Exam Result ({marks_obtained}/{total_marks})"
+
+    content_html = f"""
+        <h2 style="color: #1e293b; margin-top: 0;">Diagnostic Exam Result & Assessment Report 📊</h2>
+        <p>Dear Parent / Guardian,</p>
+        <p><strong>{display_name}</strong> has just completed an assessment on <strong>SahajPath</strong>.</p>
+        
+        <div class="card" style="border-left: 4px solid #0284c7; background: #f0f9ff;">
+            <h3 style="margin-top: 0; color: #0369a1;">📝 Exam Score Overview:</h3>
+            <p style="margin: 4px 0;"><strong>Student Name:</strong> {display_name}</p>
+            <p style="margin: 4px 0;"><strong>Curriculum:</strong> {board} - {class_grade}</p>
+            <p style="margin: 4px 0;"><strong>Subject:</strong> {subject_name}</p>
+            <p style="margin: 4px 0;"><strong>Score:</strong> <span style="font-size: 16px; font-weight: bold; color: #0284c7;">{marks_obtained} / {total_marks} ({accuracy_percentage}%)</span></p>
+            <p style="margin: 4px 0;"><strong>Date:</strong> {exam_date}</p>
+        </div>
+
+        <div style="background-color: #f8fafc; border: 1px solid #e2e8f0; padding: 14px 18px; border-radius: 8px; margin: 16px 0;">
+            <p style="margin: 0; font-size: 13px; color: #475569;">
+                📎 <strong>Attached PDF Report:</strong> We have attached the full student diagnostic performance report PDF with question-by-question breakdown, conceptual strengths, and recommended action steps.
+            </p>
+        </div>
+
+        <p>You can also review active mastery and adaptive learning roadmaps in the SahajPath Parent Portal.</p>
+        <p><strong>Warm regards,</strong><br>The SahajPath Academic Assessment Team</p>
+    """
+
+    plain_text = (
+        f"Dear Parent / Guardian,\n\n"
+        f"{display_name} has completed the {subject_name} exam on SahajPath.\n"
+        f"Score: {marks_obtained}/{total_marks} ({accuracy_percentage}%)\n"
+        f"Curriculum: {board} - {class_grade}\n"
+        f"Date: {exam_date}\n\n"
+        f"Please find the detailed PDF Diagnostic Report attached to this email.\n\n"
+        f"Best regards,\nThe SahajPath Academic Assessment Team"
+    )
+
+    clean_filename = f"SahajPath_Report_{display_name.replace(' ', '_')}_{subject_name.replace(' ', '_')}.pdf"
+
+    attachments = [
+        {
+            "filename": clean_filename,
+            "content": pdf_bytes,
+            "maintype": "application",
+            "subtype": "pdf",
+        }
+    ]
+
+    send_email_async(to_email.strip(), subject, content_html, plain_text, attachments)
+    return True
+
 
