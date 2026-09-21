@@ -65,6 +65,9 @@ def create_app() -> Flask:
     @app.after_request
     def _after(response):
         duration_ms = (time.time() - getattr(g, "_start_time", time.time())) * 1000
+        status_code = response.status_code
+        status_tag = f"[{status_code} OK]" if status_code < 400 else f"[{status_code} ERR]"
+        print(f">> [HTTP {request.method}] {request.path} -> {status_tag} ({duration_ms:.1f}ms)", flush=True)
         log_request(
             request.method,
             request.path,
@@ -650,4 +653,4 @@ def create_app() -> Flask:
 app = create_app()
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5002, debug=(config.APP_ENV == "development"))
+    app.run(host="0.0.0.0", port=8000, debug=(config.APP_ENV == "development"))

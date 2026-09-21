@@ -74,19 +74,48 @@ def _get_active_db_llm_config() -> dict | None:
 
 def call_llm_chat(messages: list, json_mode: bool = False, temperature: float = 0.3) -> str:
     db_cfg = _get_active_db_llm_config()
-    active_provider = db_cfg["provider"] if db_cfg else config.ACTIVE_LLM
-    print(f"[LLM Client] Active Provider: {active_provider} (from DB: {bool(db_cfg)})")
+    # Default to Mistral whenever ACTIVE_LLM is mistral or DB is unconfigured/empty key
+    active_provider = (db_cfg["provider"] if db_cfg and db_cfg.get("api_key") else None) or config.ACTIVE_LLM or "mistral"
+    active_provider = str(active_provider).lower().strip()
+    print(f"[LLM Client] Active Provider: {active_provider} (MISTRAL_MODEL: {config.MISTRAL_MODEL})", flush=True)
 
     try:
-        # 1. Google Gemini Cloud
-        if "gemini" in active_provider:
+        # 1. Mistral API (Primary Cloud AI Engine)
+        if "mistral" in active_provider:
+            url = config.MISTRAL_CHAT_URL or "https://api.mistral.ai/v1/chat/completions"
+            headers = {
+                "Authorization": f"Bearer {config.MISTRAL_API_KEY}",
+                "Content-Type": "application/json",
+            }
+            model_name = (db_cfg.get("model_name") if db_cfg and "mistral" in db_cfg.get("provider", "") else None) or config.MISTRAL_MODEL or "mistral-small-latest"
+            timeout = (db_cfg.get("timeout") if db_cfg else None) or config.LLM_TIMEOUT_SECONDS or 45
+
+            payload = {
+                "model": model_name,
+                "messages": messages,
+                "temperature": temperature if temperature is not None else 0.3,
+            }
+            if json_mode:
+                payload["response_format"] = {"type": "json_object"}
+
+            res = requests.post(url, json=payload, headers=headers, timeout=timeout)
+            res.raise_for_status()
+            data = res.json()
+            return data["choices"][0]["message"]["content"].strip()
+
+        # 2. Google Gemini Cloud (Only if valid API key exists)
+        elif "gemini" in active_provider:
             genai = _get_genai()
             if not genai:
                 raise MistralUnavailableError("google-generativeai package is not installed.")
             
-            effective_key = (db_cfg["api_key"] if db_cfg and db_cfg["api_key"] else None) or config.GEMINI_API_KEY
-            effective_model = (db_cfg["model_name"] if db_cfg and db_cfg["model_name"] else None) or config.MODEL_NAME or "gemini-2.0-flash"
+            effective_key = (db_cfg["api_key"] if db_cfg and db_cfg.get("api_key") else None) or config.GEMINI_API_KEY
+            if not effective_key:
+                # Seamlessly fall back to Mistral
+                print("[LLM Client] No Gemini API Key found. Routing to Mistral...", flush=True)
+                return call_llm_chat(messages, json_mode=json_mode, temperature=temperature)
 
+            effective_model = (db_cfg["model_name"] if db_cfg and db_cfg.get("model_name") else None) or config.MODEL_NAME or "gemini-2.0-flash"
             genai.configure(api_key=effective_key)
             
             system_instruction = None
@@ -117,7 +146,7 @@ def call_llm_chat(messages: list, json_mode: bool = False, temperature: float = 
             response = model.generate_content(contents)
             return response.text.strip()
 
-        # 2. Native Ollama (Local Engine)
+        # 3. Native Ollama (Local Engine)
         elif active_provider == "ollama" and db_cfg and db_cfg.get("base_url") and ("/api/chat" in db_cfg["base_url"] or "11434" in db_cfg["base_url"]):
             base_url = db_cfg["base_url"].rstrip("/")
             url = f"{base_url}/api/chat" if not base_url.endswith("/api/chat") else base_url
@@ -134,7 +163,7 @@ def call_llm_chat(messages: list, json_mode: bool = False, temperature: float = 
             res.raise_for_status()
             return res.json().get("message", {}).get("content", "").strip()
 
-        # 3. Anthropic Claude API
+        # 4. Anthropic Claude API
         elif "anthropic" in active_provider or "claude" in active_provider:
             base_url = db_cfg.get("base_url") if db_cfg else None
             url = f"{base_url.rstrip('/')}/v1/messages" if base_url else "https://api.anthropic.com/v1/messages"
@@ -164,9 +193,9 @@ def call_llm_chat(messages: list, json_mode: bool = False, temperature: float = 
             res.raise_for_status()
             return res.json()["content"][0]["text"].strip()
 
-        # 4. Standard OpenAI-Compatible API (OpenAI, Groq, Mistral Cloud, DeepSeek, Custom)
+        # 5. Standard OpenAI-Compatible API (OpenAI, Groq, DeepSeek)
         else:
-            base_url = (db_cfg.get("base_url") if db_cfg else None) or (config.MISTRAL_CHAT_URL if active_provider == "mistral_cloud" else "https://api.openai.com/v1")
+            base_url = (db_cfg.get("base_url") if db_cfg else None) or "https://api.openai.com/v1"
             url = f"{base_url.rstrip('/')}/chat/completions" if not base_url.endswith("/chat/completions") else base_url
             
             headers = {"Content-Type": "application/json"}
@@ -174,7 +203,7 @@ def call_llm_chat(messages: list, json_mode: bool = False, temperature: float = 
             if api_key:
                 headers["Authorization"] = f"Bearer {api_key}"
 
-            model_name = (db_cfg.get("model_name") if db_cfg else None) or config.MISTRAL_MODEL or "gpt-4o-mini"
+            model_name = (db_cfg.get("model_name") if db_cfg else None) or "gpt-4o-mini"
             timeout = (db_cfg.get("timeout") if db_cfg else None) or config.LLM_TIMEOUT_SECONDS or 30
 
             payload = {

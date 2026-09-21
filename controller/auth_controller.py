@@ -238,6 +238,8 @@ def login():
         )
         session.commit()
 
+        print(f"\n>> [LOGIN SUCCESS] User '{user.username}' ({user.name}) logged in as [{role_name}]!\n", flush=True)
+
         # Send login notification email
         send_login_email(to_email=user.email, name=user.name, login_type="Standard")
 

@@ -207,14 +207,27 @@ def save_generated_questions_api():
         raise ValidationError("topic_id is required to link questions to curriculum")
 
     saved_count = 0
+    diff_counts = {"simple": 0, "medium": 0, "hard": 0}
+
     with get_session() as session:
-        # Check topic validity
-        topic_exists = session.execute(
-            text("SELECT id FROM topic_master WHERE id = :t"),
+        # Check topic validity and get full breadcrumbs (Topic -> Chapter -> Subject)
+        topic_info = session.execute(
+            text("""
+                SELECT t.id, t.topic_name, ch.chapter_name, s.subject_name
+                FROM topic_master t
+                JOIN chapter_master ch ON ch.id = t.chapter_id
+                JOIN subject_master s ON s.id = ch.subject_id
+                WHERE t.id = :t
+            """),
             {"t": topic_id}
-        ).scalar()
-        if not topic_exists:
+        ).mappings().fetchone()
+
+        if not topic_info:
             raise ValidationError(f"Topic ID {topic_id} does not exist in topic_master")
+
+        topic_name = topic_info["topic_name"]
+        chapter_name = topic_info["chapter_name"]
+        subject_name = topic_info["subject_name"]
 
         # Type mapping cache
         types_map = {
@@ -236,8 +249,13 @@ def save_generated_questions_api():
             q_diff = (q.get("difficulty") or "medium").lower()
             if q_diff in ["simple", "easy"]:
                 diff_id = diffs_map.get("easy", diffs_map.get("simple", 1))
+                diff_counts["simple"] += 1
+            elif q_diff == "hard":
+                diff_id = diffs_map.get("hard", 3)
+                diff_counts["hard"] += 1
             else:
-                diff_id = diffs_map.get(q_diff, 2)
+                diff_id = diffs_map.get("medium", 2)
+                diff_counts["medium"] += 1
 
             options = q.get("options")
             options_json = json.dumps(options) if options else None
@@ -265,10 +283,21 @@ def save_generated_questions_api():
 
         session.commit()
 
+        # Terminal step logging
+        print(f"\n=======================================================", flush=True)
+        print(f">> [TOPIC INGESTION] Topic: '{topic_name}'", flush=True)
+        print(f">> Chapter: '{chapter_name}' | Subject: '{subject_name}'", flush=True)
+        print(f">> Successfully Ingested {saved_count} Question(s) ({diff_counts['simple']} simple, {diff_counts['medium']} medium, {diff_counts['hard']} hard)", flush=True)
+        print(f">> Saved to Database (question_master) & linked to ArangoDB Knowledge Graph!", flush=True)
+        print(f"=======================================================\n", flush=True)
+
     return success({
         "saved": True,
         "saved_count": saved_count,
-        "message": f"Successfully added {saved_count} questions to Question Bank!"
+        "topic_name": topic_name,
+        "chapter_name": chapter_name,
+        "subject_name": subject_name,
+        "message": f"Successfully ingested {saved_count} questions for '{topic_name}' ({diff_counts['simple']} simple, {diff_counts['medium']} medium, {diff_counts['hard']} hard) into Question Bank!"
     }, 201)
 
 
@@ -280,14 +309,20 @@ def analyze_and_extract_book_api():
     and generates Summary, Concept Relationships, and Important Questions using LLM.
     """
     from helper import document_processor
-    from helper.pdf_question_generator import analyze_book_and_question_bank
+    from helper.pdf_question_generator import analyze_book_and_question_bank, analyze_multiple_books_and_question_banks
     from helper.rag_ingestion import ingest_document
 
-    if "file" not in request.files:
-        raise ValidationError("No file supplied in the request")
-    file = request.files["file"]
-    if not file.filename:
-        raise ValidationError("No file selected")
+    # Support multiple files under 'files' or 'file' key, or single file
+    files = request.files.getlist("files")
+    if not files:
+        if "file" in request.files:
+            files = [request.files["file"]]
+        elif request.files.getlist("file"):
+            files = request.files.getlist("file")
+
+    valid_files = [f for f in files if f and f.filename]
+    if not valid_files:
+        raise ValidationError("No files supplied in the request. Please select at least one PDF/DOC/DOCX file.")
 
     board = request.form.get("board", "CBSE")
     class_grade = request.form.get("classGrade", "Class 10")
@@ -295,74 +330,200 @@ def analyze_and_extract_book_api():
     year_declared = request.form.get("yearDeclared")
     doc_type = request.form.get("documentType", "Textbook")
 
-    file_bytes = file.read()
-    ext = document_processor.validate_upload(file.filename, len(file_bytes))
-    if ext not in ["pdf", "docx", "doc"]:
-        raise ValidationError(f"Invalid file format '.{ext}'. Only PDF, DOC, and DOCX files are supported.")
+    print(f"\n=======================================================", flush=True)
+    print(f">> [BATCH INGESTION] Received {len(valid_files)} file(s)", flush=True)
+    print(f">> Board: {board} | Class: {class_grade} | Subject: {subject} | Year: {year_declared or 'Default'}", flush=True)
+    print(f"=======================================================", flush=True)
 
-    raw_text = document_processor.extract_text(file_bytes, ext)
-
-    # Validate 10-15 years constraint and curriculum suitability
-    document_processor.validate_book_and_question_bank(
-        filename=file.filename,
-        raw_text=raw_text,
-        board=board,
-        class_grade=class_grade,
-        subject=subject,
-        year_declared=year_declared,
-    )
+    ingested_docs = []
 
     with get_session() as session:
-        # Ingest into document repository
-        document = ingest_document(
-            session,
-            filename=file.filename,
-            file_bytes=file_bytes,
-            content_type=file.mimetype or f"application/{ext}",
-            board=board,
-            class_grade=class_grade,
-            subject=subject,
-            runbook_id=None,
-            uploaded_by=g.current_user_id,
-        )
+        for idx, f in enumerate(valid_files, 1):
+            print(f"\n>> [FILE {idx}/{len(valid_files)}] Processing file: {f.filename}...", flush=True)
+            file_bytes = f.read()
+            ext = document_processor.validate_upload(f.filename, len(file_bytes))
+            if ext not in ["pdf", "docx", "doc"]:
+                raise ValidationError(f"Invalid format '.{ext}' in '{f.filename}'. Only PDF, DOC, and DOCX files are supported.")
 
-        # Run pedagogical LLM analysis (Summary, Relationships, Questions)
-        analysis = analyze_book_and_question_bank(
-            session,
-            document_id=document.id,
-            target_board=board,
-            target_class=class_grade,
-            target_subject=subject,
-        )
+            # Save permanent copy to disk (uploads/books/)
+            save_path = document_processor.save_uploaded_file_to_disk(f.filename, file_bytes)
+            print(f"   [SAVED] Stored locally at: {save_path}", flush=True)
 
-        # Automatic ArangoDB Knowledge Graph synchronization
+            # Extract text (with automatic Gemini Vision OCR fallback for scanned pages)
+            print(f"   [EXTRACT] Extracting text & formulas (PyMuPDF / Vision OCR)...", flush=True)
+            raw_text = document_processor.extract_text(file_bytes, ext, board=board, class_grade=class_grade, subject=subject)
+            if not raw_text or not raw_text.strip():
+                raise ValidationError(
+                    f"Could not extract readable text from '{f.filename}'. "
+                    f"Please ensure the file contains valid curriculum content."
+                )
+            print(f"   [OK] Extracted {len(raw_text)} characters from {f.filename}", flush=True)
+
+            # Validate 10-15 years constraint and curriculum suitability
+            document_processor.validate_book_and_question_bank(
+                filename=f.filename,
+                raw_text=raw_text,
+                board=board,
+                class_grade=class_grade,
+                subject=subject,
+                year_declared=year_declared,
+            )
+
+            # Ingest into document repository and vector store
+            print(f"   [VECTOR STORE] Indexing chunks in vector repository...", flush=True)
+            document = ingest_document(
+                session,
+                filename=f.filename,
+                file_bytes=file_bytes,
+                content_type=f.mimetype or f"application/{ext}",
+                board=board,
+                class_grade=class_grade,
+                subject=subject,
+                runbook_id=None,
+                uploaded_by=g.current_user_id,
+            )
+            ingested_docs.append({
+                "id": str(document.id),
+                "filename": str(f.filename)
+            })
+            print(f"   [INDEXED] Document ID: {document.id}", flush=True)
+
+        session.commit()
+
+        doc_ids = [d["id"] for d in ingested_docs]
+        filenames_list = [d["filename"] for d in ingested_docs]
+
+        print(f"\n>> [AI SYNTHESIS] Starting LLM Pedagogical & Question Synthesis across {len(doc_ids)} chapters...", flush=True)
+        # Run unified pedagogical analysis (cross-chapter knowledge graph & questions)
+        if len(doc_ids) == 1:
+            analysis = analyze_book_and_question_bank(
+                session,
+                document_id=doc_ids[0],
+                target_board=board,
+                target_class=class_grade,
+                target_subject=subject,
+            )
+        else:
+            analysis = analyze_multiple_books_and_question_banks(
+                session,
+                document_ids=doc_ids,
+                target_board=board,
+                target_class=class_grade,
+                target_subject=subject,
+            )
+
+        # Automatic ArangoDB Knowledge Graph & MySQL Runbook synchronization
         relationships = analysis.get("relationships", [])
-        if relationships:
-            try:
-                from database import graph_db
+        try:
+            from database import graph_db
+            from model.models import Runbook
+            
+            # 1. First, ensure Board -> Class -> Subject -> Chapter hierarchy is recorded for each chapter in ArangoDB
+            for fn in filenames_list:
+                chapter_title = fn.replace(".pdf", "").replace(".docx", "").replace(".doc", "").replace("_", " ")
+                graph_db.upsert_hierarchical_curriculum_branch(
+                    board=board,
+                    class_grade=class_grade,
+                    subject=subject,
+                    chapter=chapter_title,
+                )
+
+            # 2. Persist pedagogical insights into MySQL runbooks table for every chapter
+            for ch_data in analysis.get("chapters", []):
+                ch_fn = ch_data.get("filename") or filenames_list[0]
+                ch_title = ch_fn.replace(".pdf", "").replace(".docx", "").replace(".doc", "").replace("_", " ")
+                
+                existing_rb = session.query(Runbook).filter(
+                    Runbook.board == board,
+                    Runbook.class_grade == class_grade,
+                    Runbook.subject == subject,
+                    Runbook.chapter_name == ch_title
+                ).first()
+
+                rb_core_concepts = ch_data.get("core_concepts") or analysis.get("core_concepts") or [f"{ch_title} Core Principles"]
+                rb_formulas = ch_data.get("key_formulas_or_rules") or analysis.get("key_formulas_or_rules") or []
+                rb_traps = ch_data.get("common_traps") or analysis.get("common_traps") or []
+                rb_archetypes = [q.get("question") for q in ch_data.get("important_questions", [])[:3]]
+
+                if not existing_rb:
+                    new_rb = Runbook(
+                        board=board,
+                        class_grade=class_grade,
+                        subject=subject,
+                        chapter_name=ch_title,
+                        core_concepts=rb_core_concepts,
+                        key_formulas_or_rules=rb_formulas,
+                        common_traps=rb_traps,
+                        curated_reference_urls=[],
+                        sample_question_archetypes=rb_archetypes,
+                        difficulty_calibration={"simple": 40, "medium": 40, "hard": 20},
+                        status="PUBLISHED",
+                        version=1,
+                        created_by=g.current_user_id,
+                    )
+                    session.add(new_rb)
+                else:
+                    existing_rb.core_concepts = rb_core_concepts
+                    existing_rb.key_formulas_or_rules = rb_formulas
+                    existing_rb.common_traps = rb_traps
+                    existing_rb.sample_question_archetypes = rb_archetypes
+
+            session.commit()
+            print(f">> [MYSQL RUNBOOKS] Persisted pedagogical insights for {len(filenames_list)} chapters into 'runbooks' table.", flush=True)
+
+            if relationships:
+                print(f">> [ARANGODB SYNC] Syncing {len(relationships)} concept relationships to ArangoDB...", flush=True)
                 for rel in relationships:
                     src = rel.get("source_concept") or rel.get("source")
                     tgt = rel.get("target_concept") or rel.get("target")
                     rel_type = rel.get("relationship_type") or "PREREQUISITE"
                     desc = rel.get("description") or ""
                     if src and tgt:
-                        graph_db.upsert_topic_relationship_edge(str(src), str(tgt), str(rel_type), str(desc))
-            except Exception as graph_err:
-                from utils.logger import logger
-                logger.warning(f"ArangoDB automatic relationship sync skipped/failed: {graph_err}")
+                        graph_db.upsert_topic_relationship_edge(
+                            source_topic=str(src),
+                            target_topic=str(tgt),
+                            relationship_type=str(rel_type),
+                            description=str(desc),
+                            board=board,
+                            class_grade=class_grade,
+                            subject=subject,
+                            chapter=filenames_list[0].replace(".pdf", "").replace("_", " ") if filenames_list else None,
+                        )
+                        print(f"   -> Linked: {src} -> {tgt} [{rel_type}]", flush=True)
+                print(f">> [OK] ArangoDB Knowledge Graph updated with full hierarchy!", flush=True)
+        except Exception as graph_err:
+            from utils.logger import logger
+            logger.warning(f"ArangoDB/Runbook automatic relationship sync skipped/failed: {graph_err}")
 
-        return success({
-            "document_id": document.id,
-            "filename": document.filename,
+        q_count = len(analysis.get("important_questions", []))
+        print(f">> [COMPLETE] Synthesized {q_count} questions across {len(doc_ids)} files. Sending response.\n", flush=True)
+
+        # Construct unified response
+        response_payload = {
+            "is_batch": len(doc_ids) > 1,
+            "total_files": len(doc_ids),
+            "document_ids": doc_ids,
+            "filenames": filenames_list,
             "board": board,
             "class_grade": class_grade,
             "subject": subject,
             "document_type": doc_type,
             "summary": analysis.get("summary"),
+            "core_concepts": analysis.get("core_concepts", []),
+            "key_formulas_or_rules": analysis.get("key_formulas_or_rules", []),
+            "common_traps": analysis.get("common_traps", []),
             "relationships": relationships,
             "important_questions": analysis.get("important_questions", []),
-            "questions_count": analysis.get("questions_count", 0),
-        }, 201)
+            "questions_count": analysis.get("questions_count", q_count),
+            "chapters": analysis.get("chapters", []),
+        }
+
+        # Also maintain single-doc legacy compatibility fields if only 1 file
+        if len(doc_ids) == 1:
+            response_payload["document_id"] = doc_ids[0]
+            response_payload["filename"] = filenames_list[0]
+
+        return success(response_payload, 201)
 
 
 

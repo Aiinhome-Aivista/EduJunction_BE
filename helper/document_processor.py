@@ -1,12 +1,18 @@
 """Text extraction + chunking for uploaded curriculum documents.
 Supports PDF (.pdf), Word (.docx, .doc), Rich Text (.rtf), Plain Text (.txt), and CSV (.csv).
 """
+import os
 import csv
 import io
 import re
 
+try:
+    import pymupdf as fitz  # PyMuPDF modern import
+except ImportError:
+    import fitz  # Legacy fallback
 from pypdf import PdfReader
 from docx import Document as DocxDocument
+from utils.logger import logger
 
 try:
     import importlib
@@ -113,11 +119,68 @@ def extract_doc_text(file_bytes: bytes) -> str:
         return file_bytes.decode("utf-8", errors="ignore")
 
 
-def extract_text(file_bytes: bytes, ext: str) -> str:
-    """Extracts text from uploaded files based on extension."""
+UPLOAD_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "uploads", "books")
+
+
+def save_uploaded_file_to_disk(filename: str, file_bytes: bytes) -> str:
+    """Saves uploaded book/question bank file to local uploads/books directory for permanent storage."""
+    try:
+        os.makedirs(UPLOAD_DIR, exist_ok=True)
+        safe_name = f"{re.sub(r'[^A-Za-z0-9_.-]', '_', filename)}"
+        filepath = os.path.join(UPLOAD_DIR, safe_name)
+        with open(filepath, "wb") as f:
+            f.write(file_bytes)
+        logger.info(f"Saved uploaded file to disk: {filepath}")
+        return filepath
+    except Exception as e:
+        logger.warning(f"Failed to save copy of file to disk: {e}")
+        return ""
+
+
+def extract_text(
+    file_bytes: bytes,
+    ext: str,
+    board: str = "General",
+    class_grade: str = "Standard",
+    subject: str = "General"
+) -> str:
+    """Extracts text from uploaded files based on extension with Vision OCR fallback for scanned PDFs."""
     if ext == "pdf":
-        reader = PdfReader(io.BytesIO(file_bytes))
-        return "\n".join(page.extract_text() or "" for page in reader.pages)
+        extracted_pages = []
+        # 1. Primary: PyMuPDF (fitz) - high accuracy across modern and legacy PDFs
+        try:
+            doc = fitz.open(stream=file_bytes, filetype="pdf")
+            for page in doc:
+                text = page.get_text()
+                if text and text.strip():
+                    extracted_pages.append(text.strip())
+            doc.close()
+            if extracted_pages and len(" ".join(extracted_pages).strip()) > 80:
+                return "\n\n".join(extracted_pages)
+        except Exception as err:
+            logger.warning(f"PyMuPDF extraction error: {err}")
+
+        # 2. Secondary fallback: pypdf
+        try:
+            reader = PdfReader(io.BytesIO(file_bytes))
+            pypdf_pages = [page.extract_text() or "" for page in reader.pages]
+            filtered = [p.strip() for p in pypdf_pages if p.strip()]
+            if filtered and len(" ".join(filtered).strip()) > 80:
+                return "\n\n".join(filtered)
+        except Exception as err:
+            logger.warning(f"pypdf extraction error: {err}")
+
+        # 3. Third fallback: Multimodal Gemini Vision OCR for scanned image PDFs / photos
+        logger.info(f"Digital text extraction yielded < 80 characters. Falling back to Gemini Vision OCR...")
+        try:
+            from helper.ocr_vision_engine import extract_scanned_pdf_with_vision
+            vision_text = extract_scanned_pdf_with_vision(file_bytes, board=board, class_grade=class_grade, subject=subject)
+            if vision_text and vision_text.strip():
+                return vision_text.strip()
+        except Exception as vision_err:
+            logger.error(f"Gemini Vision OCR fallback failed: {vision_err}")
+
+        return ""
     
     if ext == "docx":
         doc = DocxDocument(io.BytesIO(file_bytes))
@@ -199,20 +262,28 @@ CLASS_PATTERNS = {
 }
 
 SUBJECT_PATTERNS = {
-    "Mathematics": [r"\bmathematics\b", r"\bmaths\b", r"\bmath\b", r"\balgebra\b", r"\bcalculus\b", r"\bgeometry\b", r"\btrigonometry\b"],
-    "Physics": [r"\bphysics\b", r"\bkinematics\b", r"\belectrodynamics\b", r"\bthermodynamics\b", r"\boptics\b"],
-    "Chemistry": [r"\bchemistry\b", r"\borganic\s+chemistry\b", r"\binorganic\s+chemistry\b", r"\bchemical\s+bonding\b"],
-    "Biology": [r"\bbiology\b", r"\bzoology\b", r"\bbotany\b", r"\bgenetics\b", r"\bhuman\s+anatomy\b"],
-    "Computer Science": [r"\bcomputer\s+science\b", r"\binformatics\b", r"\bpython\b", r"\bdata\s+structure\b", r"\bcoding\b"],
-    "English": [r"\benglish\b", r"\bgrammar\b", r"\bliterature\b", r"\bprose\b", r"\bpoetry\b"],
-    "Social Studies": [r"\bsocial\s+science\b", r"\bsocial\s+studies\b", r"\bhistory\b", r"\bgeography\b", r"\bcivics\b", r"\beconomics\b"],
+    "Mathematics": [
+        r"\bmathematics\b", r"\bmaths\b", r"\bmath\b", r"\balgebra\b", r"\bcalculus\b",
+        r"\bgeometry\b", r"\btrigonometry\b", r"\breal\s+numbers\b", r"\bpolynomials?\b",
+        r"\bquadratic\b", r"\barithmetic\b", r"\bstatistics\b", r"\bprobability\b"
+    ],
+    "Science": [
+        r"\bscience\b", r"\bscientific\b", r"\bchemical\s+reactions?\b", r"\bchemistry\b",
+        r"\bphysics\b", r"\bbiology\b", r"\bacids?,\s*bases?\b", r"\bmetals?\b",
+        r"\blife\s+processes\b", r"\blight\b", r"\belectricity\b", r"\bmatter\b"
+    ],
+    "Physics": [r"\bphysics\b", r"\bkinematics\b", r"\belectrodynamics\b", r"\bthermodynamics\b", r"\boptics\b", r"\bforce\b", r"\bmotion\b"],
+    "Chemistry": [r"\bchemistry\b", r"\bchemical\b", r"\borganic\s+chemistry\b", r"\binorganic\s+chemistry\b", r"\bchemical\s+bonding\b", r"\breactions?\b"],
+    "Biology": [r"\bbiology\b", r"\bzoology\b", r"\bbotany\b", r"\bgenetics\b", r"\bhuman\s+anatomy\b", r"\bphotosynthesis\b", r"\bcells?\b"],
+    "Computer Science": [r"\bcomputer\s+science\b", r"\binformatics\b", r"\bpython\b", r"\bdata\s+structure\b", r"\bcoding\b", r"\bprogramming\b"],
+    "English": [r"\benglish\s+language\b", r"\benglish\s+literature\b", r"\benglish\s+grammar\b", r"\bfirst\s+flight\b", r"\bfootprints\s+without\s+feet\b", r"\bbeehive\b", r"\bmoments\b", r"\bhoneydew\b"],
+    "Social Studies": [r"\bsocial\s+science\b", r"\bsocial\s+studies\b", r"\bhistory\b", r"\bgeography\b", r"\bcivics\b", r"\beconomics\b", r"\bdemocratic\s+politics\b"],
 }
 
 
 def detect_curriculum_metadata(filename: str, sample_text: str = "") -> dict:
     """Detects Board, ClassGrade, and Subject from filename and header text."""
     combined = f"{filename} {sample_text}"
-    # Replace underscores, hyphens, and dots with spaces so word boundary regex matches correctly
     normalized = re.sub(r"[-_.]", " ", combined).lower()
     
     detected_board = None
@@ -255,41 +326,26 @@ def validate_curriculum_metadata(
     if not combined:
         return
 
-    # 1. Validate Board
+    # 1. Validate Board (lenient warning)
     if target_board:
         t_board = target_board.upper().strip()
         t_patterns = BOARD_PATTERNS.get(t_board, [])
         t_matched = any(re.search(p, combined, re.IGNORECASE) for p in t_patterns)
 
-        # Check council/board compatibility
         if not t_matched:
             if t_board in ["CBSE", "NCERT"] and any(re.search(p, combined, re.IGNORECASE) for p in BOARD_PATTERNS.get("NCERT", []) + BOARD_PATTERNS.get("CBSE", [])):
                 t_matched = True
             elif t_board in ["ICSE", "ISC"] and any(re.search(p, combined, re.IGNORECASE) for p in BOARD_PATTERNS.get("ICSE", []) + BOARD_PATTERNS.get("ISC", [])):
                 t_matched = True
 
-        # If target board did not match, check if another distinct board was explicitly detected
         if not t_matched:
-            detected_other_board = None
-            for check_str in [norm_fn, norm_sample[:1500]]:
-                for b_name, patterns in BOARD_PATTERNS.items():
-                    if b_name == t_board:
-                        continue
-                    if (t_board in ["CBSE", "NCERT"] and b_name in ["CBSE", "NCERT"]):
-                        continue
-                    if (t_board in ["ICSE", "ISC"] and b_name in ["ICSE", "ISC"]):
-                        continue
-                    if any(re.search(p, check_str, re.IGNORECASE) for p in patterns):
-                        detected_other_board = b_name
-                        break
-                if detected_other_board:
+            # Check filename specifically for board clash
+            for b_name, patterns in BOARD_PATTERNS.items():
+                if b_name == t_board or (t_board in ["CBSE", "NCERT"] and b_name in ["CBSE", "NCERT"]):
+                    continue
+                if any(re.search(p, norm_fn, re.IGNORECASE) for p in patterns):
+                    logger.warning(f"Board check: Filename '{filename}' suggests '{b_name}' while '{target_board}' was selected.")
                     break
-
-            if detected_other_board:
-                raise ValidationError(
-                    f"Board Mismatch: Document content/filename indicates '{detected_other_board}', "
-                    f"but '{target_board}' was selected in the dropdown. Please select the matching Board."
-                )
 
     # 2. Validate Class
     if target_class:
@@ -298,22 +354,12 @@ def validate_curriculum_metadata(
         t_matched = any(re.search(p, combined, re.IGNORECASE) for p in t_patterns)
 
         if not t_matched:
-            detected_other_class = None
-            for check_str in [norm_fn, norm_sample[:1500]]:
-                for c_name, patterns in CLASS_PATTERNS.items():
-                    if c_name.lower().replace(" ", "") == t_class.lower().replace(" ", ""):
-                        continue
-                    if any(re.search(p, check_str, re.IGNORECASE) for p in patterns):
-                        detected_other_class = c_name
-                        break
-                if detected_other_class:
+            for c_name, patterns in CLASS_PATTERNS.items():
+                if c_name.lower().replace(" ", "") == t_class.lower().replace(" ", ""):
+                    continue
+                if any(re.search(p, norm_fn, re.IGNORECASE) for p in patterns):
+                    logger.warning(f"Class check: Filename '{filename}' suggests '{c_name}' while '{target_class}' was selected.")
                     break
-
-            if detected_other_class:
-                raise ValidationError(
-                    f"Class Mismatch: Document content/filename indicates '{detected_other_class}', "
-                    f"but '{target_class}' was selected in the dropdown. Please select '{detected_other_class}'."
-                )
 
     # 3. Validate Subject
     if target_subject:
@@ -321,29 +367,13 @@ def validate_curriculum_metadata(
         t_patterns = SUBJECT_PATTERNS.get(t_sub, [])
         t_matched = any(re.search(p, combined, re.IGNORECASE) for p in t_patterns)
 
-        if not t_matched and t_sub.lower() == "science":
-            if any(re.search(p, combined, re.IGNORECASE) for p in SUBJECT_PATTERNS.get("Physics", []) + SUBJECT_PATTERNS.get("Chemistry", []) + SUBJECT_PATTERNS.get("Biology", [])):
+        if not t_matched and t_sub.lower() in ["science", "physics", "chemistry", "biology"]:
+            science_all = SUBJECT_PATTERNS.get("Science", []) + SUBJECT_PATTERNS.get("Physics", []) + SUBJECT_PATTERNS.get("Chemistry", []) + SUBJECT_PATTERNS.get("Biology", [])
+            if any(re.search(p, combined, re.IGNORECASE) for p in science_all):
                 t_matched = True
 
         if not t_matched:
-            detected_other_subject = None
-            for check_str in [norm_fn, norm_sample[:1500]]:
-                for s_name, patterns in SUBJECT_PATTERNS.items():
-                    if s_name.lower() == t_sub.lower():
-                        continue
-                    if t_sub.lower() == "science" and s_name in ["Physics", "Chemistry", "Biology"]:
-                        continue
-                    if any(re.search(p, check_str, re.IGNORECASE) for p in patterns):
-                        detected_other_subject = s_name
-                        break
-                if detected_other_subject:
-                    break
-
-            if detected_other_subject:
-                raise ValidationError(
-                    f"Subject Mismatch: Document content/filename indicates '{detected_other_subject}', "
-                    f"but '{target_subject}' was selected in the dropdown. Please select '{detected_other_subject}'."
-                )
+            logger.info(f"Custom curriculum subject '{target_subject}' accepted for '{filename}'.")
 
 
 def validate_book_and_question_bank(

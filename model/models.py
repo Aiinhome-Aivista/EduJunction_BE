@@ -222,7 +222,7 @@ class Question(Base):
     type = Column(String(50), nullable=False, default="mcq")
     question_text = Column(Text, nullable=False)
     options = Column(JSON, nullable=True)
-    correct_answer = Column(String(500), nullable=False)
+    correct_answer = Column(Text, nullable=False)
     explanation = Column(Text, nullable=False)
     difficulty = Column(Enum("simple", "medium", "hard", name="question_difficulty"), nullable=False)
     marks = Column(Integer, default=1)

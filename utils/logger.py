@@ -14,10 +14,16 @@ if not logger.handlers:
 
 
 def log_request(method: str, path: str, status: int, duration_ms: float, user_id: str | None = None):
+    # Live unbuffered terminal output for every incoming/outgoing API request
+    status_tag = f"[{status}]"
+    user_tag = f" user={user_id}" if user_id else ""
+    print(f">> [HTTP {method}] {path} -> {status_tag} ({duration_ms:.1f}ms){user_tag}", flush=True)
     logger.info(f"{method} {path} status={status} duration_ms={duration_ms:.1f} user={user_id or '-'}")
 
 
 def log_ai_call(operation: str, duration_ms: float, success: bool, fallback_used: bool = False):
+    print(f">> [AI CALL] op={operation} ({duration_ms:.1f}ms) success={success}", flush=True)
     logger.info(
         f"ai_call op={operation} duration_ms={duration_ms:.1f} success={success} fallback={fallback_used}"
     )
+

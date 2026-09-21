@@ -9,6 +9,7 @@ from database import vector_db
 from helper import document_processor, embedding_engine
 from model.mistral_client import MistralUnavailableError
 from model.models import Document, DocumentChunk
+from utils.errors import ValidationError
 from utils.logger import logger
 
 
@@ -56,7 +57,10 @@ def ingest_document(
 
         if not chunks:
             document.status = "FAILED"
-            return document
+            raise ValidationError(
+                f"Could not extract readable text from '{filename}'. "
+                f"Please ensure the file contains selectable digital text (not a scanned image/photo without OCR) and is not empty."
+            )
 
         if vector_db.is_enabled():
             embeddings = embedding_engine.embed(chunks)
