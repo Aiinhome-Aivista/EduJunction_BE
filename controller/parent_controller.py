@@ -70,7 +70,9 @@ def get_curriculum_options():
             except Exception as e:
                 pass
 
-        clean_class = class_grade.replace("Class ", "").strip() if class_grade else ""
+        clean_board = board.strip().lower() if board else ""
+        clean_class = class_grade.replace("Class ", "").replace("class ", "").strip() if class_grade else ""
+        full_class_name = f"Class {clean_class}" if clean_class and not clean_class.lower().startswith("class") else class_grade.strip()
 
         sql = text("""
             SELECT 
@@ -85,25 +87,22 @@ def get_curriculum_options():
             WHERE s.is_active = 1
               AND (
                   :board = ''
-                  OR LOWER(TRIM(b.board_name)) = LOWER(TRIM(:board))
-                  OR LOWER(TRIM(b.board_name)) LIKE LOWER(TRIM(:board_like))
-                  OR LOWER(TRIM(:board)) LIKE CONCAT('%', LOWER(TRIM(b.board_name)), '%')
+                  OR LOWER(TRIM(b.board_name)) = :clean_board
               )
               AND (
                   :class_grade = ''
-                  OR LOWER(TRIM(c.class_name)) = LOWER(TRIM(:class_grade))
-                  OR LOWER(TRIM(c.class_name)) LIKE LOWER(TRIM(:class_like))
-                  OR LOWER(TRIM(c.class_name)) = LOWER(TRIM(:clean_class))
-                  OR LOWER(TRIM(:class_grade)) LIKE CONCAT('%', LOWER(TRIM(c.class_name)), '%')
+                  OR LOWER(TRIM(c.class_name)) = LOWER(:full_class_name)
+                  OR LOWER(TRIM(c.class_name)) = LOWER(:clean_class)
+                  OR CAST(c.id AS CHAR) = :clean_class
               )
             ORDER BY s.subject_name, ch.id, t.id
         """)
 
         params = {
             "board": board,
-            "board_like": f"%{board}%" if board else "",
+            "clean_board": clean_board,
             "class_grade": class_grade,
-            "class_like": f"%{clean_class}%" if clean_class else "",
+            "full_class_name": full_class_name,
             "clean_class": clean_class,
         }
 
@@ -122,9 +121,9 @@ def get_curriculum_options():
                 LEFT JOIN topic_master t ON t.chapter_id = ch.id AND t.is_active = 1
                 WHERE s.is_active = 1
                   AND (
-                      LOWER(TRIM(c.class_name)) = LOWER(TRIM(:class_grade))
-                      OR LOWER(TRIM(c.class_name)) LIKE LOWER(TRIM(:class_like))
-                      OR LOWER(TRIM(c.class_name)) = LOWER(TRIM(:clean_class))
+                      LOWER(TRIM(c.class_name)) = LOWER(:full_class_name)
+                      OR LOWER(TRIM(c.class_name)) = LOWER(:clean_class)
+                      OR CAST(c.id AS CHAR) = :clean_class
                   )
                 ORDER BY s.subject_name, ch.id, t.id
             """)
