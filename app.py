@@ -88,9 +88,10 @@ def create_app() -> Flask:
     def api_health():
         return health_controller.health()
 
-    # ============================================================
-    # 2. Authentication & Roles Endpoints
-    # ============================================================
+    @app.route("/api/v1/auth/captcha", methods=["GET"])
+    def api_auth_captcha():
+        return auth_controller.get_captcha()
+
     @app.route("/api/v1/auth/register", methods=["POST"])
     def api_auth_register():
         return auth_controller.register()
