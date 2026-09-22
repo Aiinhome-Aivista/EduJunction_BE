@@ -11,7 +11,7 @@ import json
 from datetime import datetime, timedelta
 from flask import request, g
 import requests
-from sqlalchemy import or_, desc
+from sqlalchemy import and_, or_, desc
 
 from database.dbConnection import get_session
 from middleware.authMiddleware import token_required
@@ -131,13 +131,11 @@ def create_subject_order():
                 target_student = assert_owns_student(session, student_id, user_id)
             else:
                 # Fallback to first registered child if not explicitly passed
-                target_student = session.query(Student).filter(Student.parent_user_id == user_id).first()
+                target_student = session.query(Student).filter(Student.parent_id == user_id).first()
                 if target_student:
                     student_id = target_student.id
         elif role == "STUDENT":
-            target_student = session.query(Student).filter(
-                or_(Student.user_id == user_id, Student.id == user_id)
-            ).first()
+            target_student = session.query(Student).filter(Student.id == user_id).first()
             if target_student:
                 student_id = target_student.id
 
@@ -265,17 +263,17 @@ def verify_subject_payment():
         # Resolve target student if not passed
         if not student_id:
             if role == "PARENT":
-                first_child = session.query(Student).filter(Student.parent_user_id == user_id).first()
+                first_child = session.query(Student).filter(Student.parent_id == user_id).first()
                 if first_child:
                     student_id = first_child.id
             elif role == "STUDENT":
-                stu = session.query(Student).filter(or_(Student.user_id == user_id, Student.id == user_id)).first()
+                stu = session.query(Student).filter(Student.id == user_id).first()
                 if stu:
                     student_id = stu.id
 
         # Check existing active count for this subject to assign distinct Set numbers
         existing_count = session.query(UserSubscription).filter(
-            UserSubscription.user_id == user_id,
+            or_(UserSubscription.user_id == user_id, UserSubscription.student_id == student_id),
             UserSubscription.board == board,
             UserSubscription.class_grade == class_grade,
             UserSubscription.subject == subject,
@@ -404,10 +402,8 @@ def get_user_subject_subscriptions():
 
     with get_session() as session:
         if role == "STUDENT":
-            # Find the student entity for this user
-            stu = session.query(Student).filter(
-                or_(Student.user_id == user_id, Student.id == user_id)
-            ).first()
+            # Student login: sees both papers assigned by parent and papers purchased by student themselves
+            stu = session.query(Student).filter(Student.id == user_id).first()
             stu_id = stu.id if stu else user_id
 
             subs = session.query(UserSubscription).filter(
@@ -417,20 +413,28 @@ def get_user_subject_subscriptions():
                     UserSubscription.student_id == user_id
                 ),
                 UserSubscription.status == "ACTIVE"
-            ).order_by(UserSubscription.created_at.desc()).all()
+            ).order_by(UserSubscription.id.desc()).all()
         else:
-            # Parent or Admin: Fetch all subscriptions created by this user
-            query = session.query(UserSubscription).filter(
-                UserSubscription.user_id == user_id,
-                UserSubscription.status == "ACTIVE"
-            )
+            # Parent login: ONLY sees papers purchased by the parent (user_id == current_parent_user_id)
             if req_student_id:
                 try:
                     s_id_int = int(req_student_id)
-                    query = query.filter(UserSubscription.student_id == s_id_int)
+                    subs = session.query(UserSubscription).filter(
+                        UserSubscription.user_id == user_id,
+                        UserSubscription.student_id == s_id_int,
+                        UserSubscription.status == "ACTIVE"
+                    ).order_by(UserSubscription.id.desc()).all()
                 except Exception:
-                    pass
-            subs = query.order_by(UserSubscription.created_at.desc()).all()
+                    subs = session.query(UserSubscription).filter(
+                        UserSubscription.user_id == user_id,
+                        UserSubscription.status == "ACTIVE"
+                    ).order_by(UserSubscription.id.desc()).all()
+            else:
+                # All papers unlocked by this parent
+                subs = session.query(UserSubscription).filter(
+                    UserSubscription.user_id == user_id,
+                    UserSubscription.status == "ACTIVE"
+                ).order_by(UserSubscription.id.desc()).all()
 
         results = []
         for s in subs:
@@ -443,6 +447,20 @@ def get_user_subject_subscriptions():
                 student_avatar = (s.student.avatar if hasattr(s.student, 'avatar') else '') or ''
             elif s.user and s.user.name:
                 student_name = s.user.name
+
+            # Determine who unlocked this paper
+            payer_user = s.user
+            payer_role = "PARENT"
+            payer_name = "Parent"
+            if payer_user:
+                payer_name = payer_user.name or "Parent"
+                if payer_user.role:
+                    payer_role = getattr(payer_user.role, 'name', 'PARENT').upper()
+
+            # Is it unlocked by the student themselves or by the parent?
+            is_self = (s.student_id == s.user_id) or (payer_role == "STUDENT")
+            unlocked_by = "SELF" if is_self else "PARENT"
+            unlocked_by_name = payer_name if not is_self else (student_name or "Me")
 
             results.append({
                 "id": s.id,
@@ -464,6 +482,10 @@ def get_user_subject_subscriptions():
                 "accuracyPercentage": float(s.accuracy_percentage) if s.accuracy_percentage is not None else None,
                 "submittedAt": s.submitted_at.isoformat() if s.submitted_at else None,
                 "createdAt": s.created_at.isoformat() if s.created_at else None,
+                "unlockedBy": unlocked_by,
+                "unlockedByName": unlocked_by_name,
+                "unlockedByRole": payer_role,
+                "buyerUserId": s.user_id,
             })
 
         return success({"subscriptions": results})
@@ -822,7 +844,11 @@ def _evaluate_single_subjective(student_ans: str, correct_ans: str, explanation:
             "missedKeywords": ["Core concept explanation and steps"]
         }
 
-    stopwords = {"a", "an", "the", "is", "are", "was", "were", "in", "on", "at", "of", "to", "for", "and", "or", "by", "with", "from", "it", "that", "this", "which", "be", "as", "into"}
+    stopwords = {
+        "a", "an", "the", "is", "are", "was", "were", "in", "on", "at", "of", "to", "for",
+        "and", "or", "by", "with", "from", "it", "that", "this", "which", "be", "as", "into",
+        "has", "have", "had", "will", "shall", "can", "could", "would", "should", "not", "but"
+    }
     def tokenize(text: str) -> set:
         cleaned = re.sub(r"[^a-zA-Z0-9\s]", " ", (text or "").lower())
         return {t for t in cleaned.split() if len(t) > 2 and t not in stopwords}
@@ -833,18 +859,25 @@ def _evaluate_single_subjective(student_ans: str, correct_ans: str, explanation:
     missed = target_tokens.difference(student_tokens)
 
     overlap_ratio = len(matched) / max(len(target_tokens), 1)
+    matched_count = len(matched)
 
-    if overlap_ratio >= 0.40 or len(student_tokens) >= 12:
+    if not student_tokens or matched_count == 0:
+        marks = 0.0
+        feedback = "Answer does not match the key scientific/mathematical concepts and required steps."
+    elif overlap_ratio >= 0.35 and matched_count >= 5:
         marks = max_marks
         feedback = "Outstanding response! Accurate conceptual understanding, terminology, and clear steps."
-    elif overlap_ratio >= 0.22 or len(student_tokens) >= 7:
+    elif (overlap_ratio >= 0.20 and matched_count >= 3) or matched_count >= 4:
         marks = round(max_marks * 0.75, 1)
         feedback = "Good answer! Covers core concepts with minor omissions in steps or terminology."
-    elif overlap_ratio >= 0.10 or len(student_tokens) >= 3:
+    elif (overlap_ratio >= 0.10 and matched_count >= 2) or matched_count >= 2:
         marks = round(max_marks * 0.50, 1)
         feedback = "Partial credit awarded for identifying relevant principles and basic definitions."
+    elif matched_count >= 1:
+        marks = round(max_marks * 0.25, 1)
+        feedback = "Attempted with minimal relevant keywords. Lacks complete explanation and derivation steps."
     else:
-        marks = round(max_marks * 0.25, 1) if len(student_ans.strip()) > 10 else 0.0
+        marks = 0.0
         feedback = "Attempted, but lacks key scientific/mathematical terminology and complete derivation steps."
 
     return {
@@ -861,25 +894,22 @@ def _evaluate_single_mcq(student_ans: str, correct_ans: str, options: list, mark
     student_clean = (student_ans or "").strip()
     correct_clean = (correct_ans or "A").strip()
 
-    # Extract letter
-    m_s = re.match(r"^(?:option\s+)?\(?([A-Da-d])(?:\)|\.|\:|\-|\s|$)", student_clean, re.IGNORECASE)
-    student_letter = m_s.group(1).upper() if m_s else ""
+    # Helper function to extract option letter ('A', 'B', 'C', 'D') from string
+    def extract_letter(text: str) -> str:
+        if not text:
+            return ""
+        # Match "Option A", "(A)", "A.", "A)", "A - ", or standalone "A"
+        m = re.match(r"^(?:option\s+)?\(?([A-Da-d])(?:\)|\.|\:|\-|\s|$)", text.strip(), re.IGNORECASE)
+        if m:
+            return m.group(1).upper()
+        if len(text.strip()) == 1 and text.strip().upper() in ("A", "B", "C", "D"):
+            return text.strip().upper()
+        return ""
 
-    m_c = re.match(r"^(?:option\s+)?\(?([A-Da-d])(?:\)|\.|\:|\-|\s|$)", correct_clean, re.IGNORECASE)
-    correct_letter = m_c.group(1).upper() if m_c else correct_clean.upper()
-
-    is_correct = False
-    if student_letter and correct_letter and student_letter == correct_letter:
-        is_correct = True
-    elif student_clean.lower() == correct_clean.lower():
-        is_correct = True
-    elif options:
-        for idx, opt in enumerate(options):
-            opt_str = str(opt).strip()
-            opt_let = chr(65 + idx)
-            if opt_let == correct_letter and (student_clean.lower() in opt_str.lower() or opt_str.lower() in student_clean.lower()):
-                is_correct = True
-                break
+    student_letter = extract_letter(student_clean)
+    correct_letter = extract_letter(correct_clean)
+    if not correct_letter:
+        correct_letter = "A"
 
     if not student_clean:
         return {
@@ -887,6 +917,36 @@ def _evaluate_single_mcq(student_ans: str, correct_ans: str, options: list, mark
             "isCorrect": False,
             "feedback": f"Not attempted. The correct option is ({correct_letter}).",
         }
+
+    is_correct = False
+
+    if student_letter:
+        # Strict option letter comparison
+        is_correct = (student_letter == correct_letter)
+    else:
+        # Student entered full text rather than an option letter
+        def clean_opt_text(s: str) -> str:
+            s = re.sub(r"^(?:option\s+)?\(?[A-Da-d]\)?[\.\:\-\s]*", "", s.strip(), flags=re.IGNORECASE)
+            return re.sub(r"[^a-zA-Z0-9]", "", s).lower()
+
+        student_norm = clean_opt_text(student_clean)
+        matched_student_letter = ""
+
+        if options and len(student_norm) >= 3:
+            for idx, opt in enumerate(options):
+                opt_str = str(opt).strip()
+                opt_norm = clean_opt_text(opt_str)
+                if opt_norm and (student_norm == opt_norm or (len(student_norm) > 10 and (student_norm in opt_norm or opt_norm in student_norm))):
+                    matched_student_letter = chr(65 + idx)
+                    break
+
+        if matched_student_letter:
+            is_correct = (matched_student_letter == correct_letter)
+            student_letter = matched_student_letter
+        else:
+            is_correct = False
+
+    display_student = f"Option ({student_letter})" if student_letter else f"'{student_clean}'"
 
     if is_correct:
         return {
@@ -898,7 +958,7 @@ def _evaluate_single_mcq(student_ans: str, correct_ans: str, options: list, mark
         return {
             "marksAwarded": 0.0,
             "isCorrect": False,
-            "feedback": f"Incorrect. You selected '{student_clean}', but the correct option is ({correct_letter}).",
+            "feedback": f"Incorrect. You selected {display_student}, but the correct option is ({correct_letter}).",
         }
 
 
@@ -918,7 +978,12 @@ def preview_subject_model_paper(subscription_id: int):
             raise ForbiddenError("This model question paper has not been purchased yet. Please complete checkout to unlock.")
 
         role = getattr(g, "current_user_role", "").upper()
-        if sub.user_id != user_id and sub.student_id != user_id and role not in ("ADMIN", "SUPERADMIN", "SUPER_ADMIN"):
+        is_allowed = (sub.user_id == user_id or sub.student_id == user_id or role in ("ADMIN", "SUPERADMIN", "SUPER_ADMIN"))
+        if not is_allowed and sub.student_id:
+            stu = session.get(Student, sub.student_id)
+            if stu and stu.parent_id == user_id:
+                is_allowed = True
+        if not is_allowed:
             raise ForbiddenError("You do not have permission to view this question paper.")
 
         set_num = 1
@@ -937,6 +1002,12 @@ def preview_subject_model_paper(subscription_id: int):
 
         # Standardized sections without answers for test taking
         sanitized_sections = _normalize_paper_sections(raw_paper, include_answers=False)
+
+        # If student starts test and status is UNATTEMPTED, update to IN_PROGRESS
+        is_view_mode = (request.args.get("mode") == "view") or (role == "PARENT" and sub.user_id == user_id and sub.student_id != user_id)
+        if not is_view_mode and (sub.exam_status is None or sub.exam_status in ("UNATTEMPTED", "")):
+            sub.exam_status = "IN_PROGRESS"
+            session.commit()
 
         return success({
             "subscriptionId": sub.id,
@@ -959,7 +1030,15 @@ def evaluate_subject_model_paper(subscription_id: int):
     from helper.model_paper_document_generator import get_model_paper_questions
 
     user_id = g.current_user_id
-    body = request.get_json(silent=True) or {}
+    body = request.get_json(silent=True)
+    if not body and request.data:
+        try:
+            body = json.loads(request.data.decode("utf-8"))
+        except Exception:
+            body = {}
+    if not body:
+        body = {}
+
     student_answers = body.get("answers", {})  # e.g. {"s0_q0": "A", "s1_q0": "Text..."}
     time_spent = body.get("timeSpentSeconds", 0)
 
@@ -972,7 +1051,12 @@ def evaluate_subject_model_paper(subscription_id: int):
             raise ForbiddenError("This model question paper is not active.")
 
         role = getattr(g, "current_user_role", "").upper()
-        if sub.user_id != user_id and sub.student_id != user_id and role not in ("ADMIN", "SUPERADMIN", "SUPER_ADMIN"):
+        is_allowed = (sub.user_id == user_id or sub.student_id == user_id or role in ("ADMIN", "SUPERADMIN", "SUPER_ADMIN"))
+        if not is_allowed and sub.student_id:
+            stu = session.get(Student, sub.student_id)
+            if stu and stu.parent_id == user_id:
+                is_allowed = True
+        if not is_allowed:
             raise ForbiddenError("You do not have permission to submit answers for this paper.")
 
         set_num = 1
@@ -1026,7 +1110,14 @@ def evaluate_subject_model_paper(subscription_id: int):
                     attempted_count += 1
                     sec_attempted += 1
 
-                if q_type == "mcq" or "mcq" in q_type:
+                is_mcq_type = (
+                    q_type == "mcq"
+                    or "mcq" in q_type
+                    or q_type in ("assertion_reason", "assertion-reason", "ar", "assertion")
+                    or bool(q.get("options"))
+                )
+
+                if is_mcq_type:
                     res = _evaluate_single_mcq(
                         student_ans=s_ans,
                         correct_ans=q.get("correct_answer", "A"),
@@ -1239,7 +1330,12 @@ def download_subject_model_paper(subscription_id: int):
 
         # Allow owner, linked student or admin
         role = getattr(g, "current_user_role", "").upper()
-        if sub.user_id != user_id and sub.student_id != user_id and role not in ("ADMIN", "SUPERADMIN", "SUPER_ADMIN"):
+        is_allowed = (sub.user_id == user_id or sub.student_id == user_id or role in ("ADMIN", "SUPERADMIN", "SUPER_ADMIN"))
+        if not is_allowed and sub.student_id:
+            stu = session.get(Student, sub.student_id)
+            if stu and stu.parent_id == user_id:
+                is_allowed = True
+        if not is_allowed:
             raise ForbiddenError("You do not have permission to download this question paper.")
 
         # Extract set number
