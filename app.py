@@ -283,6 +283,10 @@ def create_app() -> Flask:
     def api_exam_submit(exam_id):
         return exam_controller.submit_exam(exam_id)
 
+    @app.route("/api/v1/exams/submissions/<submission_id>", methods=["GET"])
+    def api_exam_get_submission(submission_id):
+        return exam_controller.get_submission(submission_id)
+
     # ============================================================
     # 7. Gamification & Leaderboard Endpoints
     # ============================================================

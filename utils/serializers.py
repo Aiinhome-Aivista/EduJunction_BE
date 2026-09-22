@@ -27,7 +27,27 @@ def student_to_child_account(student: Student, badge_ids: list[str] | None = Non
     }
 
 
-def submission_to_dict(submission: ExamSubmission) -> dict:
+def submission_to_dict(submission: ExamSubmission, include_details: bool = True) -> dict:
+    base_dict = {
+        "id": submission.id,
+        "examId": submission.exam_id,
+        "studentId": submission.student_id,
+        "studentName": submission.student.user.name if (submission.student and submission.student.user) else "Student",
+        "examTitle": submission.exam.title if submission.exam else "10-Mark Diagnostic Exam",
+        "board": submission.exam.board if submission.exam else "CBSE",
+        "classGrade": submission.exam.class_grade if submission.exam else "Class 10",
+        "subject": submission.exam.subject if submission.exam else "Mathematics",
+        "difficulty": submission.exam.difficulty if submission.exam else "medium",
+        "marksObtained": float(submission.marks_obtained) if submission.marks_obtained is not None else 0.0,
+        "totalMarks": submission.total_marks or (5 if (submission.exam and str(submission.exam.class_grade).lower() in ('class 1', 'class 2', 'class 3', 'class 4', '1', '2', '3', '4')) else 15),
+        "accuracyPercentage": float(submission.accuracy_percentage or 0),
+        "timeTakenSeconds": submission.time_taken_seconds or 0,
+        "submittedAt": to_iso_ist(submission.submitted_at),
+    }
+
+    if not include_details:
+        return base_dict
+
     evaluations_list = []
     if submission.evaluations:
         for ev in submission.evaluations:
@@ -88,25 +108,10 @@ def submission_to_dict(submission: ExamSubmission) -> dict:
             "curatedStudyLinks": a.curated_study_links or [],
         }
 
-    return {
-        "id": submission.id,
-        "examId": submission.exam_id,
-        "studentId": submission.student_id,
-        "studentName": submission.student.user.name if (submission.student and submission.student.user) else "Student",
-        "examTitle": submission.exam.title if submission.exam else "10-Mark Diagnostic Exam",
-        "board": submission.exam.board if submission.exam else "CBSE",
-        "classGrade": submission.exam.class_grade if submission.exam else "Class 10",
-        "subject": submission.exam.subject if submission.exam else "Mathematics",
-        "difficulty": submission.exam.difficulty if submission.exam else "medium",
-        "answers": submission.answers or {},
-        "marksObtained": float(submission.marks_obtained) if submission.marks_obtained is not None else 0.0,
-        "totalMarks": submission.total_marks or (5 if (submission.exam and str(submission.exam.class_grade).lower() in ('class 1', 'class 2', 'class 3', 'class 4', '1', '2', '3', '4')) else 15),
-        "accuracyPercentage": float(submission.accuracy_percentage or 0),
-        "timeTakenSeconds": submission.time_taken_seconds or 0,
-        "submittedAt": to_iso_ist(submission.submitted_at),
-        "evaluations": evaluations_list,
-        "analysis": analysis_dict,
-    }
+    base_dict["answers"] = submission.answers or {}
+    base_dict["evaluations"] = evaluations_list
+    base_dict["analysis"] = analysis_dict
+    return base_dict
 
 
 def learning_path_node_to_dict(node: LearningPathNode) -> dict:

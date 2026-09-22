@@ -41,11 +41,35 @@ def get_child_registration_options():
                 parsed_classes = json.loads(raw_classes) if isinstance(raw_classes, str) else raw_classes
                 classes_data = [{"id": c["id"], "name": c["name"]} for c in parsed_classes if isinstance(c, dict) and "id" in c and "name" in c]
 
+        # Build dynamic board to classes mapping directly from database tables
+        dynamic_board_classes_map = {}
+        try:
+            board_class_rows = session.execute(text("""
+                SELECT DISTINCT b.board_name, c.class_name, c.id AS class_id
+                FROM subject_master s
+                JOIN board_master b ON s.board_id = b.id
+                JOIN class_master c ON s.class_id = c.id
+                WHERE s.is_active = 1 AND b.is_active = 1 AND c.is_active = 1
+                ORDER BY b.board_name, c.id
+            """)).fetchall()
+
+            for r in board_class_rows:
+                b_name = str(r[0]).strip()
+                c_name = str(r[1]).strip()
+                if b_name not in dynamic_board_classes_map:
+                    dynamic_board_classes_map[b_name] = []
+                if c_name not in dynamic_board_classes_map[b_name]:
+                    dynamic_board_classes_map[b_name].append(c_name)
+        except Exception as e:
+            pass
+
+        final_board_classes_map = dynamic_board_classes_map if dynamic_board_classes_map else BOARD_CLASS_MAPPING
+
         return success({
             "boards": boards_data,
             "classes": classes_data,
             "classGrades": classes_data,
-            "boardClassesMap": BOARD_CLASS_MAPPING,
+            "boardClassesMap": final_board_classes_map,
         })
 
 
@@ -214,20 +238,23 @@ def get_dashboard():
         all_recent_exams = []
         enriched_children = []
 
+        from sqlalchemy.orm import joinedload
+
         for child in children:
             calculate_and_sync_student_streak(session, child)
             badge_ids = _badge_ids_for(session, child.id)
             child_dict = student_to_child_account(child, badge_ids)
 
-            # Fetch Recent Exam Submissions for each child (sorted by most recent)
+            # Fetch Recent Exam Submissions for each child with eager loading (sorted by most recent)
             submissions = (
                 session.query(ExamSubmission)
+                .options(joinedload(ExamSubmission.exam))
                 .filter(ExamSubmission.student_id == child.id)
                 .order_by(ExamSubmission.submitted_at.desc())
-                .limit(10)
+                .limit(5)
                 .all()
             )
-            child_exams = [submission_to_dict(s) for s in submissions]
+            child_exams = [submission_to_dict(s, include_details=False) for s in submissions]
             child_dict["recentExams"] = child_exams
             all_recent_exams.extend(child_exams)
 
@@ -482,8 +509,10 @@ def child_overview(student_id):
     s_id = int(student_id) if str(student_id).isdigit() else student_id
     with get_session() as session:
         student = assert_owns_student(session, s_id, g.current_user_id)
+        from sqlalchemy.orm import joinedload
         recent_submissions = (
             session.query(ExamSubmission)
+            .options(joinedload(ExamSubmission.exam))
             .filter(ExamSubmission.student_id == s_id)
             .order_by(ExamSubmission.submitted_at.desc())
             .limit(10)
@@ -493,7 +522,7 @@ def child_overview(student_id):
 
         return success({
             "child": student_to_child_account(student, _badge_ids_for(session, student.id)),
-            "recentExams": [submission_to_dict(s) for s in recent_submissions],
+            "recentExams": [submission_to_dict(s, include_details=False) for s in recent_submissions],
             "topicMastery": get_topic_mastery_map(session, s_id),
         })
 

@@ -589,7 +589,7 @@ def submit_exam(exam_id):
 
         return success({
             "submission": {
-                **submission_to_dict(submission),
+                **submission_to_dict(submission, include_details=True),
                 "examTitle": exam.title, "board": exam.board, "classGrade": exam.class_grade,
                 "subject": exam.subject, "difficulty": exam.difficulty, "studentName": student_name,
                 "evaluations": evaluations, "analysis": analysis,
@@ -597,3 +597,20 @@ def submit_exam(exam_id):
             "xpEarned": xp_earned,
             "newlyUnlockedBadges": newly_unlocked_badges,
         })
+
+
+@token_required
+def get_submission(submission_id):
+    with get_session() as session:
+        submission = session.get(ExamSubmission, submission_id)
+        if not submission:
+            raise NotFoundError("Submission not found")
+        
+        current_uid = int(g.current_user_id) if str(g.current_user_id).isdigit() else g.current_user_id
+        if g.current_user_role == "STUDENT" and submission.student_id != current_uid:
+            raise AppError("FORBIDDEN", "This report does not belong to you", 403)
+        elif g.current_user_role == "PARENT":
+            assert_owns_student(session, submission.student_id, current_uid)
+
+        return success(submission_to_dict(submission, include_details=True))
+

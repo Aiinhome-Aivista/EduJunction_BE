@@ -31,14 +31,16 @@ def get_dashboard():
         child_account = student_to_child_account(student, badge_ids)
         child_account["topicMastery"] = get_topic_mastery_map(session, student.id)
 
+        from sqlalchemy.orm import joinedload
         recent = (
             session.query(ExamSubmission)
+            .options(joinedload(ExamSubmission.exam))
             .filter(ExamSubmission.student_id == student.id)
             .order_by(ExamSubmission.submitted_at.desc())
             .limit(10)
             .all()
         )
-        recent_exams = [submission_to_dict(s) for s in recent]
+        recent_exams = [submission_to_dict(s, include_details=False) for s in recent]
 
         nodes = session.query(LearningPathNode).filter(LearningPathNode.student_id == student.id).all()
         learning_nodes = [learning_path_node_to_dict(n) for n in nodes]
@@ -76,8 +78,10 @@ def my_overview():
             raise NotFoundError("Student not found")
         calculate_and_sync_student_streak(session, student)
         session.commit()
+        from sqlalchemy.orm import joinedload
         recent = (
             session.query(ExamSubmission)
+            .options(joinedload(ExamSubmission.exam))
             .filter(ExamSubmission.student_id == student.id)
             .order_by(ExamSubmission.submitted_at.desc())
             .limit(10)
@@ -85,7 +89,7 @@ def my_overview():
         )
         return success({
             "child": student_to_child_account(student),
-            "recentExams": [submission_to_dict(s) for s in recent],
+            "recentExams": [submission_to_dict(s, include_details=False) for s in recent],
             "topicMastery": get_topic_mastery_map(session, student.id),
         })
 
