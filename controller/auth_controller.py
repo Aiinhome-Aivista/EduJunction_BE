@@ -20,6 +20,7 @@ from utils.security import (
     decode_token,
 )
 from utils.validators import require_fields, validate_email, validate_password_strength, validate_username
+from helper.captcha_helper import generate_math_captcha, verify_math_captcha
 
 # pyrefly: ignore [missing-import]
 from google.oauth2 import id_token as google_id_token
@@ -105,12 +106,25 @@ def get_page_access_for_role(session, role_name: str) -> list[dict]:
 _get_page_access = get_page_access_for_role
 
 
+def get_captcha():
+    captcha_data = generate_math_captcha()
+    return success(captcha_data, message="Captcha generated successfully")
+
+
 def register():
     payload = request.get_json(force=True, silent=True) or {}
     require_fields(payload, ["name", "username", "email", "password"])
     validate_username(payload["username"])
     validate_email(payload["email"])
     validate_password_strength(payload["password"])
+
+    # Verify Math Captcha if provided
+    captcha_id = payload.get("captchaId")
+    captcha_ans = payload.get("captchaAnswer")
+    if captcha_id is not None or captcha_ans is not None:
+        valid, err_msg = verify_math_captcha(captcha_id, captcha_ans)
+        if not valid:
+            raise AppError("INVALID_CAPTCHA", err_msg, 400)
 
     name = payload["name"].strip()
     username = payload["username"].strip()
@@ -190,6 +204,14 @@ def register():
 def login():
     payload = request.get_json(force=True, silent=True) or {}
     require_fields(payload, ["username", "password"])
+
+    # Verify Math Captcha if provided
+    captcha_id = payload.get("captchaId")
+    captcha_ans = payload.get("captchaAnswer")
+    if captcha_id is not None or captcha_ans is not None:
+        valid, err_msg = verify_math_captcha(captcha_id, captcha_ans)
+        if not valid:
+            raise AppError("INVALID_CAPTCHA", err_msg, 400)
 
     username = payload["username"].strip()
     password = payload["password"]
