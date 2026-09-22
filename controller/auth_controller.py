@@ -6,7 +6,10 @@ import jwt
 from flask import request, g
 from sqlalchemy import text, func
 
-from .email_controller import send_email, send_registration_email, send_login_email, send_password_changed_email
+from .email_controller import (
+    send_email, send_registration_email, send_login_email,
+    send_password_changed_email, send_password_reset_otp_email
+)
 
 from database.dbConnection import get_session
 from middleware.authMiddleware import token_required
@@ -345,24 +348,37 @@ def admin_login():
         )
 
 
-def reset_password():
-    """Public password reset for Parents, Students, and Teachers."""
+import random
+import time
+
+_PASSWORD_RESET_OTPS: dict[str, dict] = {}
+
+
+def _mask_email(email: str) -> str:
+    if not email or "@" not in email:
+        return "your registered email"
+    user_part, domain = email.split("@", 1)
+    if len(user_part) <= 2:
+        masked_user = user_part[0] + "***"
+    else:
+        masked_user = user_part[:2] + "***" + user_part[-1]
+    return f"{masked_user}@{domain}"
+
+
+def send_password_reset_otp():
+    """Validates username, looks up mapped email, generates 6-digit OTP and emails it."""
     payload = request.get_json(force=True, silent=True) or {}
-    require_fields(payload, ["identifier", "newPassword"])
+    require_fields(payload, ["identifier"])
 
     identifier = str(payload["identifier"]).strip()
-    new_password = str(payload["newPassword"])
-
-    if len(new_password) < 6:
-        raise AppError("WEAK_PASSWORD", "Password must be at least 6 characters.", 400)
+    if not identifier:
+        raise AppError("VALIDATION_ERROR", "Please enter your account username.", 400)
 
     with get_session() as session:
-        # Search primarily by username (case-insensitive)
         user = session.query(User).filter(
             func.lower(User.username) == identifier.lower()
         ).first()
 
-        # Fallback to email only if no account was matched by username
         if not user:
             user = session.query(User).filter(
                 func.lower(User.email) == identifier.lower()
@@ -371,14 +387,8 @@ def reset_password():
         if not user:
             raise AppError("NOT_FOUND", f"No account found with username '{identifier}'.", 404)
 
-        # Get role name
-        role = session.query(Role).filter(Role.id == user.role_id).first()
-        role_name = role.role_name if role else "User"
-
-        # Determine target email for security confirmation notification
+        # Determine target email for OTP dispatch
         target_email = user.email
-
-        # If student account without direct email, find linked parent email
         if not target_email and user.role_id == 1:
             student = session.query(Student).filter(Student.id == user.id).first()
             if student and student.parent_id:
@@ -386,9 +396,94 @@ def reset_password():
                 if parent_user and parent_user.email:
                     target_email = parent_user.email
 
+        if not target_email:
+            raise AppError(
+                "NO_LINKED_EMAIL",
+                "No registered email address found for this account. Please contact support or your guardian.",
+                400
+            )
+
+        # Generate 6-digit secure OTP
+        otp_code = f"{random.randint(100000, 999999)}"
+        expires_at = time.time() + 600  # 10 minutes
+
+        otp_record = {
+            "otp": otp_code,
+            "user_id": user.id,
+            "email": target_email,
+            "expires_at": expires_at,
+            "attempts": 0,
+        }
+        _PASSWORD_RESET_OTPS[identifier.lower()] = otp_record
+        _PASSWORD_RESET_OTPS[user.username.lower()] = otp_record
+
+        # Send OTP email
+        send_password_reset_otp_email(
+            to_email=target_email,
+            name=user.name,
+            username=user.username,
+            otp_code=otp_code,
+        )
+
+        masked_email = _mask_email(target_email)
+
+        return success({
+            "sent": True,
+            "identifier": user.username,
+            "maskedEmail": masked_email,
+            "expiresInSeconds": 600,
+        }, message=f"A 6-digit verification code has been dispatched to {masked_email}.")
+
+
+def reset_password():
+    """Verifies OTP and resets password for Parents, Students, and Teachers."""
+    payload = request.get_json(force=True, silent=True) or {}
+    require_fields(payload, ["identifier", "otp", "newPassword"])
+
+    identifier = str(payload["identifier"]).strip()
+    otp_input = str(payload["otp"]).strip()
+    new_password = str(payload["newPassword"])
+
+    if len(new_password) < 6:
+        raise AppError("WEAK_PASSWORD", "Password must be at least 6 characters.", 400)
+
+    cached_otp = _PASSWORD_RESET_OTPS.get(identifier.lower())
+    if not cached_otp:
+        raise AppError("OTP_REQUIRED", "Please request a verification OTP before setting a new password.", 400)
+
+    if time.time() > cached_otp["expires_at"]:
+        _PASSWORD_RESET_OTPS.pop(identifier.lower(), None)
+        raise AppError("OTP_EXPIRED", "The verification OTP has expired. Please click 'Resend OTP'.", 400)
+
+    if cached_otp["attempts"] >= 5:
+        _PASSWORD_RESET_OTPS.pop(identifier.lower(), None)
+        raise AppError("OTP_MAX_ATTEMPTS", "Maximum verification attempts exceeded. Please request a new OTP.", 400)
+
+    if str(cached_otp["otp"]).strip() != otp_input:
+        cached_otp["attempts"] += 1
+        raise AppError("INVALID_OTP", "Invalid verification code. Please check your email and enter the correct 6-digit OTP.", 400)
+
+    with get_session() as session:
+        user = session.get(User, cached_otp["user_id"])
+        if not user:
+            user = session.query(User).filter(
+                (func.lower(User.username) == identifier.lower()) | (func.lower(User.email) == identifier.lower())
+            ).first()
+
+        if not user:
+            raise AppError("NOT_FOUND", f"No account found with username '{identifier}'.", 404)
+
+        role = session.query(Role).filter(Role.id == user.role_id).first()
+        role_name = role.role_name if role else "User"
+        target_email = cached_otp.get("email") or user.email
+
         user.password_hash = hash_password(new_password)
         user.updated_at = now_ist()
         session.commit()
+
+        # Clear used OTP
+        _PASSWORD_RESET_OTPS.pop(identifier.lower(), None)
+        _PASSWORD_RESET_OTPS.pop(user.username.lower(), None)
 
         # Dispatch confirmation email if target email is available
         if target_email:
@@ -401,13 +496,13 @@ def reset_password():
 
         log_audit(
             session,
-            action="PASSWORD_RESET",
+            action="PASSWORD_RESET_WITH_OTP",
             user_id=user.id,
             entity_type="USER",
             entity_id=str(user.id),
         )
 
-        return success({"reset": True}, message="Password updated successfully. A confirmation email has been sent.")
+        return success({"reset": True}, message="Password updated successfully! You can now sign in with your new password.")
 
 
 def admin_reset_password():
