@@ -27,6 +27,11 @@ RAZORPAY_KEY_ID = os.getenv("RAZORPAY_KEY_ID", "rzp_test_edujunction_demo")
 RAZORPAY_KEY_SECRET = os.getenv("RAZORPAY_KEY_SECRET", "edujunction_secret_demo")
 
 
+def get_razorpay_credentials():
+    key_id = (os.getenv("RAZORPAY_KEY_ID") or RAZORPAY_KEY_ID or "").strip().strip('"').strip("'")
+    key_secret = (os.getenv("RAZORPAY_KEY_SECRET") or RAZORPAY_KEY_SECRET or "").strip().strip('"').strip("'")
+    return key_id, key_secret
+
 def init_subscription_columns():
     """Ensures extended columns exist in user_subscriptions table."""
     try:
@@ -45,7 +50,6 @@ def init_subscription_columns():
                     session.rollback()
     except Exception as e:
         logger.warning(f"init_subscription_columns check: {e}")
-
 
 init_subscription_columns()
 
@@ -154,10 +158,11 @@ def create_subject_order():
         total_amount_paise = int(total_amount_rupees * 100)
 
         # Generate Razorpay Order ID
+        razorpay_key_id, razorpay_key_secret = get_razorpay_credentials()
         order_id = f"order_{uuid.uuid4().hex[:14]}"
-        if RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET and not RAZORPAY_KEY_ID.startswith("rzp_test_edujunction_demo"):
+        if razorpay_key_id and razorpay_key_secret and not ("demo" in razorpay_key_id.lower()):
             try:
-                auth = (RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET)
+                auth = (razorpay_key_id, razorpay_key_secret)
                 res = requests.post(
                     "https://api.razorpay.com/v1/orders",
                     auth=auth,
@@ -179,6 +184,8 @@ def create_subject_order():
                 if res.status_code == 200:
                     rz_data = res.json()
                     order_id = rz_data.get("id", order_id)
+                else:
+                    logger.error(f"Razorpay order creation failed: HTTP {res.status_code} - {res.text}")
             except Exception as e:
                 logger.warning(f"Razorpay API call failed, falling back to local order ID: {e}")
 
@@ -213,7 +220,7 @@ def create_subject_order():
             "amount": total_amount_paise,
             "amountRupees": total_amount_rupees,
             "currency": "INR",
-            "keyId": RAZORPAY_KEY_ID,
+            "keyId": razorpay_key_id,
             "subscriptionId": subscription.id,
             "studentId": student_id,
             "studentName": target_student.user.name if (target_student and target_student.user) else "",
@@ -245,17 +252,20 @@ def verify_subject_payment():
     role = getattr(g, "current_user_role", "").upper()
 
     # Verify signature if live credentials present
-    if signature and RAZORPAY_KEY_SECRET and not RAZORPAY_KEY_ID.startswith("rzp_test_edujunction_demo"):
+    razorpay_key_id, razorpay_key_secret = get_razorpay_credentials()
+    if signature and razorpay_key_secret and not ("demo" in razorpay_key_id.lower()):
         try:
             msg = f"{order_id}|{payment_id}".encode("utf-8")
             generated_signature = hmac.new(
-                RAZORPAY_KEY_SECRET.encode("utf-8"),
+                razorpay_key_secret.encode("utf-8"),
                 msg,
                 hashlib.sha256
             ).hexdigest()
 
             if generated_signature != signature:
                 raise ValidationError("Payment signature verification failed")
+        except ValidationError:
+            raise
         except Exception as e:
             logger.warning(f"Signature check exception: {e}")
 

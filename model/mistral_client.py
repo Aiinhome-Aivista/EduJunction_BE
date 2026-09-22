@@ -12,8 +12,8 @@ import httpx
 from utils.config import config
 from utils.logger import logger, log_ai_call
 
-MISTRAL_CHAT_URL = config.MISTRAL_CHAT_URL
-MISTRAL_EMBED_URL = config.MISTRAL_EMBED_URL
+MISTRAL_CHAT_URL = "https://api.mistral.ai/v1/chat/completions"
+MISTRAL_EMBED_URL = "https://api.mistral.ai/v1/embeddings"
 
 MAX_RETRIES = config.LLM_MAX_RETRIES
 TIMEOUT_SECONDS = config.LLM_TIMEOUT_SECONDS
@@ -37,16 +37,7 @@ class MistralUnavailableError(Exception):
     Callers catch this specifically and switch to their deterministic fallback path."""
 
 
-def is_configured() -> bool:
-    # Now it depends on ACTIVE_LLM, but assuming True as routing handles it
-    return True
 
-
-def _headers() -> dict:
-    return {
-        "Authorization": f"Bearer {config.MISTRAL_API_KEY}",
-        "Content-Type": "application/json",
-    }
 
 
 def _get_active_db_llm_config() -> dict | None:
@@ -74,26 +65,38 @@ def _get_active_db_llm_config() -> dict | None:
 
 def call_llm_chat(messages: list, json_mode: bool = False, temperature: float = 0.3) -> str:
     db_cfg = _get_active_db_llm_config()
-    # Default to Mistral whenever ACTIVE_LLM is mistral or DB is unconfigured/empty key
-    active_provider = (db_cfg["provider"] if db_cfg and db_cfg.get("api_key") else None) or config.ACTIVE_LLM or "mistral"
-    active_provider = str(active_provider).lower().strip()
-    print(f"[LLM Client] Active Provider: {active_provider} (MISTRAL_MODEL: {config.MISTRAL_MODEL})", flush=True)
+    if not db_cfg:
+        raise Exception("Active LLM Configuration is missing from database")
+
+    active_provider = str(db_cfg["provider"]).lower().strip()
+    
+    if active_provider != "ollama" and not db_cfg.get("api_key"):
+        raise Exception("LLM API Key is missing for the active configuration")
+    model_name = db_cfg.get("model_name")
+    print(f"[LLM CALL] Provider: {active_provider} | Model: {model_name} (from Database)", flush=True)
 
     try:
-        # 1. Mistral API (Primary Cloud AI Engine)
+        # 1. Mistral API
         if "mistral" in active_provider:
-            url = config.MISTRAL_CHAT_URL or "https://api.mistral.ai/v1/chat/completions"
+            base_url = db_cfg.get("base_url")
+            if base_url:
+                base_url = base_url.rstrip('/')
+                if not base_url.endswith('/v1') and not base_url.endswith('/api') and not base_url.endswith('/chat/completions') and (":" in base_url.split("://")[-1] or "localhost" in base_url or "127.0.0.1" in base_url):
+                    base_url = f"{base_url}/v1"
+                url = f"{base_url}/chat/completions" if not base_url.endswith("/chat/completions") else base_url
+            else:
+                url = "https://api.mistral.ai/v1/chat/completions"
             headers = {
-                "Authorization": f"Bearer {config.MISTRAL_API_KEY}",
+                "Authorization": f"Bearer {db_cfg['api_key']}",
                 "Content-Type": "application/json",
             }
-            model_name = (db_cfg.get("model_name") if db_cfg and "mistral" in db_cfg.get("provider", "") else None) or config.MISTRAL_MODEL or "mistral-small-latest"
-            timeout = (db_cfg.get("timeout") if db_cfg else None) or config.LLM_TIMEOUT_SECONDS or 45
+            model_name = db_cfg.get("model_name") or "mistral-small-latest"
+            timeout = db_cfg.get("timeout") or 45
 
             payload = {
                 "model": model_name,
                 "messages": messages,
-                "temperature": temperature if temperature is not None else 0.3,
+                "temperature": temperature if temperature is not None else db_cfg.get("temperature", 0.3),
             }
             if json_mode:
                 payload["response_format"] = {"type": "json_object"}
@@ -103,19 +106,14 @@ def call_llm_chat(messages: list, json_mode: bool = False, temperature: float = 
             data = res.json()
             return data["choices"][0]["message"]["content"].strip()
 
-        # 2. Google Gemini Cloud (Only if valid API key exists)
+        # 2. Google Gemini Cloud
         elif "gemini" in active_provider:
             genai = _get_genai()
             if not genai:
                 raise MistralUnavailableError("google-generativeai package is not installed.")
             
-            effective_key = (db_cfg["api_key"] if db_cfg and db_cfg.get("api_key") else None) or config.GEMINI_API_KEY
-            if not effective_key:
-                # Seamlessly fall back to Mistral
-                print("[LLM Client] No Gemini API Key found. Routing to Mistral...", flush=True)
-                return call_llm_chat(messages, json_mode=json_mode, temperature=temperature)
-
-            effective_model = (db_cfg["model_name"] if db_cfg and db_cfg.get("model_name") else None) or config.MODEL_NAME or "gemini-2.0-flash"
+            effective_key = db_cfg["api_key"]
+            effective_model = db_cfg.get("model_name") or "gemini-2.0-flash"
             genai.configure(api_key=effective_key)
             
             system_instruction = None
@@ -198,13 +196,13 @@ def call_llm_chat(messages: list, json_mode: bool = False, temperature: float = 
             base_url = (db_cfg.get("base_url") if db_cfg else None) or "https://api.openai.com/v1"
             url = f"{base_url.rstrip('/')}/chat/completions" if not base_url.endswith("/chat/completions") else base_url
             
-            headers = {"Content-Type": "application/json"}
-            api_key = (db_cfg.get("api_key") if db_cfg else None) or config.MISTRAL_API_KEY
-            if api_key:
-                headers["Authorization"] = f"Bearer {api_key}"
-
-            model_name = (db_cfg.get("model_name") if db_cfg else None) or "gpt-4o-mini"
-            timeout = (db_cfg.get("timeout") if db_cfg else None) or config.LLM_TIMEOUT_SECONDS or 30
+            url = db_cfg.get("base_url") or "https://api.openai.com/v1/chat/completions"
+            headers = {
+                "Authorization": f"Bearer {db_cfg['api_key']}",
+                "Content-Type": "application/json",
+            }
+            model_name = db_cfg.get("model_name") or "gpt-4o-mini"
+            timeout = db_cfg.get("timeout") or 30
 
             payload = {
                 "model": model_name,
@@ -291,24 +289,89 @@ def generate_json(system_prompt: str, user_prompt: str, *, temperature: float = 
 
 
 def embed_texts(texts: list[str]) -> list[list[float]]:
-    """Returns one embedding vector per input text via Mistral's embeddings
-    endpoint. Used by helper/embedding_engine.py for document ingestion."""
-    if not is_configured():
-        raise MistralUnavailableError("MISTRAL_API_KEY is not configured")
+    """Returns one embedding vector per input text via active provider's embeddings endpoint."""
     if not texts:
         return []
 
-    payload = {"model": config.MISTRAL_EMBED_MODEL, "input": texts}
+    db_cfg = _get_active_db_llm_config()
+    if not db_cfg:
+        raise MistralUnavailableError("Active LLM Configuration is missing from database")
+
+    active_provider = str(db_cfg["provider"]).lower().strip()
+    
+    if active_provider != "ollama" and not db_cfg.get("api_key"):
+        raise MistralUnavailableError("LLM API Key is missing for the active configuration")
+        
     start = time.time()
+    
     try:
-        with httpx.Client(timeout=TIMEOUT_SECONDS) as client:
-            resp = client.post(MISTRAL_EMBED_URL, headers=_headers(), json=payload)
+        # 1. Mistral API
+        if "mistral" in active_provider:
+            base_url = db_cfg.get("base_url")
+            if base_url:
+                base_url = base_url.rstrip('/')
+                if not base_url.endswith('/v1') and not base_url.endswith('/api') and not base_url.endswith('/embeddings') and (":" in base_url.split("://")[-1] or "localhost" in base_url or "127.0.0.1" in base_url):
+                    base_url = f"{base_url}/v1"
+                url = f"{base_url}/embeddings" if not base_url.endswith("/embeddings") else base_url
+            else:
+                url = "https://api.mistral.ai/v1/embeddings"
+            
+            headers = {
+                "Authorization": f"Bearer {db_cfg['api_key']}",
+                "Content-Type": "application/json",
+            }
+            payload = {"model": "mistral-embed", "input": texts}
+            
+            res = requests.post(url, json=payload, headers=headers, timeout=db_cfg.get("timeout") or 45)
+            res.raise_for_status()
+            data = res.json()["data"]
+            duration_ms = (time.time() - start) * 1000
+            log_ai_call(f"{active_provider}_embed", duration_ms, success=True)
+            return [item["embedding"] for item in data]
+            
+        # 2. Native Ollama (Local Engine)
+        elif active_provider == "ollama":
+            base_url = db_cfg.get("base_url", "http://localhost:11434").rstrip("/")
+            if "/api/chat" in base_url:
+                base_url = base_url.replace("/api/chat", "")
+            
+            url = f"{base_url}/api/embed" if not base_url.endswith("/api/embed") else base_url
+            payload = {
+                "model": "nomic-embed-text",
+                "input": texts
+            }
+            res = requests.post(url, json=payload, timeout=db_cfg.get("timeout") or 60)
+            res.raise_for_status()
+            data = res.json()
+            duration_ms = (time.time() - start) * 1000
+            log_ai_call(f"{active_provider}_embed", duration_ms, success=True)
+            return data.get("embeddings", [])
+            
+        # 3. Standard OpenAI-Compatible API (OpenAI, Groq, DeepSeek)
+        else:
+            base_url = db_cfg.get("base_url")
+            if base_url:
+                base_url = base_url.rstrip('/')
+                if not base_url.endswith('/v1') and not base_url.endswith('/api') and not base_url.endswith('/embeddings') and (":" in base_url.split("://")[-1] or "localhost" in base_url or "127.0.0.1" in base_url):
+                    base_url = f"{base_url}/v1"
+                url = f"{base_url}/embeddings" if not base_url.endswith("/embeddings") else base_url
+            else:
+                url = "https://api.openai.com/v1/embeddings"
+            
+            headers = {
+                "Authorization": f"Bearer {db_cfg['api_key']}",
+                "Content-Type": "application/json",
+            }
+            payload = {"model": "text-embedding-3-small", "input": texts}
+            
+            res = requests.post(url, json=payload, headers=headers, timeout=db_cfg.get("timeout") or 45)
+            res.raise_for_status()
+            data = res.json()["data"]
+            duration_ms = (time.time() - start) * 1000
+            log_ai_call(f"{active_provider}_embed", duration_ms, success=True)
+            return [item["embedding"] for item in data]
+            
+    except Exception as exc:
         duration_ms = (time.time() - start) * 1000
-        if resp.status_code != 200:
-            log_ai_call("mistral_embed", duration_ms, success=False)
-            raise MistralUnavailableError(f"HTTP {resp.status_code}: {resp.text[:300]}")
-        data = resp.json()["data"]
-        log_ai_call("mistral_embed", duration_ms, success=True)
-        return [item["embedding"] for item in data]
-    except httpx.HTTPError as exc:
+        log_ai_call(f"{active_provider}_embed", duration_ms, success=False)
         raise MistralUnavailableError(str(exc)) from exc

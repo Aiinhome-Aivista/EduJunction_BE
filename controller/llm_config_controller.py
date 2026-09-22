@@ -193,6 +193,8 @@ def test_llm_connection(config_id: str):
         start_time = time.time()
         test_prompt = "Hello! Please respond with exactly: 'LLM Connection Verified Successfully.'"
 
+        print(f"[LLM CALL - TEST] Provider: {provider} | Model: {model_name} (from Live Test UI)", flush=True)
+
         try:
             # 1. Google Gemini
             if "gemini" in provider:
@@ -236,7 +238,13 @@ def test_llm_connection(config_id: str):
 
             # 4. Standard OpenAI-Compatible API (OpenAI, Groq, Mistral, DeepSeek, Custom)
             else:
-                url = f"{base_url.rstrip('/')}/chat/completions" if base_url else "https://api.openai.com/v1/chat/completions"
+                if base_url:
+                    base_url = base_url.rstrip('/')
+                    if not base_url.endswith('/v1') and not base_url.endswith('/api') and (":" in base_url.split("://")[-1] or "localhost" in base_url or "127.0.0.1" in base_url):
+                        base_url = f"{base_url}/v1"
+                    url = f"{base_url}/chat/completions"
+                else:
+                    url = "https://api.openai.com/v1/chat/completions"
                 headers = {"Content-Type": "application/json"}
                 if api_key:
                     headers["Authorization"] = f"Bearer {api_key}"
