@@ -728,6 +728,10 @@ class UserSubscription(Base):
     razorpay_signature = Column(String(255), nullable=True)
     status = Column(String(50), default="ACTIVE")  # ACTIVE, ATTEMPTED, EXPIRED
     exam_status = Column(String(50), default="UNATTEMPTED")  # UNATTEMPTED, IN_PROGRESS, COMPLETED
+    score_obtained = Column(Numeric(10, 2), nullable=True)
+    total_marks = Column(Numeric(10, 2), default=80.00, nullable=True)
+    accuracy_percentage = Column(Numeric(5, 2), nullable=True)
+    submitted_at = Column(DateTime, nullable=True)
     start_date = Column(DateTime, default=get_ist_now)
     expiry_date = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=get_ist_now)

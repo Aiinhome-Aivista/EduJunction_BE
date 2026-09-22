@@ -207,6 +207,9 @@ def save_generated_questions_api():
         raise ValidationError("topic_id is required to link questions to curriculum")
 
     saved_count = 0
+    inserted_count = 0
+    updated_count = 0
+    duplicate_skipped_count = 0
     diff_counts = {"simple": 0, "medium": 0, "hard": 0}
 
     with get_session() as session:
@@ -263,41 +266,93 @@ def save_generated_questions_api():
             explanation = (q.get("explanation") or "").strip()
             marks = int(q.get("marks", 1))
 
-            ins_sql = text("""
-                INSERT INTO question_master 
-                (topic_id, question_type_id, difficulty_level_id, question, options, correct_answer, explanation, marks, is_active, created_at, updated_at)
-                VALUES 
-                (:topic_id, :type_id, :diff_id, :question, :options, :correct_answer, :explanation, :marks, 1, NOW(), NOW())
-            """)
-            session.execute(ins_sql, {
-                "topic_id": topic_id,
-                "type_id": type_id,
-                "diff_id": diff_id,
-                "question": q_text,
-                "options": options_json,
-                "correct_answer": correct_answer,
-                "explanation": explanation,
-                "marks": marks
-            })
-            saved_count += 1
+            # --- Duplicate Check against question_master ---
+            existing_q = session.execute(
+                text("""
+                    SELECT id, options, correct_answer, marks, difficulty_level_id, question_type_id 
+                    FROM question_master 
+                    WHERE topic_id = :topic_id AND LOWER(TRIM(question)) = LOWER(TRIM(:question))
+                    LIMIT 1
+                """),
+                {"topic_id": topic_id, "question": q_text}
+            ).mappings().first()
+
+            if existing_q:
+                opt_match = (existing_q["options"] == options_json) or (not existing_q["options"] and not options_json)
+                ans_match = (str(existing_q["correct_answer"]).strip().lower() == correct_answer.lower())
+                marks_match = (int(existing_q["marks"] or 1) == marks)
+
+                if opt_match and ans_match and marks_match:
+                    # Exact Duplicate: Skip to prevent database bloat
+                    duplicate_skipped_count += 1
+                else:
+                    # Update existing row with newer/better explanations or options
+                    session.execute(
+                        text("""
+                            UPDATE question_master
+                            SET options = :options, correct_answer = :correct_answer, explanation = :explanation,
+                                marks = :marks, difficulty_level_id = :diff_id, question_type_id = :type_id,
+                                updated_at = NOW()
+                            WHERE id = :id
+                        """),
+                        {
+                            "id": existing_q["id"],
+                            "options": options_json,
+                            "correct_answer": correct_answer,
+                            "explanation": explanation,
+                            "marks": marks,
+                            "diff_id": diff_id,
+                            "type_id": type_id,
+                        }
+                    )
+                    updated_count += 1
+                    saved_count += 1
+            else:
+                # Insert new question
+                ins_sql = text("""
+                    INSERT INTO question_master 
+                    (topic_id, question_type_id, difficulty_level_id, question, options, correct_answer, explanation, marks, is_active, created_at, updated_at)
+                    VALUES 
+                    (:topic_id, :type_id, :diff_id, :question, :options, :correct_answer, :explanation, :marks, 1, NOW(), NOW())
+                """)
+                session.execute(ins_sql, {
+                    "topic_id": topic_id,
+                    "type_id": type_id,
+                    "diff_id": diff_id,
+                    "question": q_text,
+                    "options": options_json,
+                    "correct_answer": correct_answer,
+                    "explanation": explanation,
+                    "marks": marks
+                })
+                inserted_count += 1
+                saved_count += 1
 
         session.commit()
 
         # Terminal step logging
         print(f"\n=======================================================", flush=True)
-        print(f">> [TOPIC INGESTION] Topic: '{topic_name}'", flush=True)
+        print(f">> [RAG / AI INGESTION] Topic: '{topic_name}'", flush=True)
         print(f">> Chapter: '{chapter_name}' | Subject: '{subject_name}'", flush=True)
-        print(f">> Successfully Ingested {saved_count} Question(s) ({diff_counts['simple']} simple, {diff_counts['medium']} medium, {diff_counts['hard']} hard)", flush=True)
-        print(f">> Saved to Database (question_master) & linked to ArangoDB Knowledge Graph!", flush=True)
+        print(f">> Total Processed: {len(questions)} | Inserted: {inserted_count} | Updated: {updated_count} | Skipped Duplicates: {duplicate_skipped_count}", flush=True)
+        print(f">> Saved to Database (question_master) & synchronized with Knowledge Graph!", flush=True)
         print(f"=======================================================\n", flush=True)
+
+    msg = f"Processed {len(questions)} questions for '{topic_name}': {inserted_count} inserted, {updated_count} updated."
+    if duplicate_skipped_count > 0:
+        msg += f" {duplicate_skipped_count} duplicate questions skipped."
 
     return success({
         "saved": True,
         "saved_count": saved_count,
+        "total_processed": len(questions),
+        "inserted_count": inserted_count,
+        "updated_count": updated_count,
+        "duplicate_skipped_count": duplicate_skipped_count,
         "topic_name": topic_name,
         "chapter_name": chapter_name,
         "subject_name": subject_name,
-        "message": f"Successfully ingested {saved_count} questions for '{topic_name}' ({diff_counts['simple']} simple, {diff_counts['medium']} medium, {diff_counts['hard']} hard) into Question Bank!"
+        "message": msg
     }, 201)
 
 
