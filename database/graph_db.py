@@ -24,6 +24,17 @@ if config.ARANGO_URL:
         from arango import ArangoClient
 
         _client = ArangoClient(hosts=config.ARANGO_URL)
+
+        # 1. Connect to _system database to ensure target database exists
+        try:
+            _sys_db = _client.db("_system", username=config.ARANGO_USERNAME, password=config.ARANGO_PASSWORD)
+            if not _sys_db.has_database(config.ARANGO_DB):
+                _sys_db.create_database(config.ARANGO_DB)
+                logger.info(f"ArangoDB: Created new database '{config.ARANGO_DB}' successfully.")
+        except Exception as sys_err:
+            logger.debug(f"ArangoDB _system database check note: {sys_err}")
+
+        # 2. Connect to target application database
         _db = _client.db(config.ARANGO_DB, username=config.ARANGO_USERNAME, password=config.ARANGO_PASSWORD)
 
         # Ensure all vertex collections exist

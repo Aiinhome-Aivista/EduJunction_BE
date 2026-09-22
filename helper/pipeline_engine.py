@@ -647,6 +647,23 @@ Extract/generate EXACTLY {target_q_count} comprehensive structured questions (mi
         except Exception as vec_err:
             logger.warning(f"Vector store indexing notice: {vec_err}")
 
+    # 5.5 ArangoDB Knowledge Graph Sync
+    try:
+        from database import graph_db
+        if graph_db.is_enabled():
+            chapter_name_clean = title or filename.replace(".pdf", "").replace(".docx", "").replace(".doc", "").replace("_", " ")
+            topics_to_push = detected_topics if (detected_topics and len(detected_topics) > 0) else [chapter_name_clean]
+            graph_db.upsert_hierarchical_curriculum_branch(
+                board=board,
+                class_grade=class_grade,
+                subject=subject,
+                chapter=chapter_name_clean,
+                topics_list=topics_to_push
+            )
+            print(f"  • ArangoDB Synced : Hierarchy & {len(topics_to_push)} topic node(s) linked to knowledge graph")
+    except Exception as graph_err:
+        logger.warning(f"ArangoDB sync notice in pipeline: {graph_err}")
+
     print(f"  • Questions Saved : {TermColors.BOLD}{inserted_questions_count} inserted{TermColors.END}, {updated_questions_count} updated in `question_master`")
     print(f"  • Document ID     : {doc_id} (`documents` table)")
     print(f"  • Chunks Created  : {len(chunks)} (`document_chunks` table)")
