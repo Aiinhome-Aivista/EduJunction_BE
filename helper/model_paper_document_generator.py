@@ -160,17 +160,17 @@ def assemble_cbse_paper(class_grade: str, subject: str, set_number: int) -> Dict
     sec_a.append(_synthesize_assertion_reason(1 + (set_number - 1), subject))
     sec_a.append(_synthesize_assertion_reason(2 + (set_number - 1), subject))
 
-    # Section B: 5 Very Short Answer (2M each = 10 Marks)
-    sec_b = [_synthesize_saq(i + (set_number - 1), subject, 2) for i in range(1, 6)]
+    # Section B: 5 Required + 2 Extra Choice Questions = 7 Questions Total (2M each)
+    sec_b = [_synthesize_saq(i + (set_number - 1), subject, 2) for i in range(1, 8)]
 
-    # Section C: 6 Short Answer (3M each = 18 Marks)
-    sec_c = [_synthesize_saq(i + 5 + (set_number - 1), subject, 3) for i in range(1, 7)]
+    # Section C: 6 Required + 2 Extra Choice Questions = 8 Questions Total (3M each)
+    sec_c = [_synthesize_saq(i + 5 + (set_number - 1), subject, 3) for i in range(1, 9)]
 
-    # Section D: 4 Long Answer (5M each = 20 Marks)
-    sec_d = [_synthesize_long(i + (set_number - 1), subject, 5) for i in range(1, 5)]
+    # Section D: 4 Required + 2 Extra Choice Questions = 6 Questions Total (5M each)
+    sec_d = [_synthesize_long(i + (set_number - 1), subject, 5) for i in range(1, 7)]
 
-    # Section E: 3 Case-Based Units (4M each = 12 Marks)
-    sec_e = [_synthesize_case(i + (set_number - 1), subject, 4) for i in range(1, 4)]
+    # Section E: 3 Required + 2 Extra Choice Questions = 5 Questions Total (4M each)
+    sec_e = [_synthesize_case(i + (set_number - 1), subject, 4) for i in range(1, 6)]
 
     return {
         "board": "CBSE",
@@ -183,21 +183,21 @@ def assemble_cbse_paper(class_grade: str, subject: str, set_number: int) -> Dict
         "time_allowed": "3 Hours (180 Minutes)",
         "max_marks": 80,
         "instructions": [
-            "1. This question paper contains 38 questions in 5 Sections: A, B, C, D and E.",
-            "2. Section A comprises 20 Multiple Choice Questions (MCQs) of 1 mark each (including 2 Assertion-Reason questions).",
-            "3. Section B comprises 5 Very Short Answer (VSA) type questions of 2 marks each.",
-            "4. Section C comprises 6 Short Answer (SA) type questions of 3 marks each.",
-            "5. Section D comprises 4 Long Answer (LA) type questions of 5 marks each.",
-            "6. Section E comprises 3 Source-Based / Case-Based integrated units of assessment (4 marks each) with sub-parts.",
-            "7. All Questions are compulsory. However, an internal choice in 2 Qs of Sec B, 2 Qs of Sec C, 2 Qs of Sec D and 2 Qs of Sec E has been provided.",
+            "1. This question paper contains 46 questions in 5 Sections: A, B, C, D and E.",
+            "2. Section A comprises 20 Multiple Choice Questions (MCQs) of 1 mark each (Compulsory).",
+            "3. Section B comprises 7 Very Short Answer questions (2 marks each) — Attempt any 5.",
+            "4. Section C comprises 8 Short Answer questions (3 marks each) — Attempt any 6.",
+            "5. Section D comprises 6 Long Answer questions (5 marks each) — Attempt any 4.",
+            "6. Section E comprises 5 Source/Case-Based integrated units (4 marks each) — Attempt any 3.",
+            "7. Sections B through E contain 2 extra choice questions each for student selection flexibility.",
             "8. Use of calculators is not permitted."
         ],
         "sections": [
-            {"title": "SECTION A — Multiple Choice & Assertion-Reason (20 Questions × 1 Mark = 20 Marks)", "questions": sec_a, "type": "mcq"},
-            {"title": "SECTION B — Very Short Answer Type Questions (5 Questions × 2 Marks = 10 Marks)", "questions": sec_b, "type": "saq"},
-            {"title": "SECTION C — Short Answer Type Questions (6 Questions × 3 Marks = 18 Marks)", "questions": sec_c, "type": "saq"},
-            {"title": "SECTION D — Long Answer Type Questions (4 Questions × 5 Marks = 20 Marks)", "questions": sec_d, "type": "long"},
-            {"title": "SECTION E — Case-Based Integrated Assessment (3 Questions × 4 Marks = 12 Marks)", "questions": sec_e, "type": "case"},
+            {"title": "SECTION A — Multiple Choice & Assertion-Reason (20 Compulsory Questions × 1 Mark)", "questions": sec_a, "type": "mcq"},
+            {"title": "SECTION B — Very Short Answer Type Questions (Attempt any 5 out of 7 Questions × 2 Marks)", "questions": sec_b, "type": "saq"},
+            {"title": "SECTION C — Short Answer Type Questions (Attempt any 6 out of 8 Questions × 3 Marks)", "questions": sec_c, "type": "saq"},
+            {"title": "SECTION D — Long Answer Type Questions (Attempt any 4 out of 6 Questions × 5 Marks)", "questions": sec_d, "type": "long"},
+            {"title": "SECTION E — Case-Based Integrated Assessment (Attempt any 3 out of 5 Questions × 4 Marks)", "questions": sec_e, "type": "case"},
         ]
     }
 
