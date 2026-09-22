@@ -49,6 +49,144 @@ def get_child_registration_options():
         })
 
 
+def get_curriculum_options():
+    """Fetches subjects, chapters, and topics mapped dynamically from the Database
+    based on board and class_grade, or student_id.
+    """
+    board = request.args.get("board", "").strip()
+    class_grade = request.args.get("classGrade", request.args.get("class_grade", "")).strip()
+    student_id = request.args.get("studentId", request.args.get("student_id", "")).strip()
+
+    with get_session() as session:
+        # If student_id is provided, resolve student's board and class
+        if student_id and (not board or not class_grade):
+            try:
+                student = session.get(Student, int(student_id))
+                if student:
+                    if not board and student.target_board:
+                        board = student.target_board.strip()
+                    if not class_grade and student.class_grade:
+                        class_grade = student.class_grade.strip()
+            except Exception as e:
+                pass
+
+        clean_class = class_grade.replace("Class ", "").strip() if class_grade else ""
+
+        sql = text("""
+            SELECT 
+                s.id AS subject_id, s.subject_name,
+                ch.id AS chapter_id, ch.chapter_name,
+                t.id AS topic_id, t.topic_name
+            FROM subject_master s
+            JOIN board_master b ON s.board_id = b.id
+            JOIN class_master c ON s.class_id = c.id
+            LEFT JOIN chapter_master ch ON ch.subject_id = s.id AND ch.is_active = 1
+            LEFT JOIN topic_master t ON t.chapter_id = ch.id AND t.is_active = 1
+            WHERE s.is_active = 1
+              AND (
+                  :board = ''
+                  OR LOWER(TRIM(b.board_name)) = LOWER(TRIM(:board))
+                  OR LOWER(TRIM(b.board_name)) LIKE LOWER(TRIM(:board_like))
+                  OR LOWER(TRIM(:board)) LIKE CONCAT('%', LOWER(TRIM(b.board_name)), '%')
+              )
+              AND (
+                  :class_grade = ''
+                  OR LOWER(TRIM(c.class_name)) = LOWER(TRIM(:class_grade))
+                  OR LOWER(TRIM(c.class_name)) LIKE LOWER(TRIM(:class_like))
+                  OR LOWER(TRIM(c.class_name)) = LOWER(TRIM(:clean_class))
+                  OR LOWER(TRIM(:class_grade)) LIKE CONCAT('%', LOWER(TRIM(c.class_name)), '%')
+              )
+            ORDER BY s.subject_name, ch.id, t.id
+        """)
+
+        params = {
+            "board": board,
+            "board_like": f"%{board}%" if board else "",
+            "class_grade": class_grade,
+            "class_like": f"%{clean_class}%" if clean_class else "",
+            "clean_class": clean_class,
+        }
+
+        rows = session.execute(sql, params).mappings().fetchall()
+
+        # If no direct match found, fallback without board filter
+        if not rows and class_grade:
+            fallback_sql = text("""
+                SELECT 
+                    s.id AS subject_id, s.subject_name,
+                    ch.id AS chapter_id, ch.chapter_name,
+                    t.id AS topic_id, t.topic_name
+                FROM subject_master s
+                JOIN class_master c ON s.class_id = c.id
+                LEFT JOIN chapter_master ch ON ch.subject_id = s.id AND ch.is_active = 1
+                LEFT JOIN topic_master t ON t.chapter_id = ch.id AND t.is_active = 1
+                WHERE s.is_active = 1
+                  AND (
+                      LOWER(TRIM(c.class_name)) = LOWER(TRIM(:class_grade))
+                      OR LOWER(TRIM(c.class_name)) LIKE LOWER(TRIM(:class_like))
+                      OR LOWER(TRIM(c.class_name)) = LOWER(TRIM(:clean_class))
+                  )
+                ORDER BY s.subject_name, ch.id, t.id
+            """)
+            rows = session.execute(fallback_sql, params).mappings().fetchall()
+
+        # Build hierarchical structure
+        subjects_dict = {}
+        for r in rows:
+            s_name = r["subject_name"].strip()
+            if not s_name:
+                continue
+            if s_name not in subjects_dict:
+                subjects_dict[s_name] = {
+                    "id": r["subject_id"],
+                    "name": s_name,
+                    "chapters": {}
+                }
+
+            ch_id = r["chapter_id"]
+            ch_name = r["chapter_name"]
+            if ch_id and ch_name:
+                ch_name = ch_name.strip()
+                if ch_id not in subjects_dict[s_name]["chapters"]:
+                    subjects_dict[s_name]["chapters"][ch_id] = {
+                        "id": ch_id,
+                        "name": ch_name,
+                        "topics": []
+                    }
+                t_id = r["topic_id"]
+                t_name = r["topic_name"]
+                if t_id and t_name:
+                    subjects_dict[s_name]["chapters"][ch_id]["topics"].append({
+                        "id": t_id,
+                        "name": t_name.strip()
+                    })
+
+        # Format into clean list
+        subjects_list = []
+        for s in subjects_dict.values():
+            chap_list = []
+            for ch in s["chapters"].values():
+                chap_list.append(ch)
+            subjects_list.append({
+                "id": s["id"],
+                "name": s["name"],
+                "chapters": chap_list
+            })
+
+        # Fallback if still empty: distinct active subjects from database
+        if not subjects_list:
+            distinct_subs = session.execute(
+                text("SELECT DISTINCT subject_name FROM subject_master WHERE is_active = 1 ORDER BY subject_name")
+            ).fetchall()
+            subjects_list = [{"id": idx + 1, "name": r[0], "chapters": []} for idx, r in enumerate(distinct_subs)]
+
+        return success({
+            "board": board,
+            "classGrade": class_grade,
+            "subjects": subjects_list,
+        })
+
+
 def _badge_ids_for(session, student_id: int) -> list[str]:
     return [
         sb.badge_id

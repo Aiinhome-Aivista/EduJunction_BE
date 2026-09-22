@@ -132,6 +132,10 @@ def create_app() -> Flask:
     def api_auth_logout():
         return auth_controller.logout()
 
+    @app.route("/api/v1/auth/send-reset-otp", methods=["POST"])
+    def api_auth_send_reset_otp():
+        return auth_controller.send_password_reset_otp()
+
     @app.route("/api/v1/auth/reset-password", methods=["POST"])
     def api_auth_reset_password():
         return auth_controller.reset_password()
@@ -142,6 +146,11 @@ def create_app() -> Flask:
     @app.route("/api/v1/master/board_class_dropdown", methods=["GET"])
     def api_master_board_class_dropdown():
         return parent_controller.get_child_registration_options()
+
+    @app.route("/api/v1/master/curriculum-options", methods=["GET"])
+    @app.route("/api/v1/curriculum/options", methods=["GET"])
+    def api_master_curriculum_options():
+        return parent_controller.get_curriculum_options()
 
     # ============================================================
     # 3. Parent Endpoints

@@ -84,7 +84,7 @@ def generate_exam_report_pdf(
     # Header Banner
     header_data = [
         [
-            Paragraph("<b>EduJunction</b> &bull; Student Diagnostic Report", title_style),
+            Paragraph("<b><font color=\"#000000\">Edu</font><font color=\"#000000\">Junction</font></b> &bull; Student Performance Analysis Report", title_style),
             Paragraph(f"<b>Date:</b> {exam_date}", subtitle_style),
         ]
     ]

@@ -280,6 +280,52 @@ def send_login_email(to_email: str, name: str = "", login_type: str = "Standard"
     return True
 
 
+def send_password_reset_otp_email(
+    to_email: str,
+    name: str = "",
+    username: str = "",
+    otp_code: str = "",
+) -> bool:
+    """Dispatches a secure One-Time Password (OTP) email for password reset."""
+    if not to_email or not to_email.strip():
+        return False
+
+    display_name = name.strip() if name else "User"
+    subject = f"🔐 Your EduJunction Password Reset OTP: {otp_code}"
+
+    content_html = f"""
+        <h2 style="color: #1e293b; margin-top: 0;">Password Reset Verification Code 🔐</h2>
+        <p>Hello <strong>{display_name}</strong>,</p>
+        <p>We received a request to reset the password for your <strong>EduJunction</strong> account (Username: <strong>{username}</strong>).</p>
+        
+        <p>Please enter the following 6-digit verification code to complete your password reset:</p>
+
+        <div style="background-color: #fef9c3; border: 2px dashed #eab308; padding: 20px; border-radius: 12px; margin: 24px 0; text-align: center;">
+            <span style="font-size: 32px; font-weight: 900; letter-spacing: 6px; color: #854d0e; font-family: monospace;">{otp_code}</span>
+            <p style="margin: 8px 0 0; font-size: 12px; color: #a16207; font-weight: 600;">Valid for 10 minutes</p>
+        </div>
+
+        <div style="background-color: #fef2f2; border-left: 4px solid #ef4444; padding: 12px 16px; border-radius: 8px; margin: 20px 0;">
+            <p style="margin: 0; font-size: 13px; color: #991b1b; font-weight: 500;">
+                ⚠️ <strong>Security Notice:</strong> Do not share this OTP with anyone. If you did not request this verification code, your account may be secure and you can safely ignore this email.
+            </p>
+        </div>
+
+        <p><strong>Happy Learning! 🚀</strong><br>The EduJunction Team</p>
+    """
+
+    plain_text = (
+        f"Hello {display_name},\n\n"
+        f"Your EduJunction password reset OTP is: {otp_code}\n\n"
+        f"This OTP is valid for 10 minutes. Please enter this code on the password reset screen to set your new password.\n\n"
+        f"If you did not request this reset, please ignore this email.\n\n"
+        f"Best regards,\nThe EduJunction Team"
+    )
+
+    send_email_async(to_email.strip(), subject, content_html, plain_text)
+    return True
+
+
 def send_password_changed_email(to_email: str, name: str = "", username: str = "", role_name: str = "Parent") -> bool:
     """Sends a security confirmation email immediately after password is reset."""
     display_name = name.strip() if name else "Learner"
