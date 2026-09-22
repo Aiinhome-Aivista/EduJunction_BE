@@ -1,4 +1,4 @@
-"""Admin LLM Configuration Controller for EduJunction (SahajPath).
+"""Admin LLM Configuration Controller for EduJunction.
 Manages dynamic multi-provider LLM configurations (Gemini, OpenAI, Claude, Ollama, Mistral, Groq, DeepSeek, Custom).
 """
 import time
@@ -153,7 +153,7 @@ def set_active_llm_config(config_id: str):
         session.commit()
 
         return success({
-            "message": f"'{c.display_title}' is now the ACTIVE LLM Engine for SahajPath.",
+            "message": f"'{c.display_title}' is now the ACTIVE LLM Engine for EduJunction.",
             "config": _config_to_dict(c)
         })
 

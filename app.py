@@ -1,4 +1,4 @@
-"""SahajPath backend entry point.
+"""EduJunction backend entry point.
 
 app.py defines all API route endpoints explicitly with @app.route
 and delegates execution directly to their respective controller functions.
@@ -457,6 +457,14 @@ def create_app() -> Flask:
     def api_admin_rag_save_questions():
         return upload_file_controller.save_generated_questions_api()
 
+    @app.route("/api/v1/admin/rag/process-document", methods=["POST"])
+    def api_admin_rag_process_document():
+        return upload_file_controller.process_curriculum_document_api()
+
+    @app.route("/api/v1/admin/rag/process-documents-batch", methods=["POST"])
+    def api_admin_rag_process_documents_batch():
+        return upload_file_controller.process_curriculum_documents_batch_api()
+
     @app.route("/api/v1/admin/rag/analyze-book", methods=["POST"])
     def api_admin_rag_analyze_book():
         return upload_file_controller.analyze_and_extract_book_api()
@@ -576,6 +584,10 @@ def create_app() -> Flask:
     def api_blog_create_author():
         return blog_controller.create_author()
 
+    @app.route("/api/v1/blogs/<int:blog_id>/share", methods=["POST"])
+    def api_blog_share(blog_id):
+        return blog_controller.increment_blog_share(blog_id)
+
     # ============================================================
     # 20. Subscription & Pricing Plan Endpoints (₹300 Per Model Test)
     # ============================================================
@@ -594,6 +606,14 @@ def create_app() -> Flask:
     @app.route("/api/v1/subscriptions/subject/my-subscriptions", methods=["GET"])
     def api_subscription_my_subscriptions():
         return subscription_controller.get_user_subject_subscriptions()
+
+    @app.route("/api/v1/subscriptions/subject/<int:subscription_id>/preview-paper", methods=["GET"])
+    def api_subscription_preview_paper(subscription_id):
+        return subscription_controller.preview_subject_model_paper(subscription_id)
+
+    @app.route("/api/v1/subscriptions/subject/<int:subscription_id>/evaluate-paper", methods=["POST"])
+    def api_subscription_evaluate_paper(subscription_id):
+        return subscription_controller.evaluate_subject_model_paper(subscription_id)
 
     @app.route("/api/v1/subscriptions/subject/<int:subscription_id>/download-paper", methods=["GET"])
     def api_subscription_download_paper(subscription_id):
@@ -653,4 +673,4 @@ def create_app() -> Flask:
 app = create_app()
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=8000, debug=(config.APP_ENV == "development"))
+    app.run(host="0.0.0.0", port=5002, debug=(config.APP_ENV == "development"))

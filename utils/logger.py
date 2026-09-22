@@ -2,7 +2,7 @@
 import logging
 import sys
 
-logger = logging.getLogger("sahajpath")
+logger = logging.getLogger("edujunction")
 logger.setLevel(logging.INFO)
 
 if not logger.handlers:

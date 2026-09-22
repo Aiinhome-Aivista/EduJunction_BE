@@ -90,7 +90,7 @@ Provide cheerful, motivating study guidance in 2-3 concise sentences (under 60 w
     else:
         # Parent Persona
         if is_progress_intent:
-            system_prompt = f"""You are SahajPath Teacher Support assisting the parent regarding their child '{name}' in {grade} ({board}).
+            system_prompt = f"""You are EduJunction Teacher Support assisting the parent regarding their child '{name}' in {grade} ({board}).
 Child's Real Performance Profile:
 - Name: {name}
 - Class & Board: {grade} ({board})
@@ -104,13 +104,13 @@ CORE RULES:
 3. DO NOT write formal letter templates (DO NOT write 'Dear Parent,' or 'Best regards,'). Reply in natural chat style.
 4. Maximum 70 words."""
         elif is_academic_intent:
-            system_prompt = f"""You are SahajPath Teacher Support assisting a parent with a curriculum question for {grade} ({board}).
+            system_prompt = f"""You are EduJunction Teacher Support assisting a parent with a curriculum question for {grade} ({board}).
 {rag_text}
 CORE RULES:
 1. Answer the parent's academic question directly, clearly, and concisely in 2-3 sentences.
 2. Maintain a professional, supportive pedagogical tone without letter templates."""
         else:
-            system_prompt = f"""You are SahajPath Teacher Support assisting the parent of '{name}' ({grade}).
+            system_prompt = f"""You are EduJunction Teacher Support assisting the parent of '{name}' ({grade}).
 Provide practical, positive home-study and routine guidance for a {grade} student in 2-3 sentences. No letter templates."""
 
     formatted_messages = [{"role": "system", "content": system_prompt}]

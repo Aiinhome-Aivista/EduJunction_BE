@@ -1,4 +1,4 @@
-"""Email controller for SahajPath.
+"""Email controller for EduJunction.
 
 Handles background dispatching of transactional emails such as:
 - Account Registration (Welcome Email)
@@ -16,8 +16,8 @@ from utils.logger import logger
 
 
 def render_email_template(title: str, content_html: str) -> str:
-    """Create a modern, responsive HTML email template for SahajPath."""
-    app_name = config.APP_NAME or "SahajPath"
+    """Create a modern, responsive HTML email template for EduJunction."""
+    app_name = config.APP_NAME or "EduJunction"
     current_year = datetime.now().year
 
     return f"""<!DOCTYPE html>
@@ -90,14 +90,14 @@ def render_email_template(title: str, content_html: str) -> str:
 <body>
     <div class="wrapper">
         <div class="header">
-            <div class="logo">🎓 <span style="color: #09090b;">Sahaj</span><span style="color: #eab308;">Path</span></div>
+            <div class="logo">🎓 <span style="color: #09090b;">Edu</span><span style="color: #eab308;">Junction</span></div>
             <p>AI-Powered Adaptive Learning & Progress Analytics</p>
         </div>
         <div class="body-content">
             {content_html}
         </div>
         <div class="footer">
-            <p><strong><span style="color: #09090b;">Sahaj</span><span style="color: #eab308;">Path</span></strong> &bull; Personalized Learning Ecosystem</p>
+            <p><strong><span style="color: #09090b;">Edu</span><span style="color: #eab308;">Junction</span></strong> &bull; Personalized Learning Ecosystem</p>
             <p>&copy; {current_year} {app_name}. All rights reserved.</p>
         </div>
     </div>
@@ -119,7 +119,7 @@ def _send_email_sync(
         smtp_port = int(config.SMTP_PORT or os.getenv("SMTP_PORT", "587"))
         smtp_username = config.SMTP_USERNAME or os.getenv("SMTP_USERNAME")
         smtp_password = config.SMTP_PASSWORD or os.getenv("SMTP_PASSWORD")
-        smtp_sender_name = config.SMTP_SENDER_NAME or os.getenv("SMTP_SENDER_NAME", "SahajPath")
+        smtp_sender_name = config.SMTP_SENDER_NAME or os.getenv("SMTP_SENDER_NAME", "EduJunction")
         smtp_use_tls = config.SMTP_USE_TLS if hasattr(config, "SMTP_USE_TLS") else True
 
         if not smtp_username or not smtp_password:
@@ -182,10 +182,10 @@ def send_email_async(
 
 def send_email(to_email: str) -> bool:
     """Standard send_email function for login success notification."""
-    subject = "Login Successful - SahajPath"
+    subject = "Login Successful - EduJunction"
     content_html = """
-        <h2 style="color: #1e293b; margin-top: 0;">Welcome back to SahajPath! 🎓</h2>
-        <p>You have successfully logged in to your <strong>SahajPath</strong> account.</p>
+        <h2 style="color: #1e293b; margin-top: 0;">Welcome back to EduJunction! 🎓</h2>
+        <p>You have successfully logged in to your <strong>EduJunction</strong> account.</p>
         <div class="card">
             <p style="margin: 0; font-size: 14px; color: #475569;">
                 📍 <strong>Security Notice:</strong> If this was not you, please secure your account immediately by resetting your password.
@@ -195,10 +195,10 @@ def send_email(to_email: str) -> bool:
         <p><strong>Happy Learning! 🚀</strong></p>
     """
     plain_text = (
-        "Welcome back to SahajPath!\n\n"
+        "Welcome back to EduJunction!\n\n"
         "You have successfully logged in to your account.\n\n"
         "If this was not you, please secure your account immediately.\n\n"
-        "Happy Learning!\nSahajPath Team"
+        "Happy Learning!\nEduJunction Team"
     )
     send_email_async(to_email, subject, content_html, plain_text)
     return True
@@ -207,14 +207,14 @@ def send_email(to_email: str) -> bool:
 def send_registration_email(to_email: str, name: str = "", username: str = "", role_name: str = "PARENT") -> bool:
     """Sends a personalized welcome email upon successful account registration."""
     display_name = name.strip() if name else "Learner"
-    subject = "Welcome to SahajPath! 🎓 Your Account is Ready"
+    subject = "Welcome to EduJunction! 🎓 Your Account is Ready"
 
     username_info = f"<p><strong>Username:</strong> <code>{username}</code></p>" if username else ""
     role_info = f"<p><strong>Role:</strong> {role_name.title()}</p>" if role_name else ""
 
     content_html = f"""
         <h2 style="color: #1e293b; margin-top: 0;">Welcome aboard, {display_name}! 🎉</h2>
-        <p>Thank you for joining <strong>SahajPath</strong>. Your account has been created successfully.</p>
+        <p>Thank you for joining <strong>EduJunction</strong>. Your account has been created successfully.</p>
         
         <div class="card">
             <h3 style="margin-top: 0; font-size: 15px; color: #334155;">📋 Account Details:</h3>
@@ -223,7 +223,7 @@ def send_registration_email(to_email: str, name: str = "", username: str = "", r
             {role_info}
         </div>
 
-        <p>With SahajPath, you can:</p>
+        <p>With EduJunction, you can:</p>
         <ul style="color: #475569; padding-left: 20px;">
             <li>Track real-time learning analytics and skill mastery.</li>
             <li>Experience AI-generated practice exams & adaptive learning paths.</li>
@@ -231,16 +231,16 @@ def send_registration_email(to_email: str, name: str = "", username: str = "", r
         </ul>
 
         <p>Get started today and unlock the power of AI-assisted education!</p>
-        <p><strong>Best regards,</strong><br>The SahajPath Team</p>
+        <p><strong>Best regards,</strong><br>The EduJunction Team</p>
     """
 
     plain_text = (
         f"Welcome aboard, {display_name}!\n\n"
-        f"Thank you for registering on SahajPath.\n"
+        f"Thank you for registering on EduJunction.\n"
         f"Email: {to_email}\n"
         f"Username: {username}\n"
         f"Role: {role_name}\n\n"
-        f"Best regards,\nThe SahajPath Team"
+        f"Best regards,\nThe EduJunction Team"
     )
 
     send_email_async(to_email, subject, content_html, plain_text)
@@ -251,11 +251,11 @@ def send_login_email(to_email: str, name: str = "", login_type: str = "Standard"
     """Sends a login alert email for Standard Login or Google OAuth Login."""
     display_name = name.strip() if name else "User"
     current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S UTC")
-    subject = f"Login Alert ({login_type}) - SahajPath"
+    subject = f"Login Alert ({login_type}) - EduJunction"
 
     content_html = f"""
         <h2 style="color: #1e293b; margin-top: 0;">Hello, {display_name}! 🎓</h2>
-        <p>You have successfully logged in to your <strong>SahajPath</strong> account.</p>
+        <p>You have successfully logged in to your <strong>EduJunction</strong> account.</p>
         
         <div class="card">
             <p style="margin: 4px 0;"><strong>Login Method:</strong> {login_type} Sign-in</p>
@@ -266,14 +266,14 @@ def send_login_email(to_email: str, name: str = "", login_type: str = "Standard"
         <p style="color: #475569;">
             If you did not perform this action, please change your password or contact our support team immediately.
         </p>
-        <p><strong>Happy Learning! 🚀</strong><br>The SahajPath Team</p>
+        <p><strong>Happy Learning! 🚀</strong><br>The EduJunction Team</p>
     """
 
     plain_text = (
         f"Hello {display_name}!\n\n"
-        f"You have successfully logged in to SahajPath via {login_type} Sign-in at {current_time}.\n\n"
+        f"You have successfully logged in to EduJunction via {login_type} Sign-in at {current_time}.\n\n"
         f"If this was not you, please secure your account immediately.\n\n"
-        f"Happy Learning!\nThe SahajPath Team"
+        f"Happy Learning!\nThe EduJunction Team"
     )
 
     send_email_async(to_email, subject, content_html, plain_text)
@@ -284,7 +284,7 @@ def send_password_changed_email(to_email: str, name: str = "", username: str = "
     """Sends a security confirmation email immediately after password is reset."""
     display_name = name.strip() if name else "Learner"
     current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S UTC")
-    subject = "🔐 Security Alert: Your SahajPath Password Was Changed"
+    subject = "🔐 Security Alert: Your EduJunction Password Was Changed"
 
     username_info = f"<p style='margin: 4px 0;'><strong>Username:</strong> <code>{username}</code></p>" if username else ""
     role_info = f"<p style='margin: 4px 0;'><strong>Account Role:</strong> {role_name.title()}</p>" if role_name else ""
@@ -292,7 +292,7 @@ def send_password_changed_email(to_email: str, name: str = "", username: str = "
     content_html = f"""
         <h2 style="color: #1e293b; margin-top: 0;">Password Changed Successfully 🔐</h2>
         <p>Hello <strong>{display_name}</strong>,</p>
-        <p>This is a confirmation that the password for your <strong>SahajPath</strong> account was recently changed.</p>
+        <p>This is a confirmation that the password for your <strong>EduJunction</strong> account was recently changed.</p>
         
         <div class="card">
             <h3 style="margin-top: 0; font-size: 15px; color: #334155;">📋 Account Details:</h3>
@@ -310,14 +310,14 @@ def send_password_changed_email(to_email: str, name: str = "", username: str = "
         </div>
 
         <p style="color: #475569;">If you made this change yourself, you can safely disregard this email.</p>
-        <p><strong>Happy Learning! 🚀</strong><br>The SahajPath Team</p>
+        <p><strong>Happy Learning! 🚀</strong><br>The EduJunction Team</p>
     """
 
     plain_text = (
         f"Hello {display_name},\n\n"
-        f"This is a confirmation that the password for your SahajPath account ({username or to_email}) was recently changed at {current_time}.\n\n"
+        f"This is a confirmation that the password for your EduJunction account ({username or to_email}) was recently changed at {current_time}.\n\n"
         f"If you did not perform this change, please contact support or reset your password immediately.\n\n"
-        f"Best regards,\nThe SahajPath Team"
+        f"Best regards,\nThe EduJunction Team"
     )
 
     send_email_async(to_email, subject, content_html, plain_text)
@@ -341,7 +341,7 @@ def send_school_student_registered_email(
     display_school = school_name.strip() if school_name else "Your Institution"
     display_parent = parent_name.strip() if parent_name else "Parent / Guardian"
     reg_date = datetime.now().strftime("%d %b %Y, %I:%M %p")
-    subject = f"🎓 Student Registration Notice: {display_student} registered in SahajPath"
+    subject = f"🎓 Student Registration Notice: {display_student} registered in EduJunction"
 
     school_info = f"<p style='margin: 4px 0;'><strong>School Name:</strong> {display_school}</p>" if school_name else ""
     parent_info = f"<p style='margin: 4px 0;'><strong>Registered By:</strong> {display_parent} ({parent_email})</p>" if parent_email else f"<p style='margin: 4px 0;'><strong>Registered By:</strong> {display_parent}</p>"
@@ -349,7 +349,7 @@ def send_school_student_registered_email(
     content_html = f"""
         <h2 style="color: #1e293b; margin-top: 0;">Student Academic Registration Notice 🎓</h2>
         <p>Dear Administrator / Educator,</p>
-        <p>This is to inform you that <strong>{display_student}</strong> has been registered on the <strong>SahajPath</strong> Adaptive Learning & Diagnostic Assessment Platform affiliated with your institution.</p>
+        <p>This is to inform you that <strong>{display_student}</strong> has been registered on the <strong>EduJunction</strong> Adaptive Learning & Diagnostic Assessment Platform affiliated with your institution.</p>
         
         <div class="card">
             <h3 style="margin-top: 0; font-size: 15px; color: #334155;">📋 Student Academic Profile:</h3>
@@ -363,25 +363,25 @@ def send_school_student_registered_email(
 
         <div style="background-color: #f0fdf4; border-left: 4px solid #22c55e; padding: 14px 18px; border-radius: 8px; margin: 20px 0;">
             <p style="margin: 0; font-size: 13px; color: #166534; font-weight: 500;">
-                💡 <strong>About SahajPath Diagnostic Platform:</strong><br>
-                SahajPath assists students in continuous curriculum mastery through adaptive 10-mark diagnostic exams, AI misconception classification, and evolutionary topic mastery tracking aligned with {target_board} standards.
+                💡 <strong>About EduJunction Diagnostic Platform:</strong><br>
+                EduJunction assists students in continuous curriculum mastery through adaptive 10-mark diagnostic exams, AI misconception classification, and evolutionary topic mastery tracking aligned with {target_board} standards.
             </p>
         </div>
 
         <p style="color: #475569;">If you are an educator associated with this student, you can access diagnostic dossiers and learning paths to monitor academic progress.</p>
-        <p><strong>Warm regards,</strong><br>The SahajPath Academic Support Team</p>
+        <p><strong>Warm regards,</strong><br>The EduJunction Academic Support Team</p>
     """
 
     plain_text = (
         f"Dear Administrator / Educator,\n\n"
-        f"This is to notify you that {display_student} has been registered on the SahajPath platform.\n\n"
+        f"This is to notify you that {display_student} has been registered on the EduJunction platform.\n\n"
         f"Student Name: {display_student}\n"
         f"Class / Grade: {class_grade}\n"
         f"Target Board: {target_board}\n"
         f"School: {display_school}\n"
         f"Registered By: {display_parent} ({parent_email})\n"
         f"Date: {reg_date}\n\n"
-        f"Best regards,\nThe SahajPath Academic Support Team"
+        f"Best regards,\nThe EduJunction Academic Support Team"
     )
 
     send_email_async(to_school_email.strip(), subject, content_html, plain_text)
@@ -411,7 +411,7 @@ def send_student_exam_report_email(
     content_html = f"""
         <h2 style="color: #1e293b; margin-top: 0;">Diagnostic Exam Result & Assessment Report 📊</h2>
         <p>Dear Parent / Guardian,</p>
-        <p><strong>{display_name}</strong> has just completed an assessment on <strong>SahajPath</strong>.</p>
+        <p><strong>{display_name}</strong> has just completed an assessment on <strong>EduJunction</strong>.</p>
         
         <div class="card" style="border-left: 4px solid #0284c7; background: #f0f9ff;">
             <h3 style="margin-top: 0; color: #0369a1;">📝 Exam Score Overview:</h3>
@@ -428,21 +428,21 @@ def send_student_exam_report_email(
             </p>
         </div>
 
-        <p>You can also review active mastery and adaptive learning roadmaps in the SahajPath Parent Portal.</p>
-        <p><strong>Warm regards,</strong><br>The SahajPath Academic Assessment Team</p>
+        <p>You can also review active mastery and adaptive learning roadmaps in the EduJunction Parent Portal.</p>
+        <p><strong>Warm regards,</strong><br>The EduJunction Academic Assessment Team</p>
     """
 
     plain_text = (
         f"Dear Parent / Guardian,\n\n"
-        f"{display_name} has completed the {subject_name} exam on SahajPath.\n"
+        f"{display_name} has completed the {subject_name} exam on EduJunction.\n"
         f"Score: {marks_obtained}/{total_marks} ({accuracy_percentage}%)\n"
         f"Curriculum: {board} - {class_grade}\n"
         f"Date: {exam_date}\n\n"
         f"Please find the detailed PDF Diagnostic Report attached to this email.\n\n"
-        f"Best regards,\nThe SahajPath Academic Assessment Team"
+        f"Best regards,\nThe EduJunction Academic Assessment Team"
     )
 
-    clean_filename = f"SahajPath_Report_{display_name.replace(' ', '_')}_{subject_name.replace(' ', '_')}.pdf"
+    clean_filename = f"EduJunction_Report_{display_name.replace(' ', '_')}_{subject_name.replace(' ', '_')}.pdf"
 
     attachments = [
         {
@@ -455,5 +455,3 @@ def send_student_exam_report_email(
 
     send_email_async(to_email.strip(), subject, content_html, plain_text, attachments)
     return True
-
-

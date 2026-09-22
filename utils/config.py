@@ -51,7 +51,10 @@ class Config:
     SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
     SMTP_USERNAME = os.getenv("SMTP_USERNAME")
     SMTP_PASSWORD = os.getenv("SMTP_PASSWORD")
-    SMTP_SENDER_NAME = os.getenv("SMTP_SENDER_NAME", "SahajPath")
+    SMTP_SENDER_NAME = os.getenv("SMTP_SENDER_NAME", "EduJunction")
     SMTP_USE_TLS = os.getenv("SMTP_USE_TLS", "True").lower() in ("true", "1", "t", "yes")
+
+    RAZORPAY_KEY_ID = os.getenv("RAZORPAY_KEY_ID", "")
+    RAZORPAY_KEY_SECRET = os.getenv("RAZORPAY_KEY_SECRET", "")
 
 config = Config()

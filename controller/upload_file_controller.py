@@ -526,5 +526,130 @@ def analyze_and_extract_book_api():
         return success(response_payload, 201)
 
 
+@token_required
+@roles_required("ADMIN", "SUPER_ADMIN", "TEACHER")
+def process_curriculum_document_api():
+    """Executes the 5-step automated processing pipeline for a single uploaded textbook/question paper."""
+    from helper.pipeline_engine import process_curriculum_document_pipeline
+
+    if "file" not in request.files:
+        raise ValidationError("No file uploaded in the request.")
+
+    file = request.files["file"]
+    if not file or not file.filename:
+        raise ValidationError("Uploaded file is invalid or empty.")
+
+    board = request.form.get("board", "CBSE")
+    class_grade = request.form.get("classGrade") or request.form.get("class_grade", "Class 10")
+    subject = request.form.get("subject", "Mathematics")
+    document_type = request.form.get("documentType") or request.form.get("document_type", "textbook")
+    raw_q_count = request.form.get("questionCount") or request.form.get("question_count")
+    question_count = int(raw_q_count) if raw_q_count and str(raw_q_count).isdigit() else None
+    topic_id_val = request.form.get("topicId") or request.form.get("topic_id")
+    target_topic_id = int(topic_id_val) if topic_id_val and str(topic_id_val).isdigit() else None
+
+    file_bytes = file.read()
+
+    with get_session() as session:
+        result = process_curriculum_document_pipeline(
+            session=session,
+            file_bytes=file_bytes,
+            filename=file.filename,
+            board=board,
+            class_grade=class_grade,
+            subject=subject,
+            document_type=document_type,
+            question_count=question_count,
+            target_topic_id=target_topic_id,
+            uploaded_by=g.current_user_id if hasattr(g, "current_user_id") else None,
+        )
+        return success(result, 201)
+
+
+@token_required
+@roles_required("ADMIN", "SUPER_ADMIN", "TEACHER")
+def process_curriculum_documents_batch_api():
+    """Executes the 5-step automated processing pipeline for multiple uploaded documents in batch."""
+    from helper.pipeline_engine import process_curriculum_document_pipeline, TermColors, _print_separator
+
+    # Support multiple files uploaded as 'files' or 'file'
+    files = request.files.getlist("files") or request.files.getlist("file")
+    if not files or len(files) == 0:
+        raise ValidationError("No files uploaded for batch processing.")
+
+    board = request.form.get("board", "CBSE")
+    class_grade = request.form.get("classGrade") or request.form.get("class_grade", "Class 10")
+    subject = request.form.get("subject", "Mathematics")
+    document_type = request.form.get("documentType") or request.form.get("document_type", "textbook")
+    raw_q_count = request.form.get("questionCount") or request.form.get("question_count")
+    question_count = int(raw_q_count) if raw_q_count and str(raw_q_count).isdigit() else None
+    topic_id_val = request.form.get("topicId") or request.form.get("topic_id")
+    target_topic_id = int(topic_id_val) if topic_id_val and str(topic_id_val).isdigit() else None
+
+    total_files = len(files)
+    _print_separator(f"STARTING BATCH PROCESSING: {total_files} FILES", TermColors.HEADER)
+    print(f"Target Configuration: Board=[{board}] | Class=[{class_grade}] | Subject=[{subject}] | Mode=[{document_type.upper()}]")
+
+    results = []
+    total_saved_questions = 0
+    successful_count = 0
+    failed_count = 0
+
+    with get_session() as session:
+        for idx, file in enumerate(files):
+            file_num = idx + 1
+            if not file or not file.filename:
+                continue
+
+            print(f"\n{TermColors.BOLD}{TermColors.CYAN}>>> PROCESSING FILE [{file_num}/{total_files}]: {file.filename} (Remaining: {total_files - file_num}){TermColors.END}")
+            file_bytes = file.read()
+
+            try:
+                res = process_curriculum_document_pipeline(
+                    session=session,
+                    file_bytes=file_bytes,
+                    filename=file.filename,
+                    board=board,
+                    class_grade=class_grade,
+                    subject=subject,
+                    document_type=document_type,
+                    question_count=question_count,
+                    target_topic_id=target_topic_id,
+                    uploaded_by=g.current_user_id if hasattr(g, "current_user_id") else None,
+                )
+                res["status"] = "SUCCESS"
+                res["file_index"] = file_num
+                res["total_files"] = total_files
+                results.append(res)
+                total_saved_questions += res.get("questions_inserted", 0) + res.get("questions_updated", 0)
+                successful_count += 1
+            except Exception as file_err:
+                print(f"{TermColors.BOLD}\033[91m[ERROR] Failed processing {file.filename}: {file_err}{TermColors.END}")
+                results.append({
+                    "status": "FAILED",
+                    "file_index": file_num,
+                    "filename": file.filename,
+                    "error": str(file_err),
+                    "total_extracted": 0,
+                    "questions_inserted": 0,
+                })
+                failed_count += 1
+
+    _print_separator(f"BATCH PROCESSING COMPLETE: {successful_count}/{total_files} Succeeded, {total_saved_questions} Total Questions Added", TermColors.GREEN)
+
+    return success({
+        "total_files": total_files,
+        "successful_count": successful_count,
+        "failed_count": failed_count,
+        "total_questions_saved": total_saved_questions,
+        "board": board,
+        "classGrade": class_grade,
+        "subject": subject,
+        "documentType": document_type,
+        "results": results,
+    }, 201)
+
+
+
 
 

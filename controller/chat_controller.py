@@ -246,7 +246,7 @@ def get_chat_suggestions():
                         "success": True,
                         "role": "PARENT",
                         "suggestions": [
-                            "How do I get started with SahajPath?",
+                            "How do I get started with EduJunction?",
                             "How can I add and track my child's learning journey?",
                             "What is the best way to build a daily study routine?",
                             "How do 10-Mark diagnostic assessments work?"

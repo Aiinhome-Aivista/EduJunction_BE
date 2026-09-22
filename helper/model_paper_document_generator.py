@@ -1,4 +1,4 @@
-"""Model Question Paper Document Generator for EduJunction (SahajPath).
+"""Model Question Paper Document Generator for EduJunction.
 Generates authentic 2027 Board Specimen Question Papers in PDF (ReportLab) and Word (DOCX) formats
 customized for CBSE, ICSE, and ISC examination standards, markings, and instructions.
 """
@@ -65,6 +65,7 @@ def _synthesize_curriculum_mcq(num: int, subject: str, board: str) -> dict:
             f"D) The rate of change is strictly zero at the initial transition point"
         ],
         "correct_answer": "A",
+        "explanation": f"Under standard fundamental principles of {topic}, option A accurately reflects the governing relationship whereas other choices contradict boundary equilibrium.",
         "marks": 1
     }
 
@@ -80,6 +81,7 @@ def _synthesize_assertion_reason(num: int, subject: str) -> dict:
             "D) (A) is false but (R) is true"
         ],
         "correct_answer": "A",
+        "explanation": "Both Assertion and Reason are true scientific statements, and Reason provides the correct direct underlying physical/conceptual justification.",
         "marks": 1
     }
 
@@ -92,8 +94,18 @@ def _synthesize_saq(num: int, subject: str, marks: int = 2) -> dict:
         f"Write down the step-by-step procedure to determine the unknown coefficient in a standard {subject} experiment.",
         f"Justify why energy dissipation occurs during non-conservative transformations in {subject} modeling.",
     ]
+    model_answers = [
+        f"Fundamental law states that in any {subject} system under steady state, the rate of change is directly proportional to applied gradient. Mathematical formulation: Formula with standard SI units and boundary constraints.",
+        f"Two critical factors: (1) Ambient temperature and pressure gradients altering internal resistance, (2) Active concentration/flux density. Practical application: Standard calibration in precision instruments.",
+        f"Ideal systems follow theoretical linearity without internal losses; Non-ideal systems exhibit hysteresis, frictional damping, and thermal dissipation at higher operating ranges.",
+        f"Procedure: (1) Set up standardized test apparatus. (2) Record baseline parameters. (3) Measure response across incremental test points. (4) Plot linear slope and compute coefficient = ΔY / ΔX.",
+        f"Energy dissipation arises because non-conservative forces (friction, thermal resistance, radiation) convert usable mechanical/electrical energy into irreversible thermal losses.",
+    ]
+    idx = (num - 1) % len(prompts)
     return {
-        "question": prompts[(num - 1) % len(prompts)],
+        "question": prompts[idx],
+        "correct_answer": model_answers[idx],
+        "explanation": f"Marking Rubric [{marks} Marks]: 1 Mark for stating core concept/definition with SI units; 1 Mark for complete supporting points/steps.",
         "marks": marks
     }
 
@@ -105,8 +117,17 @@ def _synthesize_long(num: int, subject: str, marks: int = 5) -> dict:
         f"(a) Prove that the sum of dynamic parameters remains constant throughout harmonic oscillations in {subject}.<br/>(b) Solve for the steady-state value when external excitation matches the resonant threshold. [3 + 2 = 5 Marks]",
         f"(a) Compare the theoretical derivation with empirical observations in {subject} systems.<br/>(b) Formulate the boundary equations and deduce the limiting value as parameters approach infinity. [3 + 2 = 5 Marks]",
     ]
+    model_answers = [
+        f"Part (a): State the principle and show step-by-step analytical derivation with boundary conditions. Part (b): Stepwise numerical calculation: Formula, substitution, final numerical result with proper SI units.",
+        f"Part (a): Labeled schematic diagram, structural components, working stages, and derivation of efficiency = (Useful Output / Total Input) × 100%. Part (b): Instrumental zero-error and ambient fluctuations; corrective calibration protocols.",
+        f"Part (a): Kinetic + Potential parameters = Constant total energy derivation. Part (b): Resonant amplitude and steady-state solution at excitation frequency ω0.",
+        f"Part (a): Analytical vs empirical comparison points. Part (b): Limiting asymptotic formulation as t -> infinity.",
+    ]
+    idx = (num - 1) % len(prompts)
     return {
-        "question": prompts[(num - 1) % len(prompts)],
+        "question": prompts[idx],
+        "correct_answer": model_answers[idx],
+        "explanation": f"Marking Rubric [{marks} Marks]: 3 Marks for comprehensive theoretical derivation and schematic diagram; 2 Marks for numerical/analytical justification.",
         "marks": marks
     }
 
@@ -120,6 +141,8 @@ def _synthesize_case(num: int, subject: str, marks: int = 4) -> dict:
         "question": f"(i) Identify the independent and dependent variables in the investigation described above. [1 Mark]<br/>"
                     f"(ii) State the physical or mathematical significance of the observed transition threshold. [1 Mark]<br/>"
                     f"(iii) Calculate the expected output variance when operational load is increased by 25% under nominal baseline conditions. [2 Marks]",
+        "correct_answer": "(i) Independent variable: Controlled input load/parameters; Dependent variable: System response telemetry. (ii) Transition threshold marks the linearity limit beyond which saturation occurs. (iii) Applying 25% load increment: Output variance = 4.2% × 1.25 = 5.25%.",
+        "explanation": f"Marking Rubric [{marks} Marks]: (i) 1 Mark for correct variable identification; (ii) 1 Mark for conceptual threshold significance; (iii) 2 Marks for step-by-step variance calculation.",
         "marks": marks
     }
 

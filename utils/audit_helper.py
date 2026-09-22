@@ -3,7 +3,7 @@ from typing import Optional
 from sqlalchemy.orm import Session
 from model.models import AuditLog, gen_uuid, get_ist_now
 
-logger = logging.getLogger("sahajpath")
+logger = logging.getLogger("edujunction")
 
 
 def get_client_ip(req=None) -> Optional[str]:

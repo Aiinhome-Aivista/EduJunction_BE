@@ -3,9 +3,13 @@
 Mistral and ArangoDB are also forced off so every AI call exercises the
 deterministic fallback path, keeping tests hermetic and free."""
 import os
+import sys
 import uuid
 
 import pytest
+
+# Ensure root directory is in Python path for test discovery
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 os.environ["DATABASE_URL"] = "sqlite:///./test_pytest.db"
 os.environ["JWT_SECRET_KEY"] = "pytest-secret"
@@ -14,13 +18,18 @@ os.environ["MISTRAL_API_KEY"] = ""
 
 from database.dbConnection import init_db, engine  # noqa: E402
 import app as app_module  # noqa: E402
-import seed_db  # noqa: E402
+
+try:
+    import seed_db
+except ImportError:
+    seed_db = None
 
 
 @pytest.fixture(scope="session", autouse=True)
 def _setup_database():
     init_db()
-    seed_db.seed()
+    if seed_db and hasattr(seed_db, "seed"):
+        seed_db.seed()
     yield
     engine.dispose()
     db_path = "./test_pytest.db"
