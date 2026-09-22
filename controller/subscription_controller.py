@@ -15,6 +15,7 @@ from sqlalchemy import or_, desc
 
 from database.dbConnection import get_session
 from middleware.authMiddleware import token_required
+from middleware.roleMiddleware import assert_owns_student
 from model.models import SubscriptionPlan, UserSubscription, User, Student
 from utils.date_helper import now_ist
 from utils.errors import AppError, NotFoundError, ValidationError, ForbiddenError
@@ -30,6 +31,27 @@ def get_razorpay_credentials():
     key_id = (os.getenv("RAZORPAY_KEY_ID") or RAZORPAY_KEY_ID or "").strip().strip('"').strip("'")
     key_secret = (os.getenv("RAZORPAY_KEY_SECRET") or RAZORPAY_KEY_SECRET or "").strip().strip('"').strip("'")
     return key_id, key_secret
+
+def init_subscription_columns():
+    """Ensures extended columns exist in user_subscriptions table."""
+    try:
+        with get_session() as session:
+            from sqlalchemy import text
+            for col_def in [
+                "ALTER TABLE user_subscriptions ADD COLUMN score_obtained DECIMAL(10,2) NULL",
+                "ALTER TABLE user_subscriptions ADD COLUMN total_marks DECIMAL(10,2) DEFAULT 80.00",
+                "ALTER TABLE user_subscriptions ADD COLUMN accuracy_percentage DECIMAL(5,2) NULL",
+                "ALTER TABLE user_subscriptions ADD COLUMN submitted_at DATETIME NULL",
+            ]:
+                try:
+                    session.execute(text(col_def))
+                    session.commit()
+                except Exception:
+                    session.rollback()
+    except Exception as e:
+        logger.warning(f"init_subscription_columns check: {e}")
+
+init_subscription_columns()
 
 
 # ─────────────────────────────────────────────────────────────
@@ -96,7 +118,7 @@ def create_subject_order():
     board = str(payload.get("board", "CBSE")).strip()
     class_grade = str(payload.get("classGrade", "Class 10")).strip()
     subject = str(payload.get("subject", "Mathematics")).strip()
-    student_id = payload.get("studentId")
+    student_id = payload.get("studentId") or payload.get("student_id")
     plan_id = payload.get("planId")
     quantity = max(1, min(10, int(payload.get("quantity", 1))))
 
@@ -104,6 +126,25 @@ def create_subject_order():
         raise ValidationError("Board, Class Grade, and Subject are required")
 
     with get_session() as session:
+        user_id = g.current_user_id
+        role = getattr(g, "current_user_role", "").upper()
+
+        target_student = None
+        if role == "PARENT":
+            if student_id:
+                target_student = assert_owns_student(session, student_id, user_id)
+            else:
+                # Fallback to first registered child if not explicitly passed
+                target_student = session.query(Student).filter(Student.parent_user_id == user_id).first()
+                if target_student:
+                    student_id = target_student.id
+        elif role == "STUDENT":
+            target_student = session.query(Student).filter(
+                or_(Student.user_id == user_id, Student.id == user_id)
+            ).first()
+            if target_student:
+                student_id = target_student.id
+
         # Determine base plan price dynamically
         plan = None
         if plan_id:
@@ -117,8 +158,6 @@ def create_subject_order():
         unit_price = float(plan.price_inr) if plan else 300.00
         total_amount_rupees = unit_price * quantity
         total_amount_paise = int(total_amount_rupees * 100)
-
-        user_id = g.current_user_id
 
         # Generate Razorpay Order ID
         razorpay_key_id, razorpay_key_secret = get_razorpay_credentials()
@@ -139,6 +178,7 @@ def create_subject_order():
                             "subject": subject,
                             "quantity": str(quantity),
                             "user_id": str(user_id),
+                            "student_id": str(student_id) if student_id else "",
                         }
                     },
                     timeout=10
@@ -154,7 +194,7 @@ def create_subject_order():
         # Record pending purchase in user_subscriptions
         subscription = UserSubscription(
             user_id=user_id,
-            student_id=student_id or (user_id if g.current_user_role == "STUDENT" else None),
+            student_id=student_id,
             plan_id=plan.id if plan else None,
             board=board,
             class_grade=class_grade,
@@ -184,6 +224,8 @@ def create_subject_order():
             "currency": "INR",
             "keyId": razorpay_key_id,
             "subscriptionId": subscription.id,
+            "studentId": student_id,
+            "studentName": target_student.user.name if (target_student and target_student.user) else "",
             "board": board,
             "classGrade": class_grade,
             "subject": subject,
@@ -205,10 +247,11 @@ def verify_subject_payment():
     board = str(payload.get("board", "CBSE")).strip()
     class_grade = str(payload.get("classGrade", "Class 10")).strip()
     subject = str(payload.get("subject", "Mathematics")).strip()
-    student_id = payload.get("studentId")
+    student_id = payload.get("studentId") or payload.get("student_id")
     quantity = max(1, min(10, int(payload.get("quantity", 1))))
 
     user_id = g.current_user_id
+    role = getattr(g, "current_user_role", "").upper()
 
     # Verify signature if live credentials present
     razorpay_key_id, razorpay_key_secret = get_razorpay_credentials()
@@ -229,6 +272,17 @@ def verify_subject_payment():
             logger.warning(f"Signature check exception: {e}")
 
     with get_session() as session:
+        # Resolve target student if not passed
+        if not student_id:
+            if role == "PARENT":
+                first_child = session.query(Student).filter(Student.parent_user_id == user_id).first()
+                if first_child:
+                    student_id = first_child.id
+            elif role == "STUDENT":
+                stu = session.query(Student).filter(or_(Student.user_id == user_id, Student.id == user_id)).first()
+                if stu:
+                    student_id = stu.id
+
         # Check existing active count for this subject to assign distinct Set numbers
         existing_count = session.query(UserSubscription).filter(
             UserSubscription.user_id == user_id,
@@ -247,17 +301,21 @@ def verify_subject_payment():
             ).first()
 
         # If pending_sub had a quantity encoded in model_test_id e.g. QTY_3
-        if pending_sub and pending_sub.model_test_id and pending_sub.model_test_id.startswith("QTY_"):
-            try:
-                quantity = int(pending_sub.model_test_id.replace("QTY_", ""))
-            except Exception:
-                pass
+        if pending_sub:
+            if pending_sub.student_id and not student_id:
+                student_id = pending_sub.student_id
+            if pending_sub.model_test_id and pending_sub.model_test_id.startswith("QTY_"):
+                try:
+                    quantity = int(pending_sub.model_test_id.replace("QTY_", ""))
+                except Exception:
+                    pass
 
         created_subscriptions = []
 
         # Activate the initial pending sub as Set 1 (or existing_count + 1)
         start_set = existing_count + 1
         if pending_sub:
+            pending_sub.student_id = student_id or pending_sub.student_id
             pending_sub.razorpay_payment_id = payment_id
             pending_sub.razorpay_signature = signature or "verified_checkout"
             pending_sub.status = "ACTIVE"
@@ -267,7 +325,7 @@ def verify_subject_payment():
         else:
             first_sub = UserSubscription(
                 user_id=user_id,
-                student_id=student_id or (user_id if g.current_user_role == "STUDENT" else None),
+                student_id=student_id,
                 board=board,
                 class_grade=class_grade,
                 subject=subject,
@@ -290,7 +348,7 @@ def verify_subject_payment():
             next_set = start_set + i
             extra_sub = UserSubscription(
                 user_id=user_id,
-                student_id=student_id or (user_id if g.current_user_role == "STUDENT" else None),
+                student_id=student_id,
                 board=board,
                 class_grade=class_grade,
                 subject=subject,
@@ -308,6 +366,35 @@ def verify_subject_payment():
             session.add(extra_sub)
             created_subscriptions.append(extra_sub)
 
+        # Dispatch notification to student if student_id is set
+        if student_id:
+            try:
+                from controller.notification_controller import create_notification
+                stu = session.get(Student, student_id)
+                sets_str = f"{quantity} set{'s' if quantity > 1 else ''}"
+                first_sub_id = created_subscriptions[0].id if created_subscriptions else None
+                
+                create_notification(
+                    session=session,
+                    user_id=student_id,
+                    sender_id=user_id,
+                    notif_type="MODEL_EXAM_ASSIGNED",
+                    title=f"🎯 New 2027 Model Paper: {subject} ({board} {class_grade})",
+                    message=f"Your parent has unlocked {sets_str} of 80-Mark Board Exam Specimen Model Question Paper for {board} {class_grade} {subject}. You can now start the exam!",
+                    action_url=f"/model-exam/{first_sub_id}" if first_sub_id else "/pricing",
+                    metadata_json={
+                        "subject": subject,
+                        "board": board,
+                        "classGrade": class_grade,
+                        "quantity": quantity,
+                        "subscriptionId": first_sub_id,
+                        "status": "UNATTEMPTED",
+                        "type": "MODEL_EXAM"
+                    }
+                )
+            except Exception as notif_err:
+                logger.warning(f"Failed to create student notification on subject subscription: {notif_err}")
+
         session.commit()
 
         return success({
@@ -320,32 +407,76 @@ def verify_subject_payment():
 
 @token_required
 def get_user_subject_subscriptions():
-    """Returns all active model test subscriptions for the logged-in user/student."""
+    """Returns active model test subscriptions for the logged-in user or student."""
     user_id = g.current_user_id
-    with get_session() as session:
-        subs = session.query(UserSubscription).filter(
-            UserSubscription.user_id == user_id,
-            UserSubscription.status == "ACTIVE"
-        ).order_by(UserSubscription.created_at.desc()).all()
+    role = getattr(g, "current_user_role", "").upper()
+    req_student_id = request.args.get("studentId") or request.args.get("student_id")
 
-        return success({
-            "subscriptions": [
-                {
-                    "id": s.id,
-                    "board": s.board,
-                    "classGrade": s.class_grade,
-                    "subject": s.subject,
-                    "modelTestId": s.model_test_id,
-                    "amount": float(s.amount_paid),
-                    "razorpayOrderId": s.razorpay_order_id,
-                    "razorpayPaymentId": s.razorpay_payment_id,
-                    "status": s.status,
-                    "examStatus": s.exam_status,
-                    "createdAt": s.created_at.isoformat() if s.created_at else None,
-                }
-                for s in subs
-            ]
-        })
+    with get_session() as session:
+        if role == "STUDENT":
+            # Find the student entity for this user
+            stu = session.query(Student).filter(
+                or_(Student.user_id == user_id, Student.id == user_id)
+            ).first()
+            stu_id = stu.id if stu else user_id
+
+            subs = session.query(UserSubscription).filter(
+                or_(
+                    UserSubscription.student_id == stu_id,
+                    UserSubscription.user_id == user_id,
+                    UserSubscription.student_id == user_id
+                ),
+                UserSubscription.status == "ACTIVE"
+            ).order_by(UserSubscription.created_at.desc()).all()
+        else:
+            # Parent or Admin: Fetch all subscriptions created by this user
+            query = session.query(UserSubscription).filter(
+                UserSubscription.user_id == user_id,
+                UserSubscription.status == "ACTIVE"
+            )
+            if req_student_id:
+                try:
+                    s_id_int = int(req_student_id)
+                    query = query.filter(UserSubscription.student_id == s_id_int)
+                except Exception:
+                    pass
+            subs = query.order_by(UserSubscription.created_at.desc()).all()
+
+        results = []
+        for s in subs:
+            student_name = "Assigned Child"
+            student_class = s.class_grade
+            student_avatar = ""
+            if s.student:
+                student_name = s.student.user.name if (s.student.user and s.student.user.name) else f"Student #{s.student.id}"
+                student_class = s.student.class_grade or s.class_grade
+                student_avatar = (s.student.avatar if hasattr(s.student, 'avatar') else '') or ''
+            elif s.user and s.user.name:
+                student_name = s.user.name
+
+            results.append({
+                "id": s.id,
+                "studentId": s.student_id,
+                "studentName": student_name,
+                "studentClass": student_class,
+                "studentAvatar": student_avatar,
+                "board": s.board,
+                "classGrade": s.class_grade,
+                "subject": s.subject,
+                "modelTestId": s.model_test_id,
+                "amount": float(s.amount_paid) if s.amount_paid else 300.00,
+                "razorpayOrderId": s.razorpay_order_id,
+                "razorpayPaymentId": s.razorpay_payment_id,
+                "status": s.status,
+                "examStatus": s.exam_status or "UNATTEMPTED",
+                "scoreObtained": float(s.score_obtained) if s.score_obtained is not None else None,
+                "totalMarks": float(s.total_marks) if s.total_marks is not None else 80.00,
+                "accuracyPercentage": float(s.accuracy_percentage) if s.accuracy_percentage is not None else None,
+                "submittedAt": s.submitted_at.isoformat() if s.submitted_at else None,
+                "createdAt": s.created_at.isoformat() if s.created_at else None,
+            })
+
+        return success({"subscriptions": results})
 
 
 # ─────────────────────────────────────────────────────────────
@@ -981,9 +1112,97 @@ def evaluate_subject_model_paper(subscription_id: int):
         else:
             grade = "Needs Improvement (D)"
 
-        # Update subscription status
+        # Update subscription status and score metrics
         sub.exam_status = "COMPLETED"
+        sub.score_obtained = round(total_marks_obtained, 1)
+        sub.total_marks = max_marks_total
+        sub.accuracy_percentage = accuracy_pct
+        sub.submitted_at = now_ist()
         session.commit()
+
+        # Automatic PDF Report Generation & Parent Email Dispatch
+        parent_email = None
+        student_name = "Student"
+        if sub.student:
+            if sub.student.user and sub.student.user.name:
+                student_name = sub.student.user.name
+            if sub.student.parent and sub.student.parent.user and sub.student.parent.user.email:
+                parent_email = sub.student.parent.user.email
+            elif sub.student.user and sub.student.user.email:
+                parent_email = sub.student.user.email
+        if not parent_email and sub.user and sub.user.email:
+            parent_email = sub.user.email
+
+        if parent_email:
+            try:
+                from helper.pdf_report_generator import generate_exam_report_pdf
+                from controller.email_controller import send_student_exam_report_email
+
+                sub_date_str = sub.submitted_at.strftime("%d %b %Y, %I:%M %p") if sub.submitted_at else "Today"
+                
+                # Format evaluations for PDF report generator
+                formatted_evals = []
+                for ev in all_evaluations:
+                    formatted_evals.append({
+                        "questionId": ev.get("key"),
+                        "questionNumber": ev.get("num", 1),
+                        "type": ev.get("type", "saq"),
+                        "questionText": ev.get("question", ""),
+                        "studentAnswer": ev.get("studentAnswer", "(Not Answered)"),
+                        "correctAnswer": ev.get("correctAnswer", ""),
+                        "isCorrect": ev.get("isCorrect", False),
+                        "marksAwarded": ev.get("marksAwarded", 0.0),
+                        "questionMarks": ev.get("maxMarks", 1.0),
+                        "feedback": ev.get("feedback", ""),
+                        "topic": ev.get("sectionTitle") or sub.subject,
+                    })
+
+                analysis_dict = {
+                    "overallBand": grade,
+                    "masteryScorePercentage": accuracy_pct,
+                    "strengths": [
+                        f"Demonstrated comprehensive grasp of {sub.subject} 2027 board syllabus.",
+                        f"Successfully attempted {attempted_count} out of {total_questions_count} authentic questions.",
+                        f"Maintained steady exam momentum with average time management."
+                    ],
+                    "areasToImprove": [
+                        f"Review and reinforce step-marking criteria for Section B & C subjective explanations.",
+                        f"Practice precision numerical and unit conversion steps in {sub.subject}."
+                    ],
+                    "encouragementNote": f"Outstanding effort! Every full-length model test brings {student_name} closer to 100% board mastery.",
+                    "evolutionaryRoadmap": f"Completed 2027 Model Paper Set {set_num} ({sub.board} {sub.class_grade} {sub.subject}) scoring {round(total_marks_obtained, 1)}/{max_marks_total} ({accuracy_pct}%).",
+                }
+
+                pdf_bytes = generate_exam_report_pdf(
+                    student_name=student_name,
+                    board=sub.board,
+                    class_grade=sub.class_grade,
+                    subject=sub.subject,
+                    exam_title=f"{sub.board} {sub.class_grade} {sub.subject} 2027 Model Paper (Set {set_num})",
+                    exam_date=sub_date_str,
+                    marks_obtained=total_marks_obtained,
+                    total_marks=max_marks_total,
+                    accuracy_percentage=accuracy_pct,
+                    time_taken_seconds=time_spent,
+                    evaluations=formatted_evals,
+                    analysis=analysis_dict,
+                )
+
+                send_student_exam_report_email(
+                    to_email=parent_email,
+                    student_name=student_name,
+                    board=sub.board,
+                    class_grade=sub.class_grade,
+                    subject_name=sub.subject,
+                    exam_title=f"{sub.board} {sub.class_grade} {sub.subject} 2027 Model Paper (Set {set_num})",
+                    exam_date=sub_date_str,
+                    marks_obtained=total_marks_obtained,
+                    total_marks=max_marks_total,
+                    accuracy_percentage=accuracy_pct,
+                    pdf_bytes=pdf_bytes,
+                )
+            except Exception as email_err:
+                logger.warning(f"Failed to generate/email model paper PDF report: {email_err}")
 
         return success({
             "subscriptionId": sub.id,
