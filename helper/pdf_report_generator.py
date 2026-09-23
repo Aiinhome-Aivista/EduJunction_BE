@@ -269,7 +269,7 @@ def generate_exam_report_pdf(
     if analysis:
         strengths = analysis.get("strengths") or []
         areas = analysis.get("areasToImprove") or []
-        note = analysis.get("encouragementNote") or ""
+        note = analysis.get("teacherParentNote") or analysis.get("encouragementNote") or analysis.get("parentNote") or ""
 
         analysis_rows = []
         if strengths:

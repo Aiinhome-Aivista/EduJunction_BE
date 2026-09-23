@@ -262,29 +262,112 @@ CLASS_PATTERNS = {
 }
 
 SUBJECT_PATTERNS = {
+    "Biology": [
+        r"\bbiology\b", r"\bbotany\b", r"\bzoology\b", r"\blife\s+processes\b",
+        r"\bphotosynthesis\b", r"\brespiration\b", r"\bhuman\s+anatomy\b", r"\bphysiology\b",
+        r"\bcell(?:ular)?\b", r"\bgenetics\b", r"\bheredity\b", r"\bevolution\b",
+        r"\breproduction\b", r"\bdigestive\b", r"\bcirculatory\b", r"\bexcretory\b",
+        r"\bplant\s+kingdom\b", r"\banimal\s+kingdom\b", r"\becosystem\b", r"\bbiodiversity\b",
+        r"\bbiotechnology\b", r"\bmicroorganisms\b", r"\bimmune\s+system\b", r"\bchromosomes?\b"
+    ],
+    "Chemistry": [
+        r"\bchemistry\b", r"\bchemical\s+reactions?\b", r"\bchemical\s+equations?\b",
+        r"\bacids?,\s*bases?\b", r"\bmetals?\s+and\s+non-metals?\b", r"\bcarbon\s+and\s+its\s+compounds\b",
+        r"\bperiodic\s+(?:table|classification)\b", r"\bmole\s+concept\b", r"\batomic\s+structure\b",
+        r"\bchemical\s+bonding\b", r"\borganic\s+chemistry\b", r"\binorganic\s+chemistry\b",
+        r"\belectrochemistry\b", r"\bchemical\s+kinetics\b", r"\bthermodynamics\b", r"\boxidation\b",
+        r"\breduction\b", r"\bsolutions?\b", r"\bequilibrium\b", r"\bhydrocarbons\b"
+    ],
+    "Physics": [
+        r"\bphysics\b", r"\bkinematics\b", r"\bmotion\b", r"\bforce\s+and\s+laws\s+of\s+motion\b",
+        r"\bgravitation\b", r"\bwork,\s*energy\s+and\s+power\b", r"\bsound\b", r"\blight\s*-\s*reflection\b",
+        r"\brefraction\b", r"\bhuman\s+eye\b", r"\belectricity\b", r"\bcurrent\s+electricity\b",
+        r"\belectromagnetism\b", r"\bmagnetic\s+effects?\b", r"\boptics\b", r"\belectrostatics\b",
+        r"\bthermodynamics\b", r"\bsemiconductors?\b", r"\bdual\s+nature\b", r"\bnuclei\b", r"\batoms\b"
+    ],
     "Mathematics": [
         r"\bmathematics\b", r"\bmaths\b", r"\bmath\b", r"\balgebra\b", r"\bcalculus\b",
         r"\bgeometry\b", r"\btrigonometry\b", r"\breal\s+numbers\b", r"\bpolynomials?\b",
-        r"\bquadratic\b", r"\barithmetic\b", r"\bstatistics\b", r"\bprobability\b"
+        r"\bquadratic\s+equations?\b", r"\barithmetic\s+progression\b", r"\bstatistics\b",
+        r"\bprobability\b", r"\bmatrices\b", r"\bdeterminants\b", r"\bintegrals?\b",
+        r"\bdifferential\s+equations?\b", r"\bvectors?\b", r"\blinear\s+equations?\b"
+    ],
+    "Computer Science": [
+        r"\bcomputer\s+science\b", r"\binformatics\b", r"\bpython\b", r"\bdata\s+structures?\b",
+        r"\bcoding\b", r"\bprogramming\b", r"\bdatabase\b", r"\bsql\b", r"\balgorithms?\b",
+        r"\bcyber\s+safety\b", r"\bcomputer\s+networks?\b"
+    ],
+    "English": [
+        r"\benglish\s+language\b", r"\benglish\s+literature\b", r"\benglish\s+grammar\b",
+        r"\bfirst\s+flight\b", r"\bfootprints\s+without\s+feet\b", r"\bbeehive\b",
+        r"\bmoments\b", r"\bhoneydew\b", r"\bcomprehension\b", r"\bprose\b", r"\bpoetry\b"
+    ],
+    "Social Studies": [
+        r"\bsocial\s+science\b", r"\bsocial\s+studies\b", r"\bhistory\b", r"\bgeography\b",
+        r"\bcivics\b", r"\beconomics\b", r"\bpolitical\s+science\b", r"\bdemocratic\s+politics\b",
+        r"\bcontemporary\s+india\b", r"\bindia\s+and\s+the\s+contemporary\s+world\b"
     ],
     "Science": [
-        r"\bscience\b", r"\bscientific\b", r"\bchemical\s+reactions?\b", r"\bchemistry\b",
-        r"\bphysics\b", r"\bbiology\b", r"\bacids?,\s*bases?\b", r"\bmetals?\b",
-        r"\blife\s+processes\b", r"\blight\b", r"\belectricity\b", r"\bmatter\b"
-    ],
-    "Physics": [r"\bphysics\b", r"\bkinematics\b", r"\belectrodynamics\b", r"\bthermodynamics\b", r"\boptics\b", r"\bforce\b", r"\bmotion\b"],
-    "Chemistry": [r"\bchemistry\b", r"\bchemical\b", r"\borganic\s+chemistry\b", r"\binorganic\s+chemistry\b", r"\bchemical\s+bonding\b", r"\breactions?\b"],
-    "Biology": [r"\bbiology\b", r"\bzoology\b", r"\bbotany\b", r"\bgenetics\b", r"\bhuman\s+anatomy\b", r"\bphotosynthesis\b", r"\bcells?\b"],
-    "Computer Science": [r"\bcomputer\s+science\b", r"\binformatics\b", r"\bpython\b", r"\bdata\s+structure\b", r"\bcoding\b", r"\bprogramming\b"],
-    "English": [r"\benglish\s+language\b", r"\benglish\s+literature\b", r"\benglish\s+grammar\b", r"\bfirst\s+flight\b", r"\bfootprints\s+without\s+feet\b", r"\bbeehive\b", r"\bmoments\b", r"\bhoneydew\b"],
-    "Social Studies": [r"\bsocial\s+science\b", r"\bsocial\s+studies\b", r"\bhistory\b", r"\bgeography\b", r"\bcivics\b", r"\beconomics\b", r"\bdemocratic\s+politics\b"],
+        r"\bscience\b", r"\bscientific\b", r"\bgeneral\s+science\b", r"\bnatural\s+science\b"
+    ]
 }
 
 
-def detect_curriculum_metadata(filename: str, sample_text: str = "") -> dict:
-    """Detects Board, ClassGrade, and Subject from filename and header text."""
-    combined = f"{filename} {sample_text}"
-    normalized = re.sub(r"[-_.]", " ", combined).lower()
+def is_subject_compatible(target_subject: str, detected_subject: str) -> bool:
+    """Checks whether detected subject is strictly compatible with target dropdown subject."""
+    t = (target_subject or "").strip().lower()
+    d = (detected_subject or "").strip().lower()
+
+    if not t or not d:
+        return True
+    if t == d:
+        return True
+
+    # 1. Biology (Strict: Botany, Zoology, Life Science)
+    bio_synonyms = {"biology", "botany", "zoology", "life science", "life sciences", "bio"}
+    if t in bio_synonyms:
+        return d in bio_synonyms
+
+    # 2. Chemistry (Strict: Chemical Science, Organic/Inorganic)
+    chem_synonyms = {"chemistry", "chemical science", "organic chemistry", "inorganic chemistry", "physical chemistry", "chem"}
+    if t in chem_synonyms:
+        return d in chem_synonyms
+
+    # 3. Physics (Strict: Physical Science, Applied Physics)
+    phys_synonyms = {"physics", "applied physics", "phys"}
+    if t in phys_synonyms:
+        return d in phys_synonyms
+
+    # 4. Mathematics (Strict: Maths, Math, Algebra, Geometry, Calculus)
+    math_synonyms = {"mathematics", "math", "maths", "algebra", "geometry", "calculus", "applied mathematics", "pure mathematics"}
+    if t in math_synonyms:
+        return d in math_synonyms
+
+    # 5. Computer Science
+    cs_synonyms = {"computer science", "informatics", "informatics practices", "python", "computer", "information technology", "it", "ai", "artificial intelligence"}
+    if t in cs_synonyms:
+        return d in cs_synonyms
+
+    # 6. Social Studies / Social Science
+    sst_synonyms = {"social studies", "social science", "history", "geography", "civics", "political science", "economics", "sst"}
+    if t in sst_synonyms:
+        return d in sst_synonyms
+
+    # 7. English
+    eng_synonyms = {"english", "english language", "english literature", "grammar"}
+    if t in eng_synonyms:
+        return d in eng_synonyms
+
+    # 8. General "Science" (Allowed for lower classes 1-10)
+    if t in {"science", "general science"}:
+        return d in {"science", "general science", "physics", "chemistry", "biology", "life science", "physical science"}
+
+    return False
+
+
+def detect_curriculum_metadata(sample_text: str = "") -> dict:
+    """Detects Board, ClassGrade, and Subject strictly by scanning the document text content with frequency scoring."""
+    normalized = re.sub(r"[-_.]", " ", sample_text or "").lower()
     
     detected_board = None
     for board_name, patterns in BOARD_PATTERNS.items():
@@ -298,11 +381,25 @@ def detect_curriculum_metadata(filename: str, sample_text: str = "") -> dict:
             detected_class = class_name
             break
 
-    detected_subject = None
+    # Subject frequency scoring
+    subject_scores: dict[str, int] = {}
     for subject_name, patterns in SUBJECT_PATTERNS.items():
-        if any(re.search(p, normalized, re.IGNORECASE) for p in patterns):
-            detected_subject = subject_name
-            break
+        score = 0
+        for p in patterns:
+            matches = re.findall(p, normalized, re.IGNORECASE)
+            score += len(matches)
+        if score > 0:
+            subject_scores[subject_name] = score
+
+    # Pick the highest scoring subject, prioritizing specific disciplines over generic Science
+    detected_subject = None
+    if subject_scores:
+        # If specific disciplines scored, ignore generic Science
+        specific_scored = {k: v for k, v in subject_scores.items() if k != "Science"}
+        if specific_scored:
+            detected_subject = max(specific_scored.items(), key=lambda x: x[1])[0]
+        else:
+            detected_subject = max(subject_scores.items(), key=lambda x: x[1])[0]
 
     return {
         "board": detected_board,

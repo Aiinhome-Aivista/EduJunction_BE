@@ -18,6 +18,7 @@ from database import vector_db
 from helper import document_processor, embedding_engine
 from model import mistral_client
 from model.models import Document, DocumentChunk
+from utils.errors import ValidationError
 from utils.logger import logger
 
 
@@ -115,15 +116,27 @@ def perform_contextual_analysis(
     subject: str,
     document_type: str,
 ) -> Dict[str, Any]:
-    """Generates a fast, high-quality contextual analysis of the document."""
-    excerpt = text_content[:6000]
+    """Generates a fast, high-quality contextual analysis of the document and identifies subject accurately."""
+    excerpt = text_content[:7000]
 
-    system_prompt = """You are an expert curriculum analyst. Analyze the provided educational document excerpt and return a concise JSON analysis."""
+    system_prompt = """You are an expert curriculum auditor and senior board paper reviewer.
+Analyze the provided educational document excerpt and accurately determine:
+1. The EXACT, SPECIFIC educational subject/discipline of the document.
+   CRITICAL REQUIREMENT:
+   - For science topics, do NOT output generic "Science". You MUST specify the exact discipline:
+     • "Chemistry" (e.g. chemical reactions, acids, bases, salts, metals, carbon compounds, bonding, periodic table, mole concept, atoms, molecules, electrochemistry, organic chemistry)
+     • "Physics" (e.g. motion, force, gravitation, work, energy, sound, light, optics, electricity, magnetism, electromagnetic induction)
+     • "Biology" (e.g. life processes, cells, reproduction, genetics, heredity, evolution, ecology, anatomy, botany, zoology, photosynthesis, human physiology)
+   - For other subjects, output "Mathematics", "Social Studies", "English", or "Computer Science".
+2. The core chapter or paper title.
+3. Summary of concepts covered.
+4. Specific key concept topics."""
+
     user_prompt = f"""Document Metadata:
 - File Name: {filename}
 - Target Board: {board}
 - Target Class: {class_grade}
-- Target Subject: {subject}
+- Selected Target Subject: {subject}
 - Document Type: {document_type} (textbook or old_question_paper)
 
 --- DOCUMENT EXCERPT ---
@@ -134,6 +147,7 @@ Return strictly a JSON object with this exact structure:
 {{
   "title": "Clear Title of Chapter or Question Paper",
   "summary": "2-3 concise sentences summarizing the core content, concepts covered, and educational scope.",
+  "detected_subject": "Exact Specific Subject (Chemistry, Physics, Biology, Mathematics, Social Studies, English, or Computer Science - NEVER return generic 'Science' if specific discipline)",
   "detected_topics": ["Topic 1", "Topic 2", "Topic 3"],
   "estimated_difficulty": "easy | medium | hard",
   "recommended_question_count": 12
@@ -152,13 +166,16 @@ Note: recommended_question_count MUST be between 10 (minimum) and 15 (maximum).
     except Exception as e:
         logger.warning(f"Contextual analysis LLM fallback: {e}")
 
-    # Fallback contextual analysis
+    # Fallback contextual analysis with regex
+    meta = document_processor.detect_curriculum_metadata(text_content[:3000])
+    detected_sub = meta.get("subject") or subject
     first_lines = [line.strip() for line in text_content.splitlines() if line.strip()][:5]
     guessed_title = first_lines[0] if first_lines else filename.rsplit(".", 1)[0]
     return {
         "title": guessed_title[:120],
-        "summary": f"Curriculum document for {board} {class_grade} {subject} containing {len(text_content)} characters.",
-        "detected_topics": [subject, "General Concepts"],
+        "summary": f"Curriculum document for {board} {class_grade} {detected_sub} containing {len(text_content)} characters.",
+        "detected_subject": detected_sub,
+        "detected_topics": [detected_sub, "General Concepts"],
         "estimated_difficulty": "medium",
         "recommended_question_count": 12,
     }
@@ -381,6 +398,28 @@ def process_curriculum_document_pipeline(
     summary = analysis.get("summary", "")
     detected_topics = analysis.get("detected_topics", [subject])
     est_diff = analysis.get("estimated_difficulty", "medium")
+    detected_subject = analysis.get("detected_subject")
+
+    if not detected_subject or detected_subject == "Science":
+        meta_detected = document_processor.detect_curriculum_metadata(cleaned_text[:6000])
+        specific_sub = meta_detected.get("subject")
+        if specific_sub and specific_sub != "Science":
+            detected_subject = specific_sub
+        elif not detected_subject:
+            detected_subject = specific_sub or subject
+
+    # -------------------------------------------------------------------------
+    # VALIDATION GATE: Check Subject Content Compatibility with Dropdown Target
+    # -------------------------------------------------------------------------
+    if detected_subject and not document_processor.is_subject_compatible(subject, detected_subject):
+        concepts_str = ", ".join(detected_topics[:3]) if detected_topics else "unrelated domain"
+        error_msg = (
+            f"Content Mismatch: Uploaded document '{filename}' contains '{detected_subject}' content "
+            f"(Concepts: {concepts_str}), but you selected '{subject}' in the dropdown. "
+            f"Please change the dropdown Subject to '{detected_subject}' to process this file."
+        )
+        print(f"\n{TermColors.BOLD}\033[91m❌ [VALIDATION BLOCKED] {error_msg}{TermColors.END}")
+        raise ValidationError(error_msg)
 
     # Determine calibrated question count (min 10, max 15 questions per document/chapter)
     rec_q = analysis.get("recommended_question_count")
@@ -398,6 +437,7 @@ def process_curriculum_document_pipeline(
             target_q_count = 10
 
     print(f"  • Inferred Title  : {TermColors.BOLD}{title}{TermColors.END}")
+    print(f"  • Inferred Subject: {TermColors.BOLD}{detected_subject or subject}{TermColors.END} (Target: {subject})")
     print(f"  • Detected Topics : {', '.join(detected_topics)}")
     print(f"  • Est. Difficulty : {est_diff.capitalize()}")
     print(f"  • Target Questions: {TermColors.BOLD}{target_q_count}{TermColors.END} (Calibrated 10-15 per Chapter)")

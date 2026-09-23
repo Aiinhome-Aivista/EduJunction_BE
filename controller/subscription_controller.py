@@ -8,6 +8,7 @@ import uuid
 import hmac
 import hashlib
 import json
+import re
 from datetime import datetime, timedelta
 from flask import request, g
 import requests
@@ -21,6 +22,7 @@ from utils.date_helper import now_ist
 from utils.errors import AppError, NotFoundError, ValidationError, ForbiddenError
 from utils.logger import logger
 from utils.response import success
+from helper.model_paper_diagnostic_engine import generate_model_paper_diagnostic
 
 
 RAZORPAY_KEY_ID = os.getenv("RAZORPAY_KEY_ID", "rzp_test_edujunction_demo")
@@ -1343,11 +1345,25 @@ def evaluate_subject_model_paper(subscription_id: int):
                 else:
                     incorrect_count += 1
 
+                # Extract clean concept topic from question metadata or bold concept tags
+                q_text = q.get("question") or ""
+                q_topic = q.get("topic") or q.get("case_title")
+                if not q_topic and q_text:
+                    bold_matches = re.findall(r"<b>(.*?)</b>", q_text)
+                    for bm in bold_matches:
+                        bm_clean = bm.strip()
+                        if len(bm_clean) >= 3 and not any(bm_clean.startswith(p) for p in ("Assertion", "Reason", "Q", "Note", "Case", "Section", "OR")):
+                            q_topic = bm_clean
+                            break
+                if not q_topic:
+                    q_topic = f"{sec_name}: {sub.subject} Concepts"
+
                 eval_item = {
                     "key": q_key,
                     "num": q.get("num"),
                     "sectionName": sec_name,
                     "sectionTitle": sec.get("title"),
+                    "topic": q_topic,
                     "question": q.get("question"),
                     "type": q_type,
                     "options": q.get("options"),
@@ -1464,24 +1480,23 @@ def evaluate_subject_model_paper(subscription_id: int):
                         "marksAwarded": ev.get("marksAwarded", 0.0),
                         "questionMarks": ev.get("maxMarks", 1.0),
                         "feedback": ev.get("feedback", ""),
-                        "topic": ev.get("sectionTitle") or sub.subject,
+                        "topic": ev.get("topic") or ev.get("sectionTitle") or sub.subject,
+                        "sectionName": ev.get("sectionName") or "Section",
                     })
 
-                analysis_dict = {
-                    "overallBand": grade,
-                    "masteryScorePercentage": accuracy_pct,
-                    "strengths": [
-                        f"Demonstrated comprehensive grasp of {sub.subject} 2027 board syllabus.",
-                        f"Successfully attempted {attempted_count} out of {total_questions_count} authentic questions.",
-                        f"Maintained steady exam momentum with average time management."
-                    ],
-                    "areasToImprove": [
-                        f"Review and reinforce step-marking criteria for Section B & C subjective explanations.",
-                        f"Practice precision numerical and unit conversion steps in {sub.subject}."
-                    ],
-                    "encouragementNote": f"Outstanding effort! Every full-length model test brings {student_name} closer to 100% board mastery.",
-                    "evolutionaryRoadmap": f"Completed 2027 Model Paper Set {set_num} ({sub.board} {sub.class_grade} {sub.subject}) scoring {round(total_marks_obtained, 1)}/{max_marks_total} ({accuracy_pct}%).",
-                }
+                analysis_dict = generate_model_paper_diagnostic(
+                    student_name=student_name,
+                    board=sub.board,
+                    class_grade=sub.class_grade,
+                    subject=sub.subject,
+                    set_num=set_num,
+                    marks_obtained=total_marks_obtained,
+                    max_marks=max_marks_total,
+                    time_spent_seconds=time_spent,
+                    evaluations=formatted_evals,
+                    section_breakdown=evaluated_sections,
+                    total_allowed_mins=180,
+                )
 
                 pdf_bytes = generate_exam_report_pdf(
                     student_name=student_name,
