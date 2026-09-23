@@ -427,7 +427,8 @@ def send_password_reset_otp():
 
         # Generate 6-digit secure OTP
         otp_code = f"{random.randint(100000, 999999)}"
-        expires_at = time.time() + 600  # 10 minutes
+        otp_ttl = getattr(config, "OTP_TTL_MINUTES", 10) or 10
+        expires_at = time.time() + (otp_ttl * 60)
 
         otp_record = {
             "otp": otp_code,
