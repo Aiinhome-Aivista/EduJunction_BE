@@ -239,11 +239,11 @@ def send_registration_email(to_email: str, name: str = "", username: str = "", r
         <p>With EduJunction, you can:</p>
         <ul style="color: #475569; padding-left: 20px;">
             <li>Track real-time learning analytics and skill mastery.</li>
-            <li>Experience AI-generated practice exams & adaptive learning paths.</li>
+            <li>Experience curriculum practice exams & adaptive learning paths.</li>
             <li>Collaborate with teachers, parents, and students seamlessly.</li>
         </ul>
 
-        <p>Get started today and unlock the power of AI-assisted education!</p>
+        <p>Get started today and unlock the power of adaptive education!</p>
         <p><strong>Best regards,</strong><br>The EduJunction Team</p>
     """
 
@@ -424,7 +424,7 @@ def send_school_student_registered_email(
         <div style="background-color: #f0fdf4; border-left: 4px solid #22c55e; padding: 14px 18px; border-radius: 8px; margin: 20px 0;">
             <p style="margin: 0; font-size: 13px; color: #166534; font-weight: 500;">
                 💡 <strong>About EduJunction Diagnostic Platform:</strong><br>
-                EduJunction assists students in continuous curriculum mastery through adaptive 10-mark diagnostic exams, AI misconception classification, and evolutionary topic mastery tracking aligned with {target_board} standards.
+                EduJunction assists students in continuous curriculum mastery through adaptive 10-mark diagnostic exams, automated misconception classification, and evolutionary topic mastery tracking aligned with {target_board} standards.
             </p>
         </div>
 
