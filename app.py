@@ -471,6 +471,16 @@ def create_app() -> Flask:
     def api_admin_rag_save_questions():
         return upload_file_controller.save_generated_questions_api()
 
+    @app.route("/api/v1/curriculum/extract-preview", methods=["POST"])
+    @app.route("/api/v1/admin/rag/extract-preview", methods=["POST"])
+    def api_curriculum_extract_preview():
+        return upload_file_controller.extract_curriculum_preview_api()
+
+    @app.route("/api/v1/curriculum/save-extracted-questions", methods=["POST"])
+    @app.route("/api/v1/admin/rag/save-extracted-questions", methods=["POST"])
+    def api_curriculum_save_extracted_questions():
+        return upload_file_controller.save_extracted_curriculum_questions_api()
+
     @app.route("/api/v1/admin/rag/process-document", methods=["POST"])
     def api_admin_rag_process_document():
         return upload_file_controller.process_curriculum_document_api()

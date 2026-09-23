@@ -1100,7 +1100,8 @@ def preview_subject_model_paper(subscription_id: int):
             board=sub.board,
             class_grade=sub.class_grade,
             subject=sub.subject,
-            set_number=set_num
+            set_number=set_num,
+            session=session
         )
 
         is_view_mode = (
@@ -1265,7 +1266,8 @@ def evaluate_subject_model_paper(subscription_id: int):
             board=sub.board,
             class_grade=sub.class_grade,
             subject=sub.subject,
-            set_number=set_num
+            set_number=set_num,
+            session=session
         )
 
         full_sections = _normalize_paper_sections(raw_paper, include_answers=True)
@@ -1574,7 +1576,8 @@ def download_subject_model_paper(subscription_id: int):
             board=sub.board,
             class_grade=sub.class_grade,
             subject=sub.subject,
-            set_number=set_num
+            set_number=set_num,
+            session=session
         )
 
         safe_filename = f"{sub.board}_{sub.class_grade}_{sub.subject}_Set_{set_num}_Model_Paper_2027".replace(" ", "_")

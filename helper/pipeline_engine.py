@@ -194,21 +194,38 @@ def sanitize_question_item(
         return None
 
     raw_type = str(q.get("type") or default_type or "MCQ").strip().upper()
-    if raw_type in ["TRUE_FALSE", "TRUE/FALSE", "TF", "OBJECTIVE", "ONE_WORD", "FILL_IN"]:
-        resolved_type = "OBJECTIVE"
-    elif raw_type in ["SHORT_ANSWER", "SAQ", "SUBJECTIVE"]:
-        resolved_type = "SAQ"
-    elif raw_type in ["NUMERICAL", "CALCULATION", "NUM"]:
+    if "CASE" in raw_type:
+        resolved_type = "CASE STUDY"
+        default_m = 4
+    elif "ASSERT" in raw_type:
+        resolved_type = "ASSERTION REASON"
+        default_m = 1
+    elif "LONG EVALUATIVE" in raw_type or "8M" in raw_type:
+        resolved_type = "LONG EVALUATIVE"
+        default_m = 8
+    elif "LONG" in raw_type or "LAQ" in raw_type:
+        resolved_type = "LONG ANSWER"
+        default_m = 5
+    elif "SHORT ANSWER (3M)" in raw_type or "3M" in raw_type or int(q.get("marks") or 0) == 3:
+        resolved_type = "SHORT ANSWER (3M)"
+        default_m = 3
+    elif "NUM" in raw_type:
         resolved_type = "NUMERICAL"
-    elif raw_type in ["MCQ", "MULTIPLE_CHOICE"]:
-        resolved_type = "MCQ"
+        default_m = int(q.get("marks") or 3)
+    elif "SAQ" in raw_type or "SHORT" in raw_type:
+        resolved_type = "SAQ"
+        default_m = 2
+    elif raw_type in ["TRUE_FALSE", "TRUE/FALSE", "TF", "OBJECTIVE", "ONE_WORD", "FILL_IN"]:
+        resolved_type = "OBJECTIVE"
+        default_m = 1
     else:
         resolved_type = "MCQ"
+        default_m = 1
 
     # Clean options
     q_opts = q.get("options")
     clean_opts: List[str] = []
-    if resolved_type == "MCQ":
+    if resolved_type in ["MCQ", "ASSERTION REASON"]:
         if isinstance(q_opts, list):
             for opt in q_opts:
                 opt_str = str(opt).strip()
@@ -233,7 +250,7 @@ def sanitize_question_item(
 
     # Clean correct_answer
     corr = str(q.get("correct_answer") or "").strip()
-    if resolved_type == "MCQ" and clean_opts and corr:
+    if resolved_type in ["MCQ", "ASSERTION REASON"] and clean_opts and corr:
         match_prefix = re.match(r"^([A-D])[\)\.\:\s]", corr, re.IGNORECASE)
         if match_prefix:
             corr = match_prefix.group(1).upper()
@@ -242,15 +259,11 @@ def sanitize_question_item(
     raw_diff = str(q.get("difficulty") or target_diff or "medium").strip().lower()
     final_difficulty = raw_diff if raw_diff in ["easy", "medium", "hard"] else "medium"
 
-    # Default marks
-    if resolved_type == "MCQ" or resolved_type == "OBJECTIVE":
-        marks = 1
-    elif resolved_type == "NUMERICAL":
-        marks = int(q.get("marks") or 3)
-    elif resolved_type == "SAQ":
-        marks = int(q.get("marks") or 2)
-    else:
-        marks = int(q.get("marks") or 1)
+    # Assigned marks
+    try:
+        marks = int(q.get("marks") or default_m)
+    except (ValueError, TypeError):
+        marks = default_m
 
     return {
         "id": f"gen_{index + 1}",
@@ -575,7 +588,25 @@ Extract/generate EXACTLY {target_q_count} comprehensive structured questions (mi
     updated_questions_count = 0
 
     for q in final_questions:
-        q_type_id = types_map.get(q["type"], 1)
+        q_type_upper = str(q.get("type", "MCQ")).upper()
+        q_type_id = types_map.get(q_type_upper)
+        if not q_type_id:
+            if "CASE" in q_type_upper:
+                q_type_id = types_map.get("CASE STUDY", types_map.get("SAQ", 2))
+            elif "ASSERT" in q_type_upper:
+                q_type_id = types_map.get("ASSERTION REASON", types_map.get("MCQ", 1))
+            elif "LONG" in q_type_upper:
+                q_type_id = types_map.get("LONG ANSWER", types_map.get("LONG EVALUATIVE (8M)", 3))
+            elif "SHORT" in q_type_upper or "SAQ" in q_type_upper:
+                if int(q.get("marks", 2)) == 3:
+                    q_type_id = types_map.get("SHORT ANSWER (3M)", types_map.get("SAQ", 2))
+                else:
+                    q_type_id = types_map.get("SAQ", 2)
+            elif "NUM" in q_type_upper:
+                q_type_id = types_map.get("NUMERICAL", 5)
+            else:
+                q_type_id = types_map.get("MCQ", 1)
+
         q_diff = q["difficulty"].lower()
         if q_diff in ["simple", "easy"]:
             diff_id = diffs_map.get("easy", diffs_map.get("simple", 1))
@@ -726,3 +757,437 @@ Extract/generate EXACTLY {target_q_count} comprehensive structured questions (mi
         "chunk_count": len(chunks),
         "questions": final_questions,
     }
+
+
+def extract_curriculum_questions_preview(
+    session: Session,
+    file_bytes: bytes,
+    filename: str,
+    board: str,
+    class_grade: str,
+    subject: str,
+    document_type: str = "textbook",
+    question_count: Optional[int] = None,
+    target_topic_id: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Executes Steps 1 to 4 (Extraction, Context Analysis, Question Generation, Duplicate Check)
+
+    without persisting to the database. Returns questions with duplicate indicators for UI review.
+    """
+    _print_separator(f"EXTRACTION PREVIEW: {filename}", TermColors.MAGENTA)
+
+    # 1. DATA READ
+    _print_step_header(1, "DATA READ & EXTRACTION", TermColors.CYAN)
+    ext = document_processor.validate_upload(filename, len(file_bytes))
+    raw_text = document_processor.extract_text(file_bytes, ext)
+    cleaned_text = document_processor.clean_text(raw_text)
+
+    char_count = len(cleaned_text)
+    word_count = len(cleaned_text.split())
+    line_count = len(cleaned_text.splitlines())
+
+    print(f"  • File Name       : {TermColors.BOLD}{filename}{TermColors.END}")
+    print(f"  • Target Config   : Board=[{board}] | Class=[{class_grade}] | Subject=[{subject}]")
+    print(f"  • Text Extracted  : {TermColors.BOLD}{char_count:,}{TermColors.END} chars | {word_count:,} words")
+
+    if not cleaned_text.strip():
+        raise ValueError("Failed to extract readable text from the uploaded document.")
+
+    # 2. CONTEXTUAL ANALYSIS
+    _print_step_header(2, "SHORT CONTEXTUAL ANALYSIS", TermColors.YELLOW)
+    analysis = perform_contextual_analysis(cleaned_text, filename, board, class_grade, subject, document_type)
+    title = analysis.get("title", filename)
+    summary = analysis.get("summary", "")
+    detected_topics = analysis.get("detected_topics", [subject])
+    est_diff = analysis.get("estimated_difficulty", "medium")
+    detected_subject = analysis.get("detected_subject")
+
+    if not detected_subject or detected_subject == "Science":
+        meta_detected = document_processor.detect_curriculum_metadata(cleaned_text[:6000])
+        specific_sub = meta_detected.get("subject")
+        if specific_sub and specific_sub != "Science":
+            detected_subject = specific_sub
+        elif not detected_subject:
+            detected_subject = specific_sub or subject
+
+    if detected_subject and not document_processor.is_subject_compatible(subject, detected_subject):
+        concepts_str = ", ".join(detected_topics[:3]) if detected_topics else "unrelated domain"
+        error_msg = (
+            f"Content Mismatch: Uploaded document '{filename}' contains '{detected_subject}' content "
+            f"(Concepts: {concepts_str}), but you selected '{subject}' in the dropdown. "
+            f"Please change the dropdown Subject to '{detected_subject}' to process this file."
+        )
+        print(f"\n{TermColors.BOLD}\033[91m❌ [VALIDATION BLOCKED] {error_msg}{TermColors.END}")
+        raise ValidationError(error_msg)
+
+    # Calibrate Question Count
+    rec_q = analysis.get("recommended_question_count")
+    if question_count and 10 <= int(question_count) <= 25:
+        target_q_count = int(question_count)
+    elif rec_q and isinstance(rec_q, (int, float)) and 10 <= int(rec_q) <= 25:
+        target_q_count = int(rec_q)
+    else:
+        target_q_count = 15 if char_count > 10000 else (13 if char_count > 5000 else 10)
+
+    # 3. QUESTION DETECTION & EXTRACTION
+    _print_step_header(3, f"QUESTION DETECTION & EXTRACTION ({document_type.upper()})", TermColors.BLUE)
+    system_prompt = OLD_QUESTION_PAPER_PROMPT if document_type == "old_question_paper" else TEXTBOOK_QUESTION_PROMPT
+    doc_excerpt = cleaned_text[:14000]
+    user_prompt = f"""Target Details:
+- Board: {board}
+- Class/Grade: {class_grade}
+- Subject: {subject}
+- Chapter/Paper Title: {title}
+- Required Question Count: {target_q_count}
+- Document Mode: {document_type}
+
+--- DOCUMENT CONTENT ---
+{doc_excerpt}
+--- END DOCUMENT CONTENT ---
+
+Extract/generate EXACTLY {target_q_count} structured questions covering all key concepts, definitions, numericals, and core topics."""
+
+    try:
+        response_json = mistral_client.generate_json(system_prompt, user_prompt, temperature=0.35)
+        raw_questions = response_json.get("questions", []) if isinstance(response_json, dict) else []
+    except Exception as e:
+        logger.error(f"LLM question extraction failed: {e}")
+        raw_questions = []
+
+    if not raw_questions:
+        sentences = [s.strip() for s in re.split(r'[\n\.]+', cleaned_text) if len(s.strip()) > 20]
+        if not sentences:
+            sentences = [f"Core fundamental principle of {subject} in {title}"]
+        for s_idx in range(target_q_count):
+            s_text = sentences[s_idx % len(sentences)]
+            raw_questions.append({
+                "question": f"Based on {title}: {s_text[:120]}... What is the underlying conceptual mechanism?",
+                "type": "SAQ" if s_idx % 2 == 1 else "MCQ",
+                "difficulty": "medium",
+                "marks": 2 if s_idx % 2 == 1 else 1,
+                "options": [
+                    f"A) {s_text[:40]} operates linearly under standard conditions",
+                    "B) Parameter remains constant regardless of boundary variations",
+                    "C) Response demonstrates inverse decay under specified constraints",
+                    "D) Output decreases proportionally with applied gradients"
+                ] if s_idx % 2 == 0 else [],
+                "correct_answer": "A" if s_idx % 2 == 0 else f"{s_text[:80]}. This relationship is derived directly from foundational principles.",
+                "explanation": f"The response is directly grounded in core curriculum definitions in {title}.",
+                "topic_suggested": detected_topics[0] if detected_topics else subject
+            })
+
+    # 4. JSON SCHEMA PREP & PRE-INSERTION DUPLICATE CHECKER
+    _print_step_header(4, "SCHEMA PREPARATION & DUPLICATE CHECKER", TermColors.YELLOW)
+    _ensure_curriculum_tables(session)
+
+    # Resolve target topic_id
+    resolved_topic_id = target_topic_id
+    if not resolved_topic_id:
+        try:
+            match_topic = session.execute(
+                text("""
+                    SELECT t.id 
+                    FROM topic_master t
+                    JOIN chapter_master ch ON t.chapter_id = ch.id
+                    JOIN subject_master s ON ch.subject_id = s.id
+                    JOIN board_master b ON s.board_id = b.id
+                    JOIN class_master c ON s.class_id = c.id
+                    WHERE LOWER(TRIM(b.board_name)) = LOWER(TRIM(:b))
+                      AND (LOWER(TRIM(c.class_name)) = LOWER(TRIM(:c)) OR LOWER(TRIM(REPLACE(c.class_name, 'Class ', ''))) = LOWER(TRIM(:c)))
+                      AND LOWER(TRIM(s.subject_name)) = LOWER(TRIM(:s))
+                    LIMIT 1
+                """),
+                {"b": board, "c": class_grade, "s": subject}
+            ).scalar()
+            resolved_topic_id = match_topic or 1
+        except Exception:
+            resolved_topic_id = 1
+
+    final_questions = []
+    duplicate_count = 0
+    meta = {"board": board, "classGrade": class_grade, "subject": subject, "title": title}
+
+    for idx, q_dict in enumerate(raw_questions):
+        norm = sanitize_question_item(q_dict, "MCQ", "medium", meta, idx)
+        if not norm:
+            continue
+        q_text = norm["question"]
+
+        # Check existing in question_master
+        is_dup = False
+        try:
+            existing_id = session.execute(
+                text("""
+                    SELECT id FROM question_master
+                    WHERE topic_id = :t_id AND LOWER(TRIM(question)) = LOWER(TRIM(:q_text))
+                    LIMIT 1
+                """),
+                {"t_id": resolved_topic_id, "q_text": q_text}
+            ).scalar()
+            if existing_id:
+                is_dup = True
+                duplicate_count += 1
+        except Exception:
+            is_dup = False
+
+        norm["id"] = str(uuid.uuid4())
+        norm["is_duplicate"] = is_dup
+        final_questions.append(norm)
+
+    print(f"  • Total Extracted : {len(final_questions)} Questions ({duplicate_count} Existing / Duplicates Detected)")
+
+    return {
+        "success": True,
+        "filename": filename,
+        "document_type": document_type,
+        "board": board,
+        "class_grade": class_grade,
+        "subject": subject,
+        "title": title,
+        "summary": summary,
+        "detected_topics": detected_topics,
+        "estimated_difficulty": est_diff,
+        "status": "PREVIEW_READY",
+        "total_extracted": len(final_questions),
+        "new_questions_count": len(final_questions) - duplicate_count,
+        "duplicate_questions_count": duplicate_count,
+        "duplicate_count": duplicate_count,
+        "topic_id": resolved_topic_id,
+        "cleaned_text": cleaned_text,
+        "char_count": char_count,
+        "questions": final_questions,
+    }
+
+
+def save_curriculum_extracted_questions_pipeline(
+    session: Session,
+    questions: List[Dict[str, Any]],
+    filename: str,
+    board: str,
+    class_grade: str,
+    subject: str,
+    document_type: str = "textbook",
+    cleaned_text: str = "",
+    target_topic_id: Optional[int] = None,
+    uploaded_by: Optional[int] = None,
+    detected_topics: List[str] = None,
+    title: str = None,
+    summary: str = None,
+) -> Dict[str, Any]:
+    """Persists Admin-approved questions into question_master with Duplicate Protection,
+
+    stores document chunks, updates ChromaDB Vector Store, and syncs ArangoDB K-Graph.
+    """
+    _print_separator(f"PERSISTING APPROVED QUESTIONS: {filename}", TermColors.GREEN)
+    _ensure_curriculum_tables(session)
+
+    # 1. Resolve topic_id
+    resolved_topic_id = target_topic_id
+    if not resolved_topic_id:
+        try:
+            match_topic = session.execute(
+                text("""
+                    SELECT t.id 
+                    FROM topic_master t
+                    JOIN chapter_master ch ON t.chapter_id = ch.id
+                    JOIN subject_master s ON ch.subject_id = s.id
+                    JOIN board_master b ON s.board_id = b.id
+                    JOIN class_master c ON s.class_id = c.id
+                    WHERE LOWER(TRIM(b.board_name)) = LOWER(TRIM(:b))
+                      AND (LOWER(TRIM(c.class_name)) = LOWER(TRIM(:c)) OR LOWER(TRIM(REPLACE(c.class_name, 'Class ', ''))) = LOWER(TRIM(:c)))
+                      AND LOWER(TRIM(s.subject_name)) = LOWER(TRIM(:s))
+                    LIMIT 1
+                """),
+                {"b": board, "c": class_grade, "s": subject}
+            ).scalar()
+            resolved_topic_id = match_topic or 1
+        except Exception:
+            resolved_topic_id = 1
+
+    # 2. Lookup Dicts for Question Types and Difficulties
+    types_map = {
+        r[0].upper(): r[1]
+        for r in session.execute(text("SELECT question_type_name, id FROM question_type_master")).fetchall()
+    }
+    diffs_map = {
+        r[0].lower(): r[1]
+        for r in session.execute(text("SELECT difficulty_level_name, id FROM difficulty_level_master")).fetchall()
+    }
+
+    inserted_count = 0
+    updated_count = 0
+    duplicate_skipped = 0
+
+    for q in questions:
+        q_type_upper = str(q.get("type", "MCQ")).upper()
+        q_type_id = types_map.get(q_type_upper)
+        if not q_type_id:
+            if "CASE" in q_type_upper:
+                q_type_id = types_map.get("CASE STUDY", types_map.get("SAQ", 2))
+            elif "ASSERT" in q_type_upper:
+                q_type_id = types_map.get("ASSERTION REASON", types_map.get("MCQ", 1))
+            elif "LONG" in q_type_upper:
+                q_type_id = types_map.get("LONG ANSWER", types_map.get("LONG EVALUATIVE (8M)", 3))
+            elif "SHORT" in q_type_upper or "SAQ" in q_type_upper:
+                if int(q.get("marks", 2)) == 3:
+                    q_type_id = types_map.get("SHORT ANSWER (3M)", types_map.get("SAQ", 2))
+                else:
+                    q_type_id = types_map.get("SAQ", 2)
+            elif "NUM" in q_type_upper:
+                q_type_id = types_map.get("NUMERICAL", 5)
+            else:
+                q_type_id = types_map.get("MCQ", 1)
+
+        q_diff = str(q.get("difficulty", "medium")).lower()
+        if q_diff in ["simple", "easy"]:
+            diff_id = diffs_map.get("easy", diffs_map.get("simple", 1))
+        else:
+            diff_id = diffs_map.get(q_diff, 2)
+
+        options_json = json.dumps(q.get("options", [])) if q.get("options") else None
+        q_text = q.get("question", "").strip()
+
+        # Check existing for deduplication
+        existing_id = session.execute(
+            text("""
+                SELECT id FROM question_master
+                WHERE topic_id = :t_id AND LOWER(TRIM(question)) = LOWER(TRIM(:q_text))
+                LIMIT 1
+            """),
+            {"t_id": resolved_topic_id, "q_text": q_text}
+        ).scalar()
+
+        if existing_id:
+            # Update existing with refined explanation and options
+            session.execute(
+                text("""
+                    UPDATE question_master
+                    SET options = :options, correct_answer = :correct_answer, explanation = :explanation,
+                        marks = :marks, difficulty_level_id = :diff_id, question_type_id = :type_id,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = :id
+                """),
+                {
+                    "id": existing_id,
+                    "options": options_json,
+                    "correct_answer": q.get("correct_answer", "A"),
+                    "explanation": q.get("explanation", ""),
+                    "marks": int(q.get("marks", 1)),
+                    "diff_id": diff_id,
+                    "type_id": q_type_id
+                }
+            )
+            updated_count += 1
+            duplicate_skipped += 1
+        else:
+            session.execute(
+                text("""
+                    INSERT INTO question_master 
+                    (topic_id, question_type_id, difficulty_level_id, question, options, correct_answer, explanation, marks, is_active, created_at, updated_at)
+                    VALUES 
+                    (:topic_id, :type_id, :diff_id, :question, :options, :correct_answer, :explanation, :marks, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                """),
+                {
+                    "topic_id": resolved_topic_id,
+                    "type_id": q_type_id,
+                    "diff_id": diff_id,
+                    "question": q_text,
+                    "options": options_json,
+                    "correct_answer": q.get("correct_answer", "A"),
+                    "explanation": q.get("explanation", ""),
+                    "marks": int(q.get("marks", 1))
+                }
+            )
+            inserted_count += 1
+
+    # 3. Create Document and Document Chunks
+    doc_id = str(uuid.uuid4())
+    doc_record = Document(
+        id=doc_id,
+        filename=filename,
+        content_type=document_type,
+        board=board,
+        class_grade=class_grade,
+        subject=subject,
+        uploaded_by=uploaded_by,
+        status="PROCESSED",
+    )
+    session.add(doc_record)
+    session.flush()
+
+    # Create chunks from text if available
+    chunks = []
+    if cleaned_text:
+        chunks = document_processor.chunk_text(cleaned_text, chunk_size=800, overlap=120)
+
+    chunk_ids = []
+    chunk_texts = []
+    chunk_metas = []
+
+    for c_idx, c_content in enumerate(chunks):
+        c_id = str(uuid.uuid4())
+        d_chunk = DocumentChunk(
+            id=c_id,
+            document_id=doc_id,
+            chunk_index=c_idx,
+            content=c_content,
+            vector_id=f"{doc_id}_{c_idx}",
+        )
+        session.add(d_chunk)
+        chunk_ids.append(f"{doc_id}_{c_idx}")
+        chunk_texts.append(c_content)
+        chunk_metas.append({
+            "document_id": doc_id,
+            "filename": filename,
+            "board": board,
+            "class_grade": class_grade,
+            "subject": subject,
+            "document_type": document_type,
+            "chunk_index": c_idx,
+        })
+
+    session.commit()
+
+    # 4. ChromaDB Vector Store Sync
+    if vector_db.is_enabled() and chunk_texts:
+        try:
+            embeddings = embedding_engine.embed(chunk_texts)
+            vector_db.upsert_chunks(chunk_ids, chunk_texts, embeddings, chunk_metas)
+            print(f"  • ChromaDB Synced : {len(chunk_texts)} chunks indexed with Mistral Embeddings")
+        except Exception as vec_err:
+            logger.warning(f"Vector store indexing notice: {vec_err}")
+
+    # 5. ArangoDB Knowledge Graph Sync
+    try:
+        from database import graph_db
+        if graph_db.is_enabled():
+            chapter_name_clean = title or filename.replace(".pdf", "").replace(".docx", "").replace(".doc", "").replace("_", " ")
+            topics_to_push = detected_topics if (detected_topics and len(detected_topics) > 0) else [chapter_name_clean]
+            graph_db.upsert_hierarchical_curriculum_branch(
+                board=board,
+                class_grade=class_grade,
+                subject=subject,
+                chapter=chapter_name_clean,
+                topics_list=topics_to_push
+            )
+            print(f"  • ArangoDB Synced : Hierarchy & {len(topics_to_push)} topic node(s) linked to knowledge graph")
+    except Exception as graph_err:
+        logger.warning(f"ArangoDB sync notice in pipeline: {graph_err}")
+
+    print(f"  • Questions Saved : {inserted_count} inserted, {updated_count} updated ({duplicate_skipped} duplicates protected)")
+    _print_separator(f"QUESTIONS PERSISTED SUCCESSFULLY: {filename}", TermColors.GREEN)
+
+    return {
+        "success": True,
+        "filename": filename,
+        "document_id": doc_id,
+        "title": title or filename,
+        "total_processed": len(questions),
+        "total_saved": inserted_count + updated_count,
+        "inserted_count": inserted_count,
+        "updated_count": updated_count,
+        "duplicate_skipped_count": duplicate_skipped,
+        "chunk_count": len(chunks),
+        "topic_id": resolved_topic_id,
+    }
+

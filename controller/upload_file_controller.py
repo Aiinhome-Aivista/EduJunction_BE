@@ -705,6 +705,98 @@ def process_curriculum_documents_batch_api():
     }, 201)
 
 
+@token_required
+@roles_required("ADMIN", "SUPER_ADMIN", "TEACHER")
+def extract_curriculum_preview_api():
+    """Extracts questions and context from an uploaded document without saving to DB yet,
+
+    returning the question list with duplicate indicators for UI review.
+    """
+    from helper.pipeline_engine import extract_curriculum_questions_preview
+
+    if "file" not in request.files:
+        raise ValidationError("No file uploaded in the request.")
+
+    file = request.files["file"]
+    if not file or not file.filename:
+        raise ValidationError("Uploaded file is invalid or empty.")
+
+    board = request.form.get("board", "CBSE")
+    class_grade = request.form.get("classGrade") or request.form.get("class_grade", "Class 10")
+    subject = request.form.get("subject", "Mathematics")
+    document_type = request.form.get("documentType") or request.form.get("document_type", "textbook")
+    raw_q_count = request.form.get("questionCount") or request.form.get("question_count")
+    question_count = int(raw_q_count) if raw_q_count and str(raw_q_count).isdigit() else None
+    topic_id_val = request.form.get("topicId") or request.form.get("topic_id")
+    target_topic_id = int(topic_id_val) if topic_id_val and str(topic_id_val).isdigit() else None
+
+    file_bytes = file.read()
+
+    with get_session() as session:
+        result = extract_curriculum_questions_preview(
+            session=session,
+            file_bytes=file_bytes,
+            filename=file.filename,
+            board=board,
+            class_grade=class_grade,
+            subject=subject,
+            document_type=document_type,
+            question_count=question_count,
+            target_topic_id=target_topic_id,
+        )
+        return success(result, 200)
+
+
+@token_required
+@roles_required("ADMIN", "SUPER_ADMIN", "TEACHER")
+def save_extracted_curriculum_questions_api():
+    """Persists Admin-approved / edited question list to question_master,
+
+    saves document record & ChromaDB chunks, and syncs ArangoDB K-Graph.
+    """
+    from helper.pipeline_engine import save_curriculum_extracted_questions_pipeline
+
+    payload = request.get_json(force=True, silent=True) or {}
+    questions = payload.get("questions", [])
+    if not questions or len(questions) == 0:
+        raise ValidationError("No questions provided to save.")
+
+    filename = payload.get("filename", "Uploaded_Curriculum.pdf")
+    board = payload.get("board", "CBSE")
+    class_grade = payload.get("classGrade", "Class 10")
+    subject = payload.get("subject", "Mathematics")
+    document_type = payload.get("documentType", "textbook")
+    cleaned_text = payload.get("cleaned_text") or payload.get("cleanedText", "")
+    target_topic_id = payload.get("topicId") or payload.get("topic_id")
+    if target_topic_id and str(target_topic_id).isdigit():
+        target_topic_id = int(target_topic_id)
+    else:
+        target_topic_id = None
+
+    detected_topics = payload.get("detected_topics") or payload.get("detectedTopics", [])
+    title = payload.get("title")
+    summary = payload.get("summary")
+
+    with get_session() as session:
+        result = save_curriculum_extracted_questions_pipeline(
+            session=session,
+            questions=questions,
+            filename=filename,
+            board=board,
+            class_grade=class_grade,
+            subject=subject,
+            document_type=document_type,
+            cleaned_text=cleaned_text,
+            target_topic_id=target_topic_id,
+            uploaded_by=g.current_user_id if hasattr(g, "current_user_id") else None,
+            detected_topics=detected_topics,
+            title=title,
+            summary=summary,
+        )
+        return success(result, 201)
+
+
+
 
 
 

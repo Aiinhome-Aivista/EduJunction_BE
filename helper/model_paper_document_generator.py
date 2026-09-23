@@ -156,30 +156,237 @@ def _synthesize_case(num: int, subject: str, marks: int = 4) -> dict:
     }
 
 
+from sqlalchemy import text
+import json
+
+
+def _fetch_model_paper_questions_from_db(
+    session,
+    board: str,
+    class_grade: str,
+    subject: str,
+    set_number: int = 1,
+) -> Dict[str, List[dict]]:
+    """Fetches questions from question_master grouped into mark pools (1M, 2M, 3M, 4M, 5M, 8M)."""
+    if not session:
+        return {}
+
+    clean_board = (board or "").strip()
+    clean_class = (class_grade or "").strip()
+    clean_subj = (subject or "").strip()
+
+    try:
+        sql = text("""
+            SELECT 
+                q.id AS question_id,
+                q.question AS question_text,
+                q.options,
+                q.correct_answer,
+                q.explanation,
+                q.marks,
+                COALESCE(qt.question_type_name, 'MCQ') AS question_type,
+                COALESCE(dl.difficulty_level_name, 'medium') AS difficulty,
+                s.subject_name,
+                ch.chapter_name,
+                t.topic_name,
+                b.board_name,
+                c.class_name
+            FROM question_master q
+            JOIN topic_master t ON q.topic_id = t.id
+            JOIN chapter_master ch ON t.chapter_id = ch.id
+            JOIN subject_master s ON ch.subject_id = s.id
+            JOIN board_master b ON s.board_id = b.id
+            JOIN class_master c ON s.class_id = c.id
+            JOIN question_type_master qt ON q.question_type_id = qt.id
+            LEFT JOIN difficulty_level_master dl ON q.difficulty_level_id = dl.id
+            WHERE q.is_active = 1
+              AND (
+                  :board = ''
+                  OR LOWER(TRIM(b.board_name)) = LOWER(TRIM(:board))
+                  OR LOWER(b.board_name) LIKE CONCAT('%', LOWER(:board), '%')
+                  OR LOWER(:board) LIKE CONCAT('%', LOWER(b.board_name), '%')
+              )
+              AND (
+                  :class_grade = ''
+                  OR LOWER(TRIM(c.class_name)) = LOWER(TRIM(:class_grade))
+                  OR LOWER(TRIM(REPLACE(c.class_name, 'Class ', ''))) = LOWER(TRIM(REPLACE(:class_grade, 'Class ', '')))
+                  OR LOWER(c.class_name) LIKE CONCAT('%', LOWER(:class_grade), '%')
+              )
+              AND (
+                  :subject = ''
+                  OR LOWER(TRIM(s.subject_name)) = LOWER(TRIM(:subject))
+                  OR LOWER(s.subject_name) LIKE CONCAT('%', LOWER(:subject), '%')
+                  OR LOWER(:subject) LIKE CONCAT('%', LOWER(s.subject_name), '%')
+              )
+            ORDER BY q.id ASC
+        """)
+
+        params = {
+            "board": clean_board,
+            "class_grade": clean_class,
+            "subject": clean_subj,
+        }
+
+        rows = session.execute(sql, params).mappings().fetchall()
+        if not rows:
+            return {}
+
+        pools: Dict[str, List[dict]] = {
+            "1m": [],
+            "2m": [],
+            "3m": [],
+            "4m": [],
+            "5m": [],
+            "8m": [],
+        }
+
+        for r in rows:
+            raw_options = r.get("options")
+            options_list = None
+            if raw_options:
+                if isinstance(raw_options, list):
+                    options_list = raw_options
+                elif isinstance(raw_options, str):
+                    try:
+                        parsed = json.loads(raw_options)
+                        if isinstance(parsed, list):
+                            options_list = parsed
+                        elif isinstance(parsed, dict):
+                            options_list = [f"{k}) {v}" for k, v in parsed.items()]
+                    except Exception:
+                        options_list = [opt.strip() for opt in raw_options.split("|") if opt.strip()]
+
+            q_type = str(r.get("question_type") or "MCQ").upper()
+            marks = int(r.get("marks") or 1)
+
+            q_obj = {
+                "question": r.get("question_text", ""),
+                "options": options_list,
+                "correct_answer": str(r.get("correct_answer", "A")),
+                "explanation": r.get("explanation") or "Derived from standard curriculum concepts.",
+                "marks": marks,
+                "type": q_type.lower(),
+                "topic": r.get("topic_name") or r.get("chapter_name") or clean_subj,
+            }
+
+            if marks == 1 or "MCQ" in q_type or "OBJECTIVE" in q_type or "ASSERTION" in q_type:
+                q_obj["marks"] = 1
+                pools["1m"].append(q_obj)
+            elif marks == 2 or ("SAQ" in q_type and marks <= 2):
+                q_obj["marks"] = 2
+                pools["2m"].append(q_obj)
+            elif marks == 3:
+                q_obj["marks"] = 3
+                pools["3m"].append(q_obj)
+            elif marks == 4 or "CASE" in q_type:
+                q_obj["marks"] = 4
+                q_obj["case_title"] = f"Case Analysis: {q_obj['topic']}"
+                q_obj["case_text"] = f"Contextual study on {q_obj['topic']} under standard {clean_subj} principles."
+                pools["4m"].append(q_obj)
+            elif marks == 5 or "LONG" in q_type:
+                q_obj["marks"] = 5
+                pools["5m"].append(q_obj)
+            elif marks >= 8 or "EVALUATIVE" in q_type:
+                q_obj["marks"] = 8
+                pools["8m"].append(q_obj)
+            else:
+                pools["2m"].append(q_obj)
+
+        # Rotate pools by offset for distinct question sets
+        offset = max(0, (set_number - 1))
+        for k in pools:
+            if pools[k]:
+                n = len(pools[k])
+                shift = (offset * 3) % n
+                pools[k] = pools[k][shift:] + pools[k][:shift]
+
+        return pools
+    except Exception as e:
+        logger.warning(f"Failed to fetch model paper questions from DB: {e}")
+        return {}
+
+
 # ─────────────────────────────────────────────────────────────
 # Board-Specific Blueprint Assemblers
 # ─────────────────────────────────────────────────────────────
 
-def assemble_cbse_paper(class_grade: str, subject: str, set_number: int) -> Dict[str, Any]:
+def assemble_cbse_paper(class_grade: str, subject: str, set_number: int, session=None) -> Dict[str, Any]:
     """CBSE 80-Mark Official 5-Section Specimen Blueprint (38 Questions, 3 Hours)."""
+    db_pools = _fetch_model_paper_questions_from_db(session, "CBSE", class_grade, subject, set_number)
+
     # Section A: 18 MCQs + 2 Assertion-Reason = 20 Marks
+    db_1m = list(db_pools.get("1m", []))
     sec_a = []
-    for i in range(1, 19):
-        sec_a.append(_synthesize_curriculum_mcq(i + (set_number - 1) * 3, subject, "CBSE"))
-    sec_a.append(_synthesize_assertion_reason(1 + (set_number - 1), subject))
-    sec_a.append(_synthesize_assertion_reason(2 + (set_number - 1), subject))
+    if db_1m:
+        sec_a.extend(db_1m[:20])
+
+    if len(sec_a) < 20:
+        needed = 20 - len(sec_a)
+        for i in range(1, needed - 1 if needed >= 2 else needed + 1):
+            sec_a.append(_synthesize_curriculum_mcq(i + len(sec_a) + (set_number - 1) * 3, subject, "CBSE"))
+        if len(sec_a) < 19:
+            sec_a.append(_synthesize_assertion_reason(1 + (set_number - 1), subject))
+        if len(sec_a) < 20:
+            sec_a.append(_synthesize_assertion_reason(2 + (set_number - 1), subject))
 
     # Section B: 5 Required + 2 Extra Choice Questions = 7 Questions Total (2M each)
-    sec_b = [_synthesize_saq(i + (set_number - 1), subject, 2) for i in range(1, 8)]
+    db_2m = list(db_pools.get("2m", []))
+    sec_b = []
+    if db_2m:
+        sec_b.extend(db_2m[:7])
+    if len(sec_b) < 7:
+        needed_b = 7 - len(sec_b)
+        sec_b.extend([_synthesize_saq(i + len(sec_b) + (set_number - 1), subject, 2) for i in range(1, needed_b + 1)])
 
     # Section C: 6 Required + 2 Extra Choice Questions = 8 Questions Total (3M each)
-    sec_c = [_synthesize_saq(i + 5 + (set_number - 1), subject, 3) for i in range(1, 9)]
+    db_3m = list(db_pools.get("3m", []))
+    sec_c = []
+    if db_3m:
+        sec_c.extend(db_3m[:8])
+    if len(sec_c) < 8:
+        needed_c = 8 - len(sec_c)
+        sec_c.extend([_synthesize_saq(i + len(sec_c) + 5 + (set_number - 1), subject, 3) for i in range(1, needed_c + 1)])
 
     # Section D: 4 Required + 2 Extra Choice Questions = 6 Questions Total (5M each)
-    sec_d = [_synthesize_long(i + (set_number - 1), subject, 5) for i in range(1, 7)]
+    db_5m = list(db_pools.get("5m", []))
+    sec_d = []
+    if db_5m:
+        sec_d.extend(db_5m[:6])
+    if len(sec_d) < 6:
+        needed_d = 6 - len(sec_d)
+        sec_d.extend([_synthesize_long(i + len(sec_d) + (set_number - 1), subject, 5) for i in range(1, needed_d + 1)])
 
     # Section E: 3 Required + 2 Extra Choice Questions = 5 Questions Total (4M each)
-    sec_e = [_synthesize_case(i + (set_number - 1), subject, 4) for i in range(1, 6)]
+    db_4m = list(db_pools.get("4m", []))
+    sec_e = []
+    if db_4m:
+        sec_e.extend(db_4m[:5])
+    if len(sec_e) < 5:
+        needed_e = 5 - len(sec_e)
+        sec_e.extend([_synthesize_case(i + len(sec_e) + (set_number - 1), subject, 4) for i in range(1, needed_e + 1)])
+
+    total_q = len(sec_a) + len(sec_b) + len(sec_c) + len(sec_d) + len(sec_e)
+    db_count = min(len(db_1m), 20) + min(len(db_2m), 7) + min(len(db_3m), 8) + min(len(db_5m), 6) + min(len(db_4m), 5)
+    fallback_count = max(0, total_q - db_count)
+
+    if db_count >= total_q:
+        source_label = "DATABASE (question_master)"
+        source_type = "database"
+    elif db_count == 0:
+        source_label = "FALLBACK_CURRICULUM_BANK (fallback_exam_bank.py)"
+        source_type = "fallback"
+    else:
+        source_label = f"HYBRID ({db_count} from Database + {fallback_count} from Fallback)"
+        source_type = "hybrid"
+
+    print("\n" + "=" * 78)
+    print("[*] [MODEL QUESTION PAPER GENERATION LOG]")
+    print(f">> Target    : CBSE | {class_grade} | {subject} (Set {set_number})")
+    print(f">> Blueprint : CBSE 80-Mark Official 5-Section Specimen Blueprint")
+    print(f">> SOURCE    : >>> {source_label} <<<")
+    print(f">> Questions : {total_q} Total ({db_count} DB, {fallback_count} Fallback)")
+    print(f">> Marks     : 80 Marks Total | Time: 3 Hours (180 Minutes)")
+    print("=" * 78 + "\n")
 
     return {
         "board": "CBSE",
@@ -191,6 +398,10 @@ def assemble_cbse_paper(class_grade: str, subject: str, set_number: int) -> Dict
         "set_number": set_number,
         "time_allowed": "3 Hours (180 Minutes)",
         "max_marks": 80,
+        "source": source_type,
+        "source_label": source_label,
+        "db_question_count": db_count,
+        "fallback_question_count": fallback_count,
         "instructions": [
             "1. This question paper contains 46 questions in 5 Sections: A, B, C, D and E.",
             "2. Section A comprises 20 Multiple Choice Questions (MCQs) of 1 mark each (Compulsory).",
@@ -211,15 +422,37 @@ def assemble_cbse_paper(class_grade: str, subject: str, set_number: int) -> Dict
     }
 
 
-def assemble_icse_paper(class_grade: str, subject: str, set_number: int) -> Dict[str, Any]:
+def assemble_icse_paper(class_grade: str, subject: str, set_number: int, session=None) -> Dict[str, Any]:
     """ICSE 80-Mark Official 2-Section Specimen Blueprint (2.5 Hours + 15 Mins Reading)."""
+    db_pools = _fetch_model_paper_questions_from_db(session, "ICSE", class_grade, subject, set_number)
+
     # Section A (Compulsory - 40 Marks)
     # Question 1: 15 MCQs (15 Marks)
-    q1_mcqs = [_synthesize_curriculum_mcq(i + (set_number - 1) * 2, subject, "ICSE") for i in range(1, 16)]
+    db_1m = list(db_pools.get("1m", []))
+    q1_mcqs = []
+    if db_1m:
+        q1_mcqs.extend(db_1m[:15])
+    if len(q1_mcqs) < 15:
+        needed_1 = 15 - len(q1_mcqs)
+        q1_mcqs.extend([_synthesize_curriculum_mcq(i + len(q1_mcqs) + (set_number - 1) * 2, subject, "ICSE") for i in range(1, needed_1 + 1)])
+
     # Question 2: Descriptive subparts (i) to (v) (15 Marks, 3M each)
-    q2_parts = [_synthesize_saq(i + (set_number - 1), subject, 3) for i in range(1, 6)]
+    db_3m = list(db_pools.get("3m", []))
+    q2_parts = []
+    if db_3m:
+        q2_parts.extend(db_3m[:5])
+    if len(q2_parts) < 5:
+        needed_2 = 5 - len(q2_parts)
+        q2_parts.extend([_synthesize_saq(i + len(q2_parts) + (set_number - 1), subject, 3) for i in range(1, needed_2 + 1)])
+
     # Question 3: Structured subparts (i) to (v) (10 Marks, 2M each)
-    q3_parts = [_synthesize_saq(i + 5 + (set_number - 1), subject, 2) for i in range(1, 6)]
+    db_2m = list(db_pools.get("2m", []))
+    q3_parts = []
+    if db_2m:
+        q3_parts.extend(db_2m[:5])
+    if len(q3_parts) < 5:
+        needed_3 = 5 - len(q3_parts)
+        q3_parts.extend([_synthesize_saq(i + len(q3_parts) + 5 + (set_number - 1), subject, 2) for i in range(1, needed_3 + 1)])
 
     # Section B (Attempt any 4 questions out of 7 - 40 Marks)
     # Questions 4 to 10: each carries 10 Marks (broken into parts (a)[3M], (b)[3M], (c)[4M])
@@ -235,6 +468,29 @@ def assemble_icse_paper(class_grade: str, subject: str, set_number: int) -> Dict
             "total_marks": 10
         })
 
+    total_q = len(q1_mcqs) + len(q2_parts) + len(q3_parts) + len(sec_b_questions)
+    db_count = min(len(db_1m), 15) + min(len(db_3m), 5) + min(len(db_2m), 5)
+    fallback_count = max(0, total_q - db_count)
+
+    if db_count >= total_q:
+        source_label = "DATABASE (question_master)"
+        source_type = "database"
+    elif db_count == 0:
+        source_label = "FALLBACK_CURRICULUM_BANK (fallback_exam_bank.py)"
+        source_type = "fallback"
+    else:
+        source_label = f"HYBRID ({db_count} from Database + {fallback_count} from Fallback)"
+        source_type = "hybrid"
+
+    print("\n" + "=" * 78)
+    print("[*] [MODEL QUESTION PAPER GENERATION LOG]")
+    print(f">> Target    : ICSE | {class_grade} | {subject} (Set {set_number})")
+    print(f">> Blueprint : ICSE 80-Mark Official 2-Section Specimen Blueprint")
+    print(f">> SOURCE    : >>> {source_label} <<<")
+    print(f">> Questions : {total_q} Total ({db_count} DB, {fallback_count} Fallback)")
+    print(f">> Marks     : 80 Marks Total | Time: 2.5 Hours (150 Minutes)")
+    print("=" * 78 + "\n")
+
     return {
         "board": "ICSE",
         "board_header": "COUNCIL FOR THE INDIAN SCHOOL CERTIFICATE EXAMINATIONS, NEW DELHI",
@@ -245,6 +501,10 @@ def assemble_icse_paper(class_grade: str, subject: str, set_number: int) -> Dict
         "set_number": set_number,
         "time_allowed": "2.5 Hours (150 Minutes)",
         "max_marks": 80,
+        "source": source_type,
+        "source_label": source_label,
+        "db_question_count": db_count,
+        "fallback_question_count": fallback_count,
         "instructions": [
             "1. Answers to this Paper must be written on the paper provided separately.",
             "2. You will not be allowed to write during the first 15 minutes. This time is to be spent in reading the question paper.",
@@ -266,28 +526,69 @@ def assemble_icse_paper(class_grade: str, subject: str, set_number: int) -> Dict
     }
 
 
-def assemble_isc_paper(class_grade: str, subject: str, set_number: int) -> Dict[str, Any]:
+def assemble_isc_paper(class_grade: str, subject: str, set_number: int, session=None) -> Dict[str, Any]:
     """ISC Class 11/12 80-Mark Specimen Blueprint (3 Sections, 3 Hours)."""
+    db_pools = _fetch_model_paper_questions_from_db(session, "ISC", class_grade, subject, set_number)
+
     # Section A: 16 Compulsory Objective / MCQs (16 Marks)
-    sec_a = [_synthesize_curriculum_mcq(i + (set_number - 1) * 2, subject, "ISC") for i in range(1, 17)]
+    db_1m = list(db_pools.get("1m", []))
+    sec_a = []
+    if db_1m:
+        sec_a.extend(db_1m[:16])
+    if len(sec_a) < 16:
+        needed_1 = 16 - len(sec_a)
+        sec_a.extend([_synthesize_curriculum_mcq(i + len(sec_a) + (set_number - 1) * 2, subject, "ISC") for i in range(1, needed_1 + 1)])
 
     # Section B: 8 Short / Numerical Questions of 4 Marks each = 32 Marks
+    db_4m = list(db_pools.get("4m", []))
     sec_b = []
-    for i in range(1, 9):
-        sec_b.append({
-            "question": f"<b>(a)</b> Evaluate the analytical response in {subject} and formulate the system equations.<br/>"
-                        f"<b>(b)</b> Compute the steady state coefficient when boundary values reach threshold. [2 + 2 = 4 Marks]",
-            "marks": 4
-        })
+    if db_4m:
+        sec_b.extend(db_4m[:8])
+    if len(sec_b) < 8:
+        needed_b = 8 - len(sec_b)
+        for i in range(1, needed_b + 1):
+            sec_b.append({
+                "question": f"<b>(a)</b> Evaluate the analytical response in {subject} and formulate the system equations.<br/>"
+                            f"<b>(b)</b> Compute the steady state coefficient when boundary values reach threshold. [2 + 2 = 4 Marks]",
+                "marks": 4
+            })
 
     # Section C: 4 Evaluative / Derivation Questions of 8 Marks each = 32 Marks
+    db_8m = list(db_pools.get("8m", []))
     sec_c = []
-    for i in range(1, 5):
-        sec_c.append({
-            "question": f"<b>(a)</b> Derive the comprehensive governing equation in {subject} from fundamental physical laws. Draw a neat schematic diagram. [4 Marks]<br/>"
-                        f"<b>(b)</b> An operational system exhibits non-linear damping of 3.8%. Calculate the maximum power dissipation and justify the convergence criteria. [4 Marks]",
-            "marks": 8
-        })
+    if db_8m:
+        sec_c.extend(db_8m[:4])
+    if len(sec_c) < 4:
+        needed_c = 4 - len(sec_c)
+        for i in range(1, needed_c + 1):
+            sec_c.append({
+                "question": f"<b>(a)</b> Derive the comprehensive governing equation in {subject} from fundamental physical laws. Draw a neat schematic diagram. [4 Marks]<br/>"
+                            f"<b>(b)</b> An operational system exhibits non-linear damping of 3.8%. Calculate the maximum power dissipation and justify the convergence criteria. [4 Marks]",
+                "marks": 8
+            })
+
+    total_q = len(sec_a) + len(sec_b) + len(sec_c)
+    db_count = min(len(db_1m), 16) + min(len(db_4m), 8) + min(len(db_8m), 4)
+    fallback_count = max(0, total_q - db_count)
+
+    if db_count >= total_q:
+        source_label = "DATABASE (question_master)"
+        source_type = "database"
+    elif db_count == 0:
+        source_label = "FALLBACK_CURRICULUM_BANK (fallback_exam_bank.py)"
+        source_type = "fallback"
+    else:
+        source_label = f"HYBRID ({db_count} from Database + {fallback_count} from Fallback)"
+        source_type = "hybrid"
+
+    print("\n" + "=" * 78)
+    print("[*] [MODEL QUESTION PAPER GENERATION LOG]")
+    print(f">> Target    : ISC | {class_grade} | {subject} (Set {set_number})")
+    print(f">> Blueprint : ISC 80-Mark Official 3-Section Specimen Blueprint")
+    print(f">> SOURCE    : >>> {source_label} <<<")
+    print(f">> Questions : {total_q} Total ({db_count} DB, {fallback_count} Fallback)")
+    print(f">> Marks     : 80 Marks Total | Time: 3 Hours (180 Minutes)")
+    print("=" * 78 + "\n")
 
     return {
         "board": "ISC",
@@ -299,6 +600,10 @@ def assemble_isc_paper(class_grade: str, subject: str, set_number: int) -> Dict[
         "set_number": set_number,
         "time_allowed": "3 Hours (180 Minutes)",
         "max_marks": 80,
+        "source": source_type,
+        "source_label": source_label,
+        "db_question_count": db_count,
+        "fallback_question_count": fallback_count,
         "instructions": [
             "1. Answer all questions in Section A, Section B and Section C.",
             "2. Section A consists of 16 objective / multiple-choice subparts carrying 1 mark each.",
@@ -320,16 +625,17 @@ def get_model_paper_questions(
     board: str,
     class_grade: str,
     subject: str,
-    set_number: int = 1
+    set_number: int = 1,
+    session=None,
 ) -> Dict[str, Any]:
-    """Dispatches to board-specific assembler (CBSE, ICSE, ISC)."""
+    """Dispatches to board-specific assembler (CBSE, ICSE, ISC) with optional database session."""
     board_clean = board.upper().strip()
     if board_clean == "ICSE":
-        return assemble_icse_paper(class_grade, subject, set_number)
+        return assemble_icse_paper(class_grade, subject, set_number, session=session)
     elif board_clean == "ISC":
-        return assemble_isc_paper(class_grade, subject, set_number)
+        return assemble_isc_paper(class_grade, subject, set_number, session=session)
     else:
-        return assemble_cbse_paper(class_grade, subject, set_number)
+        return assemble_cbse_paper(class_grade, subject, set_number, session=session)
 
 
 # ─────────────────────────────────────────────────────────────
