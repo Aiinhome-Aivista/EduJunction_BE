@@ -1125,20 +1125,6 @@ def preview_subject_model_paper(subscription_id: int):
                     eval_result = None
 
             if not eval_result:
-                tot_score = float(sub.score_obtained or 0.0)
-                max_marks_val = float(sub.total_marks or raw_paper.get("max_marks", 80))
-                acc_pct = float(sub.accuracy_percentage or 0.0)
-                if acc_pct >= 90:
-                    grade_label = "Outstanding (A+)"
-                elif acc_pct >= 75:
-                    grade_label = "Distinction (A)"
-                elif acc_pct >= 60:
-                    grade_label = "First Class (B+)"
-                elif acc_pct >= 40:
-                    grade_label = "Pass (C)"
-                else:
-                    grade_label = "Needs Improvement (D)"
-
                 evaluated_sections_breakdown = []
                 all_eval_items = []
                 total_target_questions = 0
@@ -1182,20 +1168,23 @@ def preview_subject_model_paper(subscription_id: int):
                         "targetQuestions": sec_target_q,
                         "totalQuestions": len(sec_questions),
                         "percentage": 0.0,
+                        "attempted": 0,
+                        "correct": 0,
                         "choiceNote": bp.get("choiceNote", ""),
                         "questions": sec_questions,
                     })
 
+                max_marks_val = float(raw_paper.get("max_marks", 80))
                 eval_result = {
                     "subscriptionId": sub.id,
                     "board": sub.board,
                     "classGrade": sub.class_grade,
                     "subject": sub.subject,
                     "setNumber": set_num,
-                    "totalMarksObtained": tot_score,
+                    "totalMarksObtained": 0.0,
                     "maxMarks": max_marks_val,
-                    "accuracyPercentage": acc_pct,
-                    "grade": grade_label,
+                    "accuracyPercentage": 0.0,
+                    "grade": "Needs Improvement (D)",
                     "timeSpentSeconds": 0,
                     "summary": {
                         "totalQuestions": total_available_questions,

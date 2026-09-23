@@ -91,7 +91,7 @@ def render_email_template(title: str, content_html: str) -> str:
     <div class="wrapper">
         <div class="header">
             <div class="logo">🎓 <span style="color: #09090b;">Edu</span><span style="color: #eab308;">Junction</span></div>
-            <p>AI-Powered Adaptive Learning & Progress Analytics</p>
+            <p>Adaptive Learning & Progress Analytics</p>
         </div>
         <div class="body-content">
             {content_html}
@@ -455,7 +455,7 @@ def send_student_exam_report_email(
     subject = f"📊 Performance Report: {display_name}'s {subject_name} Exam Result ({marks_obtained}/{total_marks})"
 
     content_html = f"""
-        <h2 style="color: #1e293b; margin-top: 0;">Diagnostic Exam Result & Assessment Report 📊</h2>
+        <h2 style="color: #1e293b; margin-top: 0;">Exam Result & Assessment Report</h2>
         <p>Dear Parent / Guardian,</p>
         <p><strong>{display_name}</strong> has just completed an assessment on <strong>EduJunction</strong>.</p>
         
