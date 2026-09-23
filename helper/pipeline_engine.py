@@ -70,28 +70,44 @@ JSON Schema:
 }
 """
 
-OLD_QUESTION_PAPER_PROMPT = """You are a senior national board paper evaluator and digitization expert.
-Your task is to parse the provided Old Question Paper / PYQ text, identify all individual exam questions, and convert them into structured digital question records.
+OLD_QUESTION_PAPER_PROMPT = """You are a senior national board paper evaluator, bilingual digitizer, and curriculum expert (CBSE, ICSE, ISC, State Boards).
+Your task is to parse the provided Old Question Paper / PYQ text, identify all individual exam questions, and convert them into structured digital question records with exact official marks.
 
-CRITICAL INSTRUCTIONS:
-1. Detect and preserve the original questions from the exam paper.
-2. If the paper has multiple sections (Section A, B, C, etc.), extract all distinguishable questions.
-3. For Multiple Choice Questions (MCQ), extract all 4 options ('A) ', 'B) ', 'C) ', 'D) ') and determine the correct answer key and complete explanation.
-4. For subjective/descriptive questions (SAQ, Numerical, Objective), provide a comprehensive, accurate model answer in 'correct_answer' and detailed step-by-step working in 'explanation'.
-5. Assign accurate marks and difficulty level ('easy', 'medium', 'hard') based on the complexity of each question.
+CRITICAL BILINGUAL & MULTILINGUAL INSTRUCTIONS:
+1. BILINGUAL PAPERS (Hindi/Bengali + English):
+   - For CBSE, ICSE, ISC, and general subjects (Science, Physics, Chemistry, Biology, Mathematics, Social Studies, Computer Science, English), extract the clean ENGLISH version of the question text and options.
+   - Strip out parallel Hindi, Bengali, or regional duplicate sentences, headers (e.g. 'अथवा / OR', 'प्रश्न 1.'), and option translations (e.g. '(A) कोयला / Coal' -> 'A) Coal').
+   - For Language subjects (e.g., Hindi Course A/B, Bengali Language, Sanskrit), preserve the respective native language of the subject.
+
+2. MARKS-WISE & SECTION DIRECTIVES:
+   - Identify section directives (e.g., Section A = 1 Mark, Section B = 2 Marks, Section C = 3 Marks, Section D = 4 Marks Case Study / Source Based, Section E = 5 Marks Long Answer, Section F = 8 Marks Evaluative) and inline mark brackets like [1], [2], [3], [4], [5], [8].
+   - Assign exact official marks (1, 2, 3, 4, 5, or 8) and matching question type:
+     • 1 Mark: 'MCQ', 'ASSERTION REASON', or 'OBJECTIVE'
+     • 2 Marks: 'SAQ' (Short Answer Question - 2M)
+     • 3 Marks: 'SHORT ANSWER (3M)' or 'NUMERICAL'
+     • 4 Marks: 'CASE STUDY' (Case-based / passage-based with sub-questions)
+     • 5 Marks: 'LONG ANSWER'
+     • 8 Marks: 'LONG EVALUATIVE'
+
+3. OPTIONS & MODEL ANSWERS:
+   - For Multiple Choice Questions (MCQ), extract all 4 options labeled 'A) ', 'B) ', 'C) ', 'D) ' and determine the correct single-letter answer key ('A', 'B', 'C', or 'D').
+   - For descriptive questions, provide a comprehensive model answer in 'correct_answer' and detailed step-by-step working/explanation in 'explanation'.
+
+4. EXTRACTION COMPLETENESS:
+   - Extract EVERY distinguishable question present in the text without skipping.
 
 JSON Schema:
 {
   "questions": [
     {
-      "question": "Which of the following is a non-renewable source of energy?",
+      "question": "Which of the following is a displacement reaction?",
       "type": "MCQ",
       "difficulty": "easy",
       "marks": 1,
-      "options": ["A) Solar Energy", "B) Wind Energy", "C) Coal", "D) Hydro Energy"],
-      "correct_answer": "C",
-      "explanation": "Coal is a fossil fuel that takes millions of years to form and is depleted upon consumption.",
-      "topic_suggested": "Sources of Energy"
+      "options": ["A) CaO + H2O -> Ca(OH)2", "B) Fe + CuSO4 -> FeSO4 + Cu", "C) 2H2 + O2 -> 2H2O", "D) CaCO3 -> CaO + CO2"],
+      "correct_answer": "B",
+      "explanation": "Iron is more reactive than copper and displaces copper from copper sulphate solution.",
+      "topic_suggested": "Chemical Reactions and Equations"
     }
   ]
 }
@@ -188,10 +204,38 @@ def sanitize_question_item(
     meta: dict,
     index: int
 ) -> Optional[Dict[str, Any]]:
-    """Sanitizes and strictly formats a question item for question_master schema."""
+    """Sanitizes and strictly formats a question item for question_master schema with bilingual filtering."""
     q_text = (q.get("question") or "").strip()
     if not q_text:
         return None
+
+    # Check if subject is language (Hindi, Bengali, Sanskrit, English)
+    sub_lower = str(meta.get("subject") or "").lower()
+    is_lang_subject = any(lang in sub_lower for lang in ["hindi", "bengali", "bangla", "sanskrit", "arabic", "urdu"])
+
+    # 1. Bilingual cleanup for CBSE / ICSE / ISC and STEM / General subjects
+    if not is_lang_subject:
+        # If question contains 'Non-English / English', extract the English part
+        if "/" in q_text:
+            parts = [p.strip() for p in q_text.split("/") if p.strip()]
+            for p in parts:
+                ascii_chars = sum(1 for c in p if ord(c) < 128)
+                if ascii_chars / max(len(p), 1) > 0.70 and len(p.split()) >= 2:
+                    q_text = p
+                    break
+
+        # Remove leading Question markers like 'Q1. ', '1. ', 'Question 1: '
+        q_text = re.sub(r'^(?:Q(?:uestion)?\.?\s*\d+[\.\:\)]|\d+[\.\)])\s*', '', q_text).strip()
+
+    # 2. Extract embedded marks tag in question text e.g. [1 Mark], [2 Marks], [3M], (4), [5]
+    mark_match = re.search(r'[\(\[]\s*(\d+)\s*(?:Marks?|M)?\s*[\)\]]$', q_text, re.IGNORECASE)
+    extracted_marks = None
+    if mark_match:
+        try:
+            extracted_marks = int(mark_match.group(1))
+            q_text = q_text[:mark_match.start()].strip()
+        except Exception:
+            extracted_marks = None
 
     raw_type = str(q.get("type") or default_type or "MCQ").strip().upper()
     if "CASE" in raw_type:
@@ -234,6 +278,23 @@ def sanitize_question_item(
         elif isinstance(q_opts, dict):
             clean_opts = [f"{k}) {v}" for k, v in q_opts.items()]
 
+        # Clean bilingual slash in options (e.g. "कोयला / Coal" -> "Coal")
+        if not is_lang_subject:
+            clean_opt_list = []
+            for opt_val in clean_opts:
+                if "/" in opt_val:
+                    opt_parts = [p.strip() for p in opt_val.split("/") if p.strip()]
+                    eng_opt = None
+                    for op in opt_parts:
+                        ascii_chars = sum(1 for c in op if ord(c) < 128)
+                        if ascii_chars / max(len(op), 1) > 0.70:
+                            eng_opt = op
+                            break
+                    clean_opt_list.append(eng_opt or opt_val)
+                else:
+                    clean_opt_list.append(opt_val)
+            clean_opts = clean_opt_list
+
         # Ensure standard prefix A), B), C), D)
         formatted_opts = []
         for opt_idx, opt_val in enumerate(clean_opts[:4]):
@@ -259,23 +320,203 @@ def sanitize_question_item(
     raw_diff = str(q.get("difficulty") or target_diff or "medium").strip().lower()
     final_difficulty = raw_diff if raw_diff in ["easy", "medium", "hard"] else "medium"
 
+    # Clean explanation
+    raw_expl = q.get("explanation")
+    if isinstance(raw_expl, (dict, list)):
+        clean_expl = json.dumps(raw_expl)
+    elif raw_expl is not None:
+        clean_expl = str(raw_expl).strip()
+    else:
+        clean_expl = "Derived directly from curriculum document."
+
     # Assigned marks
+    raw_m = q.get("marks")
     try:
-        marks = int(q.get("marks") or default_m)
+        marks = int(raw_m if raw_m and str(raw_m).isdigit() else (extracted_marks or default_m))
     except (ValueError, TypeError):
-        marks = default_m
+        marks = extracted_marks or default_m
+
+    marks = max(1, min(marks, 20))
+
+    # Re-calibrate question type by marks if generic
+    if marks == 1 and resolved_type not in ["MCQ", "ASSERTION REASON"]:
+        resolved_type = "OBJECTIVE"
+    elif marks == 2 and resolved_type not in ["MCQ", "ASSERTION REASON"]:
+        resolved_type = "SAQ"
+    elif marks == 3 and resolved_type not in ["NUMERICAL"]:
+        resolved_type = "SHORT ANSWER (3M)"
+    elif marks == 4 and resolved_type not in ["NUMERICAL"]:
+        resolved_type = "CASE STUDY"
+    elif marks == 5 and resolved_type not in ["NUMERICAL"]:
+        resolved_type = "LONG ANSWER"
+    elif marks >= 8:
+        resolved_type = "LONG EVALUATIVE"
 
     return {
         "id": f"gen_{index + 1}",
         "question": q_text,
         "type": resolved_type,
         "difficulty": final_difficulty,
-        "marks": max(1, min(marks, 20)),
+        "marks": marks,
         "options": clean_opts,
         "correct_answer": corr or (clean_opts[0] if clean_opts else "Model Solution"),
-        "explanation": (q.get("explanation") or "Derived directly from curriculum document.").strip(),
+        "explanation": clean_expl,
         "topic_suggested": q.get("topic_suggested") or meta.get("subject") or "General",
     }
+
+
+def extract_questions_from_document_text(
+    cleaned_text: str,
+    filename: str,
+    board: str,
+    class_grade: str,
+    subject: str,
+    title: str,
+    document_type: str = "textbook",
+    target_q_count: Optional[int] = None,
+    detected_topics: Optional[List[str]] = None,
+) -> List[Dict[str, Any]]:
+    """Extracts all questions from curriculum document or question bank across all chunks without truncation."""
+    meta = {"board": board, "classGrade": class_grade, "subject": subject, "title": title}
+    raw_questions: List[Dict[str, Any]] = []
+
+    if document_type in ["old_question_paper", "question_bank"]:
+        # QUESTION BANK / PYQ MODE: Extract 100% of all questions across chunks
+        chunk_window = 12000
+        overlap = 1000
+        text_len = len(cleaned_text)
+
+        chunks = []
+        if text_len <= chunk_window:
+            chunks = [cleaned_text]
+        else:
+            start = 0
+            while start < text_len:
+                end = min(start + chunk_window, text_len)
+                chunks.append(cleaned_text[start:end])
+                if end == text_len:
+                    break
+                start = end - overlap
+
+        print(f"  [+] Extraction Strategy: Parsing {len(chunks)} text section(s) for complete Question Bank digitization...")
+
+        system_prompt = OLD_QUESTION_PAPER_PROMPT
+        for c_idx, c_text in enumerate(chunks):
+            section_label = f"Section {c_idx + 1} of {len(chunks)}"
+            user_prompt = f"""Target Details:
+- Board: {board}
+- Class/Grade: {class_grade}
+- Subject: {subject}
+- Chapter/Paper Title: {title}
+- Document Mode: {document_type}
+- Section: {section_label}
+
+--- DOCUMENT CONTENT ({section_label}) ---
+{c_text}
+--- END DOCUMENT CONTENT ---
+
+CRITICAL INSTRUCTIONS:
+1. Extract and digitize EVERY single question present in this text section without skipping any.
+2. If there are Multiple Choice Questions (MCQ), extract all options ('A) ', 'B) ', 'C) ', 'D) ') and identify the correct option letter.
+3. For Short Answer (2M or 3M), Case Studies (4M), Long Answer (5M or 8M), Numerical, Assertion Reason, or Objective questions, extract full question text and write accurate model solutions in 'correct_answer' and 'explanation'.
+4. Extract all distinguishable questions present in this section without an artificial limit."""
+
+            try:
+                response_json = mistral_client.generate_json(system_prompt, user_prompt, temperature=0.25)
+                q_list = response_json.get("questions", []) if isinstance(response_json, dict) else []
+                if isinstance(q_list, list) and q_list:
+                    raw_questions.extend(q_list)
+                    print(f"    -> [{section_label}] Extracted {len(q_list)} question(s)")
+            except Exception as e:
+                logger.error(f"Error extracting questions from chunk {c_idx + 1}: {e}")
+
+        # Fallback question detection if LLM returned 0 questions
+        if not raw_questions:
+            q_pattern = re.compile(r'(?i)(?:^|\n)(?:Q(?:uestion)?\.?\s*\d+|^\d+[\.\)])\s+(.+?)(?=(?:\n(?:Q(?:uestion)?\.?\s*\d+|^\d+[\.\)])|\Z))', re.DOTALL)
+            matches = q_pattern.findall(cleaned_text)
+            for m_idx, m_text in enumerate(matches[:40]):
+                m_clean = m_text.strip()
+                if len(m_clean) > 15:
+                    raw_questions.append({
+                        "question": m_clean[:300],
+                        "type": "SAQ",
+                        "difficulty": "medium",
+                        "marks": 2,
+                        "options": [],
+                        "correct_answer": f"Standard curriculum solution for {title}.",
+                        "explanation": f"Extracted from {filename}",
+                        "topic_suggested": subject,
+                    })
+
+    else:
+        # TEXTBOOK SYNTHESIS MODE
+        q_count = target_q_count or 12
+        system_prompt = TEXTBOOK_QUESTION_PROMPT
+        if len(cleaned_text) > 18000:
+            doc_excerpt = (
+                cleaned_text[:9000]
+                + "\n\n...[Middle Concepts]...\n\n"
+                + cleaned_text[len(cleaned_text) // 2 : len(cleaned_text) // 2 + 5000]
+                + "\n\n...[End Summaries & Exercises]...\n\n"
+                + cleaned_text[-5000:]
+            )
+        else:
+            doc_excerpt = cleaned_text[:15000]
+
+        user_prompt = f"""Target Details:
+- Board: {board}
+- Class/Grade: {class_grade}
+- Subject: {subject}
+- Chapter/Paper Title: {title}
+- Required Question Count: {q_count}
+- Document Mode: {document_type}
+
+--- DOCUMENT CONTENT ---
+{doc_excerpt}
+--- END DOCUMENT CONTENT ---
+
+Extract/generate EXACTLY {q_count} comprehensive structured questions covering all key concepts, definitions, numericals, and core topics in the document."""
+
+        try:
+            response_json = mistral_client.generate_json(system_prompt, user_prompt, temperature=0.35)
+            raw_questions = response_json.get("questions", []) if isinstance(response_json, dict) else []
+        except Exception as e:
+            logger.error(f"LLM question extraction failed: {e}")
+            raw_questions = []
+
+        if not raw_questions:
+            sentences = [s.strip() for s in re.split(r'[\n\.]+', cleaned_text) if len(s.strip()) > 20]
+            if not sentences:
+                sentences = [f"Core fundamental principle of {subject} in {title}"]
+            for s_idx in range(q_count):
+                sent = sentences[s_idx % len(sentences)]
+                raw_questions.append({
+                    "question": f"Explain the principle: {sent[:120]}?",
+                    "type": "SAQ" if s_idx % 2 == 0 else "MCQ",
+                    "difficulty": "easy" if s_idx < 3 else ("medium" if s_idx < 8 else "hard"),
+                    "marks": 2 if s_idx % 2 == 0 else 1,
+                    "options": [f"A) {sent[:30]}", "B) Alternative Concept", "C) Null Condition", "D) Secondary Effect"] if s_idx % 2 != 0 else [],
+                    "correct_answer": "A" if s_idx % 2 != 0 else f"Principle: {sent}.",
+                    "explanation": f"Derived directly from curriculum document: {sent}",
+                    "topic_suggested": subject,
+                })
+
+    # Sanitize and deduplicate within extracted batch
+    sanitized: List[Dict[str, Any]] = []
+    seen_texts = set()
+
+    for idx, q in enumerate(raw_questions):
+        norm = sanitize_question_item(q, "MCQ", "medium", meta, idx)
+        if not norm:
+            continue
+
+        clean_key = re.sub(r'[^a-zA-Z0-9]', '', norm["question"].lower())[:80]
+        if clean_key in seen_texts and len(clean_key) > 10:
+            continue
+        seen_texts.add(clean_key)
+        sanitized.append(norm)
+
+    return sanitized
 
 
 def _ensure_curriculum_tables(session: Session):
@@ -364,6 +605,95 @@ def _ensure_curriculum_tables(session: Session):
             session.commit()
         except Exception:
             session.rollback()
+
+
+def resolve_subject_topic_id(
+    session: Session,
+    board: str,
+    class_grade: str,
+    subject: str,
+    target_topic_id: Optional[int] = None,
+    title: Optional[str] = None
+) -> int:
+    """Strictly resolves or creates a matching topic_id for the given Board, Class, and Subject."""
+    # 1. If target_topic_id is provided, verify it strictly belongs to this (board, class_grade, subject)
+    if target_topic_id:
+        try:
+            is_valid = session.execute(
+                text("""
+                    SELECT t.id 
+                    FROM topic_master t
+                    JOIN chapter_master ch ON t.chapter_id = ch.id
+                    JOIN subject_master s ON ch.subject_id = s.id
+                    JOIN board_master b ON s.board_id = b.id
+                    JOIN class_master c ON s.class_id = c.id
+                    WHERE t.id = :tid
+                      AND LOWER(TRIM(b.board_name)) = LOWER(TRIM(:b))
+                      AND (LOWER(TRIM(c.class_name)) = LOWER(TRIM(:c)) OR LOWER(TRIM(REPLACE(c.class_name, 'Class ', ''))) = LOWER(TRIM(:c)))
+                      AND (LOWER(TRIM(s.subject_name)) = LOWER(TRIM(:s)) OR (LOWER(TRIM(:s)) = 'science' AND LOWER(TRIM(s.subject_name)) IN ('physics', 'chemistry', 'biology', 'science')))
+                    LIMIT 1
+                """),
+                {"tid": target_topic_id, "b": board, "c": class_grade, "s": subject}
+            ).scalar()
+            if is_valid:
+                return int(target_topic_id)
+        except Exception:
+            pass
+
+    # 2. Query topic_master for exact (board, class, subject) match
+    try:
+        match_topic = session.execute(
+            text("""
+                SELECT t.id 
+                FROM topic_master t
+                JOIN chapter_master ch ON t.chapter_id = ch.id
+                JOIN subject_master s ON ch.subject_id = s.id
+                JOIN board_master b ON s.board_id = b.id
+                JOIN class_master c ON s.class_id = c.id
+                WHERE LOWER(TRIM(b.board_name)) = LOWER(TRIM(:b))
+                  AND (LOWER(TRIM(c.class_name)) = LOWER(TRIM(:c)) OR LOWER(TRIM(REPLACE(c.class_name, 'Class ', ''))) = LOWER(TRIM(:c)))
+                  AND (LOWER(TRIM(s.subject_name)) = LOWER(TRIM(:s)) OR (LOWER(TRIM(:s)) = 'science' AND LOWER(TRIM(s.subject_name)) IN ('physics', 'chemistry', 'biology', 'science')))
+                ORDER BY t.id ASC
+                LIMIT 1
+            """),
+            {"b": board, "c": class_grade, "s": subject}
+        ).scalar()
+        if match_topic:
+            return int(match_topic)
+    except Exception:
+        pass
+
+    # 3. If no topic exists for this subject, auto-create a dedicated chapter & topic under the subject
+    try:
+        sub_id = session.execute(
+            text("""
+                SELECT s.id 
+                FROM subject_master s
+                JOIN board_master b ON s.board_id = b.id
+                JOIN class_master c ON s.class_id = c.id
+                WHERE LOWER(TRIM(b.board_name)) = LOWER(TRIM(:b))
+                  AND (LOWER(TRIM(c.class_name)) = LOWER(TRIM(:c)) OR LOWER(TRIM(REPLACE(c.class_name, 'Class ', ''))) = LOWER(TRIM(:c)))
+                  AND LOWER(TRIM(s.subject_name)) = LOWER(TRIM(:s))
+                LIMIT 1
+            """),
+            {"b": board, "c": class_grade, "s": subject}
+        ).scalar()
+
+        if sub_id:
+            ch_name = title or f"General {subject}"
+            session.execute(text("INSERT INTO chapter_master (subject_id, chapter_name, is_active) VALUES (:sid, :cn, 1)"), {"sid": sub_id, "cn": ch_name})
+            session.commit()
+            ch_id = session.execute(text("SELECT id FROM chapter_master WHERE subject_id = :sid AND chapter_name = :cn ORDER BY id DESC LIMIT 1"), {"sid": sub_id, "cn": ch_name}).scalar()
+            session.execute(text("INSERT INTO topic_master (chapter_id, topic_name, is_active) VALUES (:chid, :tn, 1)"), {"chid": ch_id, "tn": f"{ch_name} Concepts"})
+            session.commit()
+            new_tid = session.execute(text("SELECT id FROM topic_master WHERE chapter_id = :chid ORDER BY id DESC LIMIT 1"), {"chid": ch_id}).scalar()
+            if new_tid:
+                return int(new_tid)
+    except Exception:
+        pass
+
+    first_topic = session.execute(text("SELECT id FROM topic_master LIMIT 1")).scalar()
+    return int(first_topic or 1)
 
 
 def process_curriculum_document_pipeline(
@@ -460,67 +790,22 @@ def process_curriculum_document_pipeline(
     # STEP 3: QUESTION DETECTION & EXTRACTION
     # -------------------------------------------------------------------------
     _print_step_header(3, f"QUESTION DETECTION & EXTRACTION ({document_type.upper()})", TermColors.BLUE)
-    system_prompt = OLD_QUESTION_PAPER_PROMPT if document_type == "old_question_paper" else TEXTBOOK_QUESTION_PROMPT
-    
-    doc_excerpt = cleaned_text[:14000]
-    user_prompt = f"""Target Details:
-- Board: {board}
-- Class/Grade: {class_grade}
-- Subject: {subject}
-- Chapter/Paper Title: {title}
-- Required Question Count: {target_q_count} (Generate between 10 and 15 questions, minimum 10, maximum 15)
-- Document Mode: {document_type}
-
---- DOCUMENT CONTENT ---
-{doc_excerpt}
---- END DOCUMENT CONTENT ---
-
-Extract/generate EXACTLY {target_q_count} comprehensive structured questions (minimum 10, maximum 15) covering all key concepts, definitions, numericals, and core topics in the document."""
-
-    meta = {"board": board, "classGrade": class_grade, "subject": subject, "title": title}
-    try:
-        response_json = mistral_client.generate_json(system_prompt, user_prompt, temperature=0.35)
-        raw_questions = response_json.get("questions", []) if isinstance(response_json, dict) else []
-    except Exception as e:
-        logger.error(f"LLM question extraction failed: {e}")
-        raw_questions = []
-
-    # Deterministic fallback when LLM is offline or unauthenticated (e.g., test environments)
-    if not raw_questions:
-        sentences = [s.strip() for s in re.split(r'[\n\.]+', cleaned_text) if len(s.strip()) > 20]
-        if not sentences:
-            sentences = [f"Core fundamental principle of {subject} in {title}"]
-        for s_idx in range(target_q_count):
-            sent = sentences[s_idx % len(sentences)]
-            raw_questions.append({
-                "question": f"Explain the principle: {sent[:80]}?",
-                "type": "SAQ" if s_idx % 2 == 0 else "MCQ",
-                "difficulty": "easy" if s_idx < 3 else ("medium" if s_idx < 8 else "hard"),
-                "marks": 2 if s_idx % 2 == 0 else 1,
-                "options": [f"A) {sent[:30]}", "B) Alternative Concept", "C) Null Condition", "D) Secondary Effect"] if s_idx % 2 != 0 else [],
-                "correct_answer": "A" if s_idx % 2 != 0 else f"Principle: {sent}.",
-                "explanation": f"Derived directly from curriculum document: {sent}",
-                "topic_suggested": subject,
-            })
+    final_questions = extract_questions_from_document_text(
+        cleaned_text=cleaned_text,
+        filename=filename,
+        board=board,
+        class_grade=class_grade,
+        subject=subject,
+        title=title,
+        document_type=document_type,
+        target_q_count=target_q_count,
+        detected_topics=detected_topics,
+    )
 
     # -------------------------------------------------------------------------
     # STEP 4: PREPARE JSON SCHEMA OBJECTS
     # -------------------------------------------------------------------------
     _print_step_header(4, "JSON SCHEMA PREPARATION & VALIDATION", TermColors.MAGENTA)
-    sanitized_questions: List[Dict[str, Any]] = []
-    for idx, q in enumerate(raw_questions):
-        item = sanitize_question_item(q, "MCQ", "medium", meta, idx)
-        if item:
-            sanitized_questions.append(item)
-
-    # Ensure questions are within 10 to 15 range
-    if len(sanitized_questions) > 15:
-        final_questions = sanitized_questions[:15]
-    elif len(sanitized_questions) >= 10:
-        final_questions = sanitized_questions
-    else:
-        final_questions = sanitized_questions[:target_q_count] if sanitized_questions else []
-
     # Type & Difficulty Breakdown
     type_counts: Dict[str, int] = {}
     diff_counts: Dict[str, int] = {}
@@ -546,32 +831,14 @@ Extract/generate EXACTLY {target_q_count} comprehensive structured questions (mi
     _ensure_curriculum_tables(session)
 
     # 5.1 Resolve or Lookup topic_id in topic_master
-    resolved_topic_id = target_topic_id
-    if not resolved_topic_id:
-        try:
-            # Search topic_master
-            match_topic = session.execute(
-                text("""
-                    SELECT t.id 
-                    FROM topic_master t
-                    JOIN chapter_master ch ON t.chapter_id = ch.id
-                    JOIN subject_master s ON ch.subject_id = s.id
-                    JOIN board_master b ON s.board_id = b.id
-                    JOIN class_master c ON s.class_id = c.id
-                    WHERE LOWER(TRIM(b.board_name)) = LOWER(TRIM(:b))
-                      AND (LOWER(TRIM(c.class_name)) = LOWER(TRIM(:c)) OR LOWER(TRIM(REPLACE(c.class_name, 'Class ', ''))) = LOWER(TRIM(:c)))
-                      AND LOWER(TRIM(s.subject_name)) = LOWER(TRIM(:s))
-                    LIMIT 1
-                """),
-                {"b": board, "c": class_grade, "s": subject}
-            ).scalar()
-            if match_topic:
-                resolved_topic_id = match_topic
-            else:
-                first_topic = session.execute(text("SELECT id FROM topic_master LIMIT 1")).scalar()
-                resolved_topic_id = first_topic or 1
-        except Exception:
-            resolved_topic_id = 1
+    resolved_topic_id = resolve_subject_topic_id(
+        session=session,
+        board=board,
+        class_grade=class_grade,
+        subject=subject,
+        target_topic_id=target_topic_id,
+        title=title,
+    )
 
     # Preload types and diff lookup dicts
     types_map = {
@@ -831,84 +1098,37 @@ def extract_curriculum_questions_preview(
 
     # 3. QUESTION DETECTION & EXTRACTION
     _print_step_header(3, f"QUESTION DETECTION & EXTRACTION ({document_type.upper()})", TermColors.BLUE)
-    system_prompt = OLD_QUESTION_PAPER_PROMPT if document_type == "old_question_paper" else TEXTBOOK_QUESTION_PROMPT
-    doc_excerpt = cleaned_text[:14000]
-    user_prompt = f"""Target Details:
-- Board: {board}
-- Class/Grade: {class_grade}
-- Subject: {subject}
-- Chapter/Paper Title: {title}
-- Required Question Count: {target_q_count}
-- Document Mode: {document_type}
-
---- DOCUMENT CONTENT ---
-{doc_excerpt}
---- END DOCUMENT CONTENT ---
-
-Extract/generate EXACTLY {target_q_count} structured questions covering all key concepts, definitions, numericals, and core topics."""
-
-    try:
-        response_json = mistral_client.generate_json(system_prompt, user_prompt, temperature=0.35)
-        raw_questions = response_json.get("questions", []) if isinstance(response_json, dict) else []
-    except Exception as e:
-        logger.error(f"LLM question extraction failed: {e}")
-        raw_questions = []
-
-    if not raw_questions:
-        sentences = [s.strip() for s in re.split(r'[\n\.]+', cleaned_text) if len(s.strip()) > 20]
-        if not sentences:
-            sentences = [f"Core fundamental principle of {subject} in {title}"]
-        for s_idx in range(target_q_count):
-            s_text = sentences[s_idx % len(sentences)]
-            raw_questions.append({
-                "question": f"Based on {title}: {s_text[:120]}... What is the underlying conceptual mechanism?",
-                "type": "SAQ" if s_idx % 2 == 1 else "MCQ",
-                "difficulty": "medium",
-                "marks": 2 if s_idx % 2 == 1 else 1,
-                "options": [
-                    f"A) {s_text[:40]} operates linearly under standard conditions",
-                    "B) Parameter remains constant regardless of boundary variations",
-                    "C) Response demonstrates inverse decay under specified constraints",
-                    "D) Output decreases proportionally with applied gradients"
-                ] if s_idx % 2 == 0 else [],
-                "correct_answer": "A" if s_idx % 2 == 0 else f"{s_text[:80]}. This relationship is derived directly from foundational principles.",
-                "explanation": f"The response is directly grounded in core curriculum definitions in {title}.",
-                "topic_suggested": detected_topics[0] if detected_topics else subject
-            })
+    extracted_questions = extract_questions_from_document_text(
+        cleaned_text=cleaned_text,
+        filename=filename,
+        board=board,
+        class_grade=class_grade,
+        subject=subject,
+        title=title,
+        document_type=document_type,
+        target_q_count=target_q_count,
+        detected_topics=detected_topics,
+    )
 
     # 4. JSON SCHEMA PREP & PRE-INSERTION DUPLICATE CHECKER
     _print_step_header(4, "SCHEMA PREPARATION & DUPLICATE CHECKER", TermColors.YELLOW)
     _ensure_curriculum_tables(session)
 
     # Resolve target topic_id
-    resolved_topic_id = target_topic_id
-    if not resolved_topic_id:
-        try:
-            match_topic = session.execute(
-                text("""
-                    SELECT t.id 
-                    FROM topic_master t
-                    JOIN chapter_master ch ON t.chapter_id = ch.id
-                    JOIN subject_master s ON ch.subject_id = s.id
-                    JOIN board_master b ON s.board_id = b.id
-                    JOIN class_master c ON s.class_id = c.id
-                    WHERE LOWER(TRIM(b.board_name)) = LOWER(TRIM(:b))
-                      AND (LOWER(TRIM(c.class_name)) = LOWER(TRIM(:c)) OR LOWER(TRIM(REPLACE(c.class_name, 'Class ', ''))) = LOWER(TRIM(:c)))
-                      AND LOWER(TRIM(s.subject_name)) = LOWER(TRIM(:s))
-                    LIMIT 1
-                """),
-                {"b": board, "c": class_grade, "s": subject}
-            ).scalar()
-            resolved_topic_id = match_topic or 1
-        except Exception:
-            resolved_topic_id = 1
+    resolved_topic_id = resolve_subject_topic_id(
+        session=session,
+        board=board,
+        class_grade=class_grade,
+        subject=subject,
+        target_topic_id=target_topic_id,
+        title=title,
+    )
 
     final_questions = []
     duplicate_count = 0
     meta = {"board": board, "classGrade": class_grade, "subject": subject, "title": title}
 
-    for idx, q_dict in enumerate(raw_questions):
-        norm = sanitize_question_item(q_dict, "MCQ", "medium", meta, idx)
+    for idx, norm in enumerate(extracted_questions):
         if not norm:
             continue
         q_text = norm["question"]
@@ -982,27 +1202,14 @@ def save_curriculum_extracted_questions_pipeline(
     _ensure_curriculum_tables(session)
 
     # 1. Resolve topic_id
-    resolved_topic_id = target_topic_id
-    if not resolved_topic_id:
-        try:
-            match_topic = session.execute(
-                text("""
-                    SELECT t.id 
-                    FROM topic_master t
-                    JOIN chapter_master ch ON t.chapter_id = ch.id
-                    JOIN subject_master s ON ch.subject_id = s.id
-                    JOIN board_master b ON s.board_id = b.id
-                    JOIN class_master c ON s.class_id = c.id
-                    WHERE LOWER(TRIM(b.board_name)) = LOWER(TRIM(:b))
-                      AND (LOWER(TRIM(c.class_name)) = LOWER(TRIM(:c)) OR LOWER(TRIM(REPLACE(c.class_name, 'Class ', ''))) = LOWER(TRIM(:c)))
-                      AND LOWER(TRIM(s.subject_name)) = LOWER(TRIM(:s))
-                    LIMIT 1
-                """),
-                {"b": board, "c": class_grade, "s": subject}
-            ).scalar()
-            resolved_topic_id = match_topic or 1
-        except Exception:
-            resolved_topic_id = 1
+    resolved_topic_id = resolve_subject_topic_id(
+        session=session,
+        board=board,
+        class_grade=class_grade,
+        subject=subject,
+        target_topic_id=target_topic_id,
+        title=title,
+    )
 
     # 2. Lookup Dicts for Question Types and Difficulties
     types_map = {

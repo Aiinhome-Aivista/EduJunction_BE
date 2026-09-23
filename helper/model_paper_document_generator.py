@@ -168,8 +168,14 @@ def _fetch_model_paper_questions_from_db(
     set_number: int = 1,
 ) -> Dict[str, List[dict]]:
     """Fetches questions from question_master grouped into mark pools (1M, 2M, 3M, 4M, 5M, 8M)."""
-    if not session:
-        return {}
+    if session is None:
+        try:
+            from database.dbConnection import get_session
+            with get_session() as auto_session:
+                return _fetch_model_paper_questions_from_db(auto_session, board, class_grade, subject, set_number)
+        except Exception as err:
+            logger.warning(f"Could not open auto DB session for model paper: {err}")
+            return {}
 
     clean_board = (board or "").strip()
     clean_class = (class_grade or "").strip()
@@ -217,6 +223,8 @@ def _fetch_model_paper_questions_from_db(
                   OR LOWER(TRIM(s.subject_name)) = LOWER(TRIM(:subject))
                   OR LOWER(s.subject_name) LIKE CONCAT('%', LOWER(:subject), '%')
                   OR LOWER(:subject) LIKE CONCAT('%', LOWER(s.subject_name), '%')
+                  OR (LOWER(:subject) IN ('physics', 'chemistry', 'biology') AND LOWER(s.subject_name) = 'science')
+                  OR (LOWER(:subject) = 'science' AND LOWER(s.subject_name) IN ('physics', 'chemistry', 'biology', 'science'))
               )
             ORDER BY q.id ASC
         """)
