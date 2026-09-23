@@ -31,8 +31,8 @@ def get_curriculum_tree():
                     t.id AS topic_id, t.topic_name,
                     COUNT(q.id) AS question_count
                 FROM board_master b
-                JOIN class_master c ON c.is_active = 1
-                LEFT JOIN subject_master s ON (s.board_id = b.id OR (s.board_id = 1 AND NOT EXISTS (SELECT 1 FROM subject_master sm WHERE sm.board_id = b.id AND sm.class_id = c.id))) AND s.class_id = c.id AND s.is_active = 1
+                JOIN subject_master s ON s.board_id = b.id AND s.is_active = 1
+                JOIN class_master c ON s.class_id = c.id AND c.is_active = 1
                 LEFT JOIN chapter_master ch ON ch.subject_id = s.id AND ch.is_active = 1
                 LEFT JOIN topic_master t ON t.chapter_id = ch.id AND t.is_active = 1
                 LEFT JOIN question_master q ON q.topic_id = t.id AND q.is_active = 1

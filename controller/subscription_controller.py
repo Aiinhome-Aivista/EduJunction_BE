@@ -415,20 +415,22 @@ def get_user_subject_subscriptions():
 
     with get_session() as session:
         if role == "STUDENT":
-            # Student login: sees both papers assigned by parent and papers purchased by student themselves
+            # Student login: strictly sees papers assigned to this student:
+            # 1. Unlocked by Parent specifically assigned to this student (student_id == stu_id)
+            # 2. Unlocked by Student themselves (user_id == user_id)
             stu = session.query(Student).filter(Student.id == user_id).first()
             stu_id = stu.id if stu else user_id
 
             subs = session.query(UserSubscription).filter(
                 or_(
                     UserSubscription.student_id == stu_id,
-                    UserSubscription.user_id == user_id,
-                    UserSubscription.student_id == user_id
+                    and_(UserSubscription.user_id == user_id, UserSubscription.student_id == None),
+                    and_(UserSubscription.user_id == user_id, UserSubscription.student_id == stu_id)
                 ),
                 UserSubscription.status == "ACTIVE"
             ).order_by(UserSubscription.id.desc()).all()
         else:
-            # Parent login: ONLY sees papers purchased by the parent (user_id == current_parent_user_id)
+            # Parent login: ONLY sees papers purchased by this parent (user_id == current_parent_user_id)
             if req_student_id:
                 try:
                     s_id_int = int(req_student_id)
@@ -471,7 +473,7 @@ def get_user_subject_subscriptions():
                     payer_role = getattr(payer_user.role, 'name', 'PARENT').upper()
 
             # Is it unlocked by the student themselves or by the parent?
-            is_self = (s.student_id == s.user_id) or (payer_role == "STUDENT")
+            is_self = (s.student_id == s.user_id and payer_role == "STUDENT") or (payer_role == "STUDENT") or (s.user_id == user_id and role == "STUDENT")
             unlocked_by = "SELF" if is_self else "PARENT"
             unlocked_by_name = payer_name if not is_self else (student_name or "Me")
 

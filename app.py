@@ -697,4 +697,4 @@ def create_app() -> Flask:
 app = create_app()
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5002, debug=(config.APP_ENV == "development"))
+    app.run(host="0.0.0.0", port=8000, debug=(config.APP_ENV == "development"))
