@@ -47,12 +47,14 @@ class Config:
     MASTERY_THRESHOLD_PROFICIENT = float(os.getenv("MASTERY_THRESHOLD_PROFICIENT")) if os.getenv("MASTERY_THRESHOLD_PROFICIENT") else None
     MASTERY_THRESHOLD_ADVANCED = float(os.getenv("MASTERY_THRESHOLD_ADVANCED")) if os.getenv("MASTERY_THRESHOLD_ADVANCED") else None
 
-    SMTP_SERVER = os.getenv("SMTP_SERVER", "smtp.gmail.com")
-    SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
+    SMTP_SERVER = os.getenv("SMTP_SERVER") or os.getenv("SMTP_HOST", "mail.edujunction.co.in")
+    SMTP_PORT = int(os.getenv("SMTP_PORT", "465"))
     SMTP_USERNAME = os.getenv("SMTP_USERNAME")
     SMTP_PASSWORD = os.getenv("SMTP_PASSWORD")
-    SMTP_SENDER_NAME = os.getenv("SMTP_SENDER_NAME", "EduJunction")
+    SMTP_SENDER_NAME = os.getenv("SMTP_SENDER_NAME") or os.getenv("SMTP_FROM_NAME", "EduJunction")
+    SMTP_FROM_EMAIL = os.getenv("SMTP_FROM_EMAIL") or os.getenv("SMTP_USERNAME")
     SMTP_USE_TLS = os.getenv("SMTP_USE_TLS", "True").lower() in ("true", "1", "t", "yes")
+    OTP_TTL_MINUTES = int(os.getenv("OTP_TTL_MINUTES", "10"))
 
     RAZORPAY_KEY_ID = os.getenv("RAZORPAY_KEY_ID", "")
     RAZORPAY_KEY_SECRET = os.getenv("RAZORPAY_KEY_SECRET", "")

@@ -8,6 +8,7 @@ Handles background dispatching of transactional emails such as:
 
 import os
 import smtplib
+import ssl
 import threading
 from datetime import datetime
 from email.message import EmailMessage
@@ -115,12 +116,13 @@ def _send_email_sync(
 ) -> bool:
     """Synchronously dispatches the email via SMTP with optional attachments."""
     try:
-        smtp_server = config.SMTP_SERVER or os.getenv("SMTP_SERVER", "smtp.gmail.com")
-        smtp_port = int(config.SMTP_PORT or os.getenv("SMTP_PORT", "587"))
-        smtp_username = config.SMTP_USERNAME or os.getenv("SMTP_USERNAME")
-        smtp_password = config.SMTP_PASSWORD or os.getenv("SMTP_PASSWORD")
-        smtp_sender_name = config.SMTP_SENDER_NAME or os.getenv("SMTP_SENDER_NAME", "EduJunction")
-        smtp_use_tls = config.SMTP_USE_TLS if hasattr(config, "SMTP_USE_TLS") else True
+        smtp_server = getattr(config, "SMTP_SERVER", None) or os.getenv("SMTP_SERVER") or os.getenv("SMTP_HOST", "mail.edujunction.co.in")
+        smtp_port = int(getattr(config, "SMTP_PORT", None) or os.getenv("SMTP_PORT", "465"))
+        smtp_username = getattr(config, "SMTP_USERNAME", None) or os.getenv("SMTP_USERNAME")
+        smtp_password = getattr(config, "SMTP_PASSWORD", None) or os.getenv("SMTP_PASSWORD")
+        smtp_sender_name = getattr(config, "SMTP_SENDER_NAME", None) or os.getenv("SMTP_SENDER_NAME") or os.getenv("SMTP_FROM_NAME", "EduJunction")
+        smtp_from_email = getattr(config, "SMTP_FROM_EMAIL", None) or os.getenv("SMTP_FROM_EMAIL") or smtp_username
+        smtp_use_tls = getattr(config, "SMTP_USE_TLS", True)
 
         if not smtp_username or not smtp_password:
             logger.warning(f"[EMAIL] SMTP credentials not configured. Skipped sending email to {to_email}")
@@ -129,7 +131,8 @@ def _send_email_sync(
         html_body = render_email_template(subject, content_html)
 
         message = EmailMessage()
-        message["From"] = f"{smtp_sender_name} <{smtp_username}>"
+        message["From"] = f"{smtp_sender_name} <{smtp_from_email}>"
+        message["Reply-To"] = smtp_from_email
         message["To"] = to_email
         message["Subject"] = subject
 
@@ -150,11 +153,18 @@ def _send_email_sync(
                     filename=att["filename"],
                 )
 
-        with smtplib.SMTP(smtp_server, smtp_port, timeout=20) as server:
-            if smtp_use_tls:
-                server.starttls()
-            server.login(smtp_username, smtp_password)
-            server.send_message(message)
+        if smtp_port == 465:
+            context = ssl.create_default_context()
+            with smtplib.SMTP_SSL(smtp_server, smtp_port, context=context, timeout=20) as server:
+                server.login(smtp_username, smtp_password)
+                server.send_message(message)
+        else:
+            with smtplib.SMTP(smtp_server, smtp_port, timeout=20) as server:
+                if smtp_use_tls:
+                    context = ssl.create_default_context()
+                    server.starttls(context=context)
+                server.login(smtp_username, smtp_password)
+                server.send_message(message)
 
         logger.info(f"[EMAIL] Successfully sent email '{subject}' to {to_email}")
         return True
@@ -291,6 +301,7 @@ def send_password_reset_otp_email(
         return False
 
     display_name = name.strip() if name else "User"
+    otp_ttl = getattr(config, "OTP_TTL_MINUTES", 10)
     subject = f"🔐 Your EduJunction Password Reset OTP: {otp_code}"
 
     content_html = f"""
@@ -302,7 +313,7 @@ def send_password_reset_otp_email(
 
         <div style="background-color: #fef9c3; border: 2px dashed #eab308; padding: 20px; border-radius: 12px; margin: 24px 0; text-align: center;">
             <span style="font-size: 32px; font-weight: 900; letter-spacing: 6px; color: #854d0e; font-family: monospace;">{otp_code}</span>
-            <p style="margin: 8px 0 0; font-size: 12px; color: #a16207; font-weight: 600;">Valid for 10 minutes</p>
+            <p style="margin: 8px 0 0; font-size: 12px; color: #a16207; font-weight: 600;">Valid for {otp_ttl} minutes</p>
         </div>
 
         <div style="background-color: #fef2f2; border-left: 4px solid #ef4444; padding: 12px 16px; border-radius: 8px; margin: 20px 0;">
@@ -317,7 +328,7 @@ def send_password_reset_otp_email(
     plain_text = (
         f"Hello {display_name},\n\n"
         f"Your EduJunction password reset OTP is: {otp_code}\n\n"
-        f"This OTP is valid for 10 minutes. Please enter this code on the password reset screen to set your new password.\n\n"
+        f"This OTP is valid for {otp_ttl} minutes. Please enter this code on the password reset screen to set your new password.\n\n"
         f"If you did not request this reset, please ignore this email.\n\n"
         f"Best regards,\nThe EduJunction Team"
     )
