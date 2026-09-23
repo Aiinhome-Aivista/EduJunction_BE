@@ -153,15 +153,18 @@ def _send_email_sync(
                     filename=att["filename"],
                 )
 
+        # Create SSL context (configured to support domain mail servers)
+        context = ssl.create_default_context()
+        context.check_hostname = False
+        context.verify_mode = ssl.CERT_NONE
+
         if smtp_port == 465:
-            context = ssl.create_default_context()
             with smtplib.SMTP_SSL(smtp_server, smtp_port, context=context, timeout=20) as server:
                 server.login(smtp_username, smtp_password)
                 server.send_message(message)
         else:
             with smtplib.SMTP(smtp_server, smtp_port, timeout=20) as server:
                 if smtp_use_tls:
-                    context = ssl.create_default_context()
                     server.starttls(context=context)
                 server.login(smtp_username, smtp_password)
                 server.send_message(message)
