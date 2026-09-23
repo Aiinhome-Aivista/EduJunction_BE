@@ -777,6 +777,65 @@ def save_extracted_curriculum_questions_api():
     title = payload.get("title")
     summary = payload.get("summary")
 
+    files_payload = payload.get("files")
+    if isinstance(files_payload, list) and len(files_payload) > 1:
+        # Multi-file batch persistence
+        total_ins = 0
+        total_upd = 0
+        total_dup = 0
+        doc_ids = []
+
+        with get_session() as session:
+            for file_item in files_payload:
+                f_name = file_item.get("filename", "Uploaded_Curriculum.pdf")
+                f_board = file_item.get("board", board)
+                f_grade = file_item.get("classGrade", class_grade)
+                f_sub = file_item.get("subject", subject)
+                f_doctype = file_item.get("documentType", document_type)
+                f_text = file_item.get("cleaned_text") or file_item.get("cleanedText", "")
+                f_title = file_item.get("title", f_name)
+                f_summary = file_item.get("summary", "")
+                f_topics = file_item.get("detected_topics") or file_item.get("detectedTopics", [])
+                
+                # Questions belonging to this file, or all questions if not partitioned
+                f_questions = file_item.get("questions") or [q for q in questions if q.get("source_file") == f_name]
+                if not f_questions:
+                    f_questions = questions
+
+                res = save_curriculum_extracted_questions_pipeline(
+                    session=session,
+                    questions=f_questions,
+                    filename=f_name,
+                    board=f_board,
+                    class_grade=f_grade,
+                    subject=f_sub,
+                    document_type=f_doctype,
+                    cleaned_text=f_text,
+                    target_topic_id=target_topic_id,
+                    uploaded_by=g.current_user_id if hasattr(g, "current_user_id") else None,
+                    detected_topics=f_topics,
+                    title=f_title,
+                    summary=f_summary,
+                )
+                total_ins += res.get("inserted_count", 0)
+                total_upd += res.get("updated_count", 0)
+                total_dup += res.get("duplicate_skipped_count", 0)
+                if res.get("document_id"):
+                    doc_ids.append(res["document_id"])
+
+        return success({
+            "success": True,
+            "is_batch": True,
+            "total_files": len(files_payload),
+            "document_ids": doc_ids,
+            "total_processed": len(questions),
+            "inserted_count": total_ins,
+            "updated_count": total_upd,
+            "duplicate_skipped_count": total_dup,
+            "topic_id": target_topic_id,
+            "message": f"Successfully persisted {len(questions)} questions across {len(files_payload)} files ({total_ins} inserted, {total_dup} duplicate protected)."
+        }, 201)
+
     with get_session() as session:
         result = save_curriculum_extracted_questions_pipeline(
             session=session,

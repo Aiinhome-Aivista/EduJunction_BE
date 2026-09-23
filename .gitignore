@@ -42,5 +42,6 @@ vector_store/
 *.sqlite3
 chroma.sqlite3
 
+scratch/
 
 uploads/books/
