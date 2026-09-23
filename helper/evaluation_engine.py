@@ -97,20 +97,39 @@ def _evaluate_mcq_or_logical(question: Question, student_ans: str, correct_ans: 
     return False
 
 
+TRIVIAL_NON_ANSWERS = {
+    "", "na", "n/a", "n.a", "n.a.", "none", "nil", "null", "no", "idk",
+    "dont know", "don't know", "skip", "skipped", "not answered", "not attempted",
+    "unattempted", "no idea", "nothing", "-", "--", "---", ".", "..", "...",
+    "?", "??", "???", "pass", "leave", "left", "blank", "nan", "nope"
+}
+
+
+def _is_trivial_or_skipped(ans: str) -> bool:
+    """Returns True if the student's answer is blank, skipped, or a trivial non-answer."""
+    if not ans:
+        return True
+    raw_cleaned = ans.strip().lower()
+    cleaned = re.sub(r"[^\w\s]", "", ans).strip().lower()
+    if not cleaned or raw_cleaned in TRIVIAL_NON_ANSWERS or cleaned in TRIVIAL_NON_ANSWERS:
+        return True
+    return False
+
+
 def _fallback_subjective_evaluation(
     question: Question,
     student_ans: str,
     class_grade: str,
 ) -> dict:
     """Intelligent semantic and keyword matching fallback when LLM is unavailable."""
-    if not student_ans or not student_ans.strip():
+    if not student_ans or _is_trivial_or_skipped(student_ans):
         return {
             "marksAwarded": 0.0,
             "isCorrect": False,
             "matchedKeywords": [],
-            "missedKeywords": ["Core concept explanation"],
+            "missedKeywords": ["Question skipped / unattempted"],
             "misconceptionIdentified": "Question skipped / incomplete attempt under time pressure.",
-            "feedback": "You did not write an answer for this question.",
+            "feedback": "You did not attempt this question.",
         }
 
     correct_ans = (question.correct_answer or "").strip()
@@ -268,15 +287,15 @@ def evaluate_exam(
 
         else:
             # Subjective / SAQ / Objective
-            if not student_ans:
-                # Skipped SAQ
+            if _is_trivial_or_skipped(student_ans):
+                # Skipped or NA/Placeholder SAQ - direct zero without invoking LLM
                 evaluations_dict[question.id] = {
                     "questionId": question.id,
                     "questionNumber": question.question_number,
                     "type": question.type,
                     "questionText": question.question_text,
                     "options": question.options,
-                    "studentAnswer": "(Not Answered)",
+                    "studentAnswer": student_ans if student_ans else "(Not Answered)",
                     "correctAnswer": correct_ans,
                     "isCorrect": False,
                     "marksAwarded": 0.0,
@@ -286,8 +305,8 @@ def evaluate_exam(
                     "referenceLinks": question.reference_links or [],
                     "topic": question.topic,
                     "matchedKeywords": [],
-                    "missedKeywords": ["Complete answer skipped"],
-                    "feedback": "You did not answer this question.",
+                    "missedKeywords": ["Complete answer skipped / omitted"],
+                    "feedback": "You did not attempt this question.",
                 }
             else:
                 subjective_items_to_llm.append({
@@ -320,9 +339,30 @@ def evaluate_exam(
                 for ev in validated.evaluations:
                     q = subjective_questions_map.get(ev.questionId)
                     if q:
+                        raw_student_ans = (answers.get(q.id, "") or "").strip()
                         q_max = float(q.marks or 2.0)
-                        awarded = max(0.0, min(q_max, float(ev.marksAwarded)))
-                        is_corr = awarded >= (q_max * 0.5)
+
+                        if _is_trivial_or_skipped(raw_student_ans):
+                            awarded = 0.0
+                            is_corr = False
+                            verified_matched = []
+                        else:
+                            # Grounding: Verify matched keywords are actually present in student's answer
+                            student_ans_lower = raw_student_ans.lower()
+                            verified_matched = []
+                            for kw in (ev.matchedKeywords or []):
+                                kw_str = str(kw).strip()
+                                kw_low = kw_str.lower()
+                                if kw_low in student_ans_lower:
+                                    verified_matched.append(kw_str)
+                                elif any(word in student_ans_lower for word in kw_low.split() if len(word) > 3):
+                                    verified_matched.append(kw_str)
+
+                            awarded = max(0.0, min(q_max, float(ev.marksAwarded)))
+                            # Guard: if no verified keywords matched and answer is too short / ungrounded
+                            if not verified_matched and len(raw_student_ans) < 10 and awarded > 0:
+                                awarded = 0.0
+                            is_corr = awarded >= (q_max * 0.5)
 
                         evaluations_dict[q.id] = {
                             "questionId": q.id,
@@ -330,7 +370,7 @@ def evaluate_exam(
                             "type": q.type,
                             "questionText": q.question_text,
                             "options": q.options,
-                            "studentAnswer": (answers.get(q.id, "") or "").strip(),
+                            "studentAnswer": raw_student_ans or "(Not Answered)",
                             "correctAnswer": (q.correct_answer or "").strip(),
                             "isCorrect": is_corr,
                             "marksAwarded": awarded,
@@ -339,7 +379,7 @@ def evaluate_exam(
                             "misconceptionIdentified": ev.misconceptionIdentified if not is_corr else None,
                             "referenceLinks": q.reference_links or [],
                             "topic": q.topic,
-                            "matchedKeywords": ev.matchedKeywords or [],
+                            "matchedKeywords": verified_matched,
                             "missedKeywords": ev.missedKeywords or [],
                             "feedback": ev.feedback or (
                                 "Good conceptual grasp." if is_corr else "Review key concepts for this topic."

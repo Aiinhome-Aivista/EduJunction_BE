@@ -37,18 +37,40 @@ class MistralUnavailableError(Exception):
     Callers catch this specifically and switch to their deterministic fallback path."""
 
 
+def is_configured() -> bool:
+    """Returns True if an active LLM configuration is available and valid."""
+    try:
+        db_cfg = _get_active_db_llm_config()
+        if db_cfg:
+            provider = str(db_cfg.get("provider", "")).lower().strip()
+            if provider == "ollama":
+                return True
+            if db_cfg.get("api_key"):
+                return True
+        if config.MISTRAL_API_KEY or config.GEMINI_API_KEY:
+            return True
+    except Exception:
+        pass
+    return False
 
+
+_last_db_cfg_time = 0
+_cached_db_cfg = None
 
 
 def _get_active_db_llm_config() -> dict | None:
-    """Fetches the active LLM configuration from the database dynamically."""
+    """Fetches the active LLM configuration from the database dynamically with short TTL cache."""
+    global _last_db_cfg_time, _cached_db_cfg
+    now = time.time()
+    if _cached_db_cfg is not None and (now - _last_db_cfg_time) < 5:
+        return _cached_db_cfg
     try:
         from database.dbConnection import get_session
         from model.models import LLMConfig
         with get_session() as session:
             active = session.query(LLMConfig).filter(LLMConfig.is_active == True).first()
             if active:
-                return {
+                _cached_db_cfg = {
                     "provider": (active.provider_name or "gemini").lower().strip(),
                     "display_title": active.display_title,
                     "base_url": active.base_url,
@@ -58,6 +80,8 @@ def _get_active_db_llm_config() -> dict | None:
                     "temperature": float(active.temperature) if active.temperature is not None else 0.30,
                     "timeout": active.timeout_seconds or 30,
                 }
+                _last_db_cfg_time = now
+                return _cached_db_cfg
     except Exception as e:
         pass
     return None

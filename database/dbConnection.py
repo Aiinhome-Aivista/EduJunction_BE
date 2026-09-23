@@ -15,9 +15,11 @@ engine = create_engine(
     future=True,
 )
 
-SessionLocal = scoped_session(
-    sessionmaker(autocommit=False, autoflush=False, bind=engine, future=True)
+SessionFactory = sessionmaker(
+    autocommit=False, autoflush=False, bind=engine, future=True, expire_on_commit=False
 )
+
+SessionLocal = scoped_session(SessionFactory)
 
 
 def init_db():
@@ -29,8 +31,10 @@ def init_db():
 
 @contextmanager
 def get_session():
-    """Context-managed session: commits on success, rolls back on error."""
-    session = SessionLocal()
+    """Context-managed session: commits on success, rolls back on error.
+    Yields an independent session per context block so nested/inner sessions do not
+    prematurely close or detach instances from outer sessions."""
+    session = SessionFactory()
     try:
         yield session
         session.commit()

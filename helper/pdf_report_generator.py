@@ -2,12 +2,145 @@
 Generates a professional, structured PDF report for exam submissions using ReportLab.
 """
 import io
+import html
+import re
+import unicodedata
 from datetime import datetime
 from reportlab.lib.pagesizes import letter
 from reportlab.lib import colors
 from reportlab.lib.units import inch
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, HRFlowable
+
+
+def clean_pdf_math_text(text: str) -> str:
+    """Sanitizes mathematical text, vector hats, unicode glyphs, and special characters
+    for clean rendering in ReportLab Helvetica Type 1 font without missing glyph boxes (■).
+    """
+    if not text:
+        return ""
+    s = str(text)
+
+    # 1. Clean unit vectors and hats (î, ĵ, k̂, etc.)
+    s = s.replace("î", "i^").replace("ĵ", "j^").replace("k̂", "k^")
+    s = s.replace("î", "i^").replace("ĵ", "j^").replace("k̂", "k^")
+    s = s.replace("■", "").replace("\ufffd", "")
+
+    # Replace LaTeX vector & hat notations
+    s = re.sub(r"\\hat\{([a-zA-Z])\}", r"\1^", s)
+    s = re.sub(r"\\vec\{([a-zA-Z])\}", r"\1", s)
+    s = re.sub(r"\\mathbf\{([a-zA-Z])\}", r"\1", s)
+
+    # Replace common LaTeX math commands and operators
+    replacements = {
+        r"\implies": " => ",
+        r"\Rightarrow": " => ",
+        r"\Leftarrow": " <= ",
+        r"\iff": " <=> ",
+        r"\Leftrightarrow": " <=> ",
+        r"\rightarrow": " -> ",
+        r"\leftarrow": " <- ",
+        r"\longrightarrow": " -> ",
+        r"\longleftarrow": " <- ",
+        r"\to": " -> ",
+        r"\therefore": " therefore ",
+        r"\because": " because ",
+        r"\cdot": " * ",
+        r"\bullet": " * ",
+        r"\circ": " deg",
+        r"\int": "Integral ",
+        r"\theta": "theta",
+        r"\pi": "pi",
+        r"\alpha": "alpha",
+        r"\beta": "beta",
+        r"\gamma": "gamma",
+        r"\delta": "delta",
+        r"\lambda": "lambda",
+        r"\mu": "mu",
+        r"\sigma": "sigma",
+        r"\omega": "omega",
+        r"\sqrt": "sqrt",
+        r"\le": "<=",
+        r"\ge": ">=",
+        r"\ne": "!=",
+        r"\pm": "+/-",
+        r"\times": "*",
+        r"\div": "/",
+        r"\approx": "~=",
+        r"\infty": "inf",
+        r"\quad": "  ",
+        r"\qquad": "    ",
+        r"\in": " in ",
+        r"\notin": " not in ",
+        r"\subset": " subset of ",
+        r"\cup": " union ",
+        r"\cap": " intersection ",
+        r"\partial": "d",
+        r"\sum": "Sum ",
+        r"\prod": "Prod ",
+    }
+    for k, v in replacements.items():
+        s = s.replace(k, v)
+
+    # Normalize unicode and remove combining diacritics
+    s = unicodedata.normalize("NFKD", s)
+    s = re.sub(r"[\u0300-\u036f]", "", s)
+
+    # Safe ASCII replacements for Greek, math symbols, and unicode arrows
+    safe_map = {
+        "⇒": " => ",
+        "→": " -> ",
+        "←": " <- ",
+        "⇔": " <=> ",
+        "↦": " -> ",
+        "∴": " therefore ",
+        "∵": " because ",
+        "·": " * ",
+        "•": "-",
+        "θ": "theta",
+        "π": "pi",
+        "α": "alpha",
+        "β": "beta",
+        "γ": "gamma",
+        "δ": "delta",
+        "λ": "lambda",
+        "μ": "mu",
+        "σ": "sigma",
+        "ω": "omega",
+        "∫": "Integral ",
+        "√": "sqrt",
+        "≤": "<=",
+        "≥": ">=",
+        "≠": "!=",
+        "±": "+/-",
+        "×": "*",
+        "÷": "/",
+        "≈": "~=",
+        "∞": "inf",
+        "²": "^2",
+        "³": "^3",
+        "⁴": "^4",
+        "∂": "d",
+        "∈": " in ",
+        "∉": " not in ",
+        "■": " ",
+        "\ufffd": "",
+    }
+    for k, v in safe_map.items():
+        s = s.replace(k, v)
+
+    # Clean any remaining non-printable or unsupported unicode symbols that cause Helvetica tofu
+    s = re.sub(r"[^\x20-\x7E\n\r\t]", " ", s)
+    s = re.sub(r" {2,}", " ", s)
+
+    # Escape XML entities for ReportLab Paragraph
+    s = html.escape(s)
+    # Re-allow safe formatting tags
+    s = s.replace("&lt;b&gt;", "<b>").replace("&lt;/b&gt;", "</b>")
+    s = s.replace("&lt;i&gt;", "<i>").replace("&lt;/i&gt;", "</i>")
+    s = s.replace("&lt;br/&gt;", "<br/>").replace("&lt;br&gt;", "<br/>")
+
+    return s.strip()
 
 
 def generate_exam_report_pdf(
@@ -140,13 +273,19 @@ def generate_exam_report_pdf(
 
         analysis_rows = []
         if strengths:
-            str_text = ", ".join(strengths) if isinstance(strengths, list) else str(strengths)
+            if isinstance(strengths, list):
+                str_text = "<br/>".join([f"&bull; {clean_pdf_math_text(s).rstrip('.')}" for s in strengths if s and str(s).strip()])
+            else:
+                str_text = clean_pdf_math_text(str(strengths))
             analysis_rows.append([Paragraph("<b>Key Strengths:</b>", body_style), Paragraph(str_text, body_style)])
         if areas:
-            ar_text = ", ".join(areas) if isinstance(areas, list) else str(areas)
+            if isinstance(areas, list):
+                ar_text = "<br/>".join([f"&bull; {clean_pdf_math_text(a).rstrip('.')}" for a in areas if a and str(a).strip()])
+            else:
+                ar_text = clean_pdf_math_text(str(areas))
             analysis_rows.append([Paragraph("<b>Areas to Focus:</b>", body_style), Paragraph(ar_text, body_style)])
         if note:
-            analysis_rows.append([Paragraph("<b>Teacher/Parent Note:</b>", body_style), Paragraph(note, body_style)])
+            analysis_rows.append([Paragraph("<b>Teacher/Parent Note:</b>", body_style), Paragraph(clean_pdf_math_text(str(note)), body_style)])
 
         if analysis_rows:
             story.append(Paragraph("Diagnostic Insights & Action Plan", section_heading))
@@ -164,7 +303,7 @@ def generate_exam_report_pdf(
             story.append(analysis_table)
             story.append(Spacer(1, 10))
 
-    # Question Breakdown Table
+    # Question Breakdown Table (Status column removed per parent feedback)
     story.append(Paragraph("Question Breakdown", section_heading))
 
     q_table_data = [
@@ -173,27 +312,27 @@ def generate_exam_report_pdf(
             Paragraph("<b>Question / Topic</b>", body_style),
             Paragraph("<b>Your Answer</b>", body_style),
             Paragraph("<b>Correct Answer</b>", body_style),
-            Paragraph("<b>Status</b>", body_style),
             Paragraph("<b>Marks</b>", body_style),
         ]
     ]
 
     for idx, ev in enumerate(evaluations or []):
         q_num = str(idx + 1)
-        q_text = ev.get("questionText") or ev.get("question_text") or f"Question {idx+1}"
-        if len(q_text) > 80:
-            q_text = q_text[:77] + "..."
+        raw_q_text = ev.get("questionText") or ev.get("question_text") or f"Question {idx+1}"
+        if len(raw_q_text) > 95:
+            raw_q_text = raw_q_text[:92] + "..."
+        q_text = clean_pdf_math_text(raw_q_text)
 
-        student_ans = str(ev.get("studentAnswer") or ev.get("student_answer") or "Not Answered")
-        if len(student_ans) > 25:
-            student_ans = student_ans[:22] + "..."
+        raw_student_ans = str(ev.get("studentAnswer") or ev.get("student_answer") or "Not Answered")
+        if len(raw_student_ans) > 30:
+            raw_student_ans = raw_student_ans[:27] + "..."
+        student_ans = clean_pdf_math_text(raw_student_ans)
 
-        correct_ans = str(ev.get("correctAnswer") or ev.get("correct_answer") or "-")
-        if len(correct_ans) > 25:
-            correct_ans = correct_ans[:22] + "..."
+        raw_correct_ans = str(ev.get("correctAnswer") or ev.get("correct_answer") or "-")
+        if len(raw_correct_ans) > 30:
+            raw_correct_ans = raw_correct_ans[:27] + "..."
+        correct_ans = clean_pdf_math_text(raw_correct_ans)
 
-        is_correct = bool(ev.get("isCorrect") or ev.get("is_correct"))
-        status_text = "PASS" if is_correct else "NEEDS WORK"
         marks = str(ev.get("marksAwarded", 0))
 
         q_table_data.append([
@@ -201,11 +340,10 @@ def generate_exam_report_pdf(
             Paragraph(q_text, body_style),
             Paragraph(student_ans, body_style),
             Paragraph(correct_ans, body_style),
-            Paragraph(f"<font color='{'green' if is_correct else 'red'}'><b>{status_text}</b></font>", body_style),
             Paragraph(marks, body_style),
         ])
 
-    q_table = Table(q_table_data, colWidths=[24, 210, 100, 100, 66, 40])
+    q_table = Table(q_table_data, colWidths=[24, 256, 110, 110, 40])
     q_table.setStyle(
         TableStyle([
             ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#e2e8f0")),

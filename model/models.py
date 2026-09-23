@@ -732,6 +732,7 @@ class UserSubscription(Base):
     total_marks = Column(Numeric(10, 2), default=80.00, nullable=True)
     accuracy_percentage = Column(Numeric(5, 2), nullable=True)
     submitted_at = Column(DateTime, nullable=True)
+    evaluation_data_json = Column(Text, nullable=True)
     start_date = Column(DateTime, default=get_ist_now)
     expiry_date = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=get_ist_now)

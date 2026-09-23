@@ -42,6 +42,7 @@ def init_subscription_columns():
                 "ALTER TABLE user_subscriptions ADD COLUMN total_marks DECIMAL(10,2) DEFAULT 80.00",
                 "ALTER TABLE user_subscriptions ADD COLUMN accuracy_percentage DECIMAL(5,2) NULL",
                 "ALTER TABLE user_subscriptions ADD COLUMN submitted_at DATETIME NULL",
+                "ALTER TABLE user_subscriptions ADD COLUMN evaluation_data_json LONGTEXT NULL",
             ]:
                 try:
                     session.execute(text(col_def))
@@ -727,12 +728,88 @@ def admin_get_subscription_history():
         })
 
 
+def _get_board_section_blueprint(board: str, s_idx: int, sec_name: str, questions: list) -> dict:
+    """Returns official target max marks and target question count for CBSE, ICSE, ISC."""
+    b_clean = (board or "").upper().strip()
+    q_len = len(questions) if questions else 0
+
+    if b_clean == "ICSE":
+        # ICSE: 2 Sections (40M + 40M = 80M)
+        if s_idx == 0 or "SECTION A" in sec_name.upper():
+            return {
+                "targetMaxMarks": 40.0,
+                "targetQuestions": min(25, q_len) if q_len > 0 else 25,
+                "choiceNote": "Compulsory (Attempt all questions)"
+            }
+        else:
+            return {
+                "targetMaxMarks": 40.0,
+                "targetQuestions": min(4, q_len) if q_len > 0 else 4,
+                "choiceNote": f"Attempt any 4 of {q_len or 7} Questions (10 Marks each)"
+            }
+
+    elif b_clean == "ISC":
+        # ISC: 3 Sections (16M + 32M + 32M = 80M)
+        if s_idx == 0 or "SECTION A" in sec_name.upper():
+            return {
+                "targetMaxMarks": 16.0,
+                "targetQuestions": min(16, q_len) if q_len > 0 else 16,
+                "choiceNote": "Compulsory (16 Objective Questions × 1 Mark)"
+            }
+        elif s_idx == 1 or "SECTION B" in sec_name.upper():
+            return {
+                "targetMaxMarks": 32.0,
+                "targetQuestions": min(8, q_len) if q_len > 0 else 8,
+                "choiceNote": "Attempt all 8 Questions (4 Marks each)"
+            }
+        else:
+            return {
+                "targetMaxMarks": 32.0,
+                "targetQuestions": min(4, q_len) if q_len > 0 else 4,
+                "choiceNote": "Attempt all 4 Questions (8 Marks each)"
+            }
+
+    else:
+        # CBSE: 5 Sections (20M + 10M + 18M + 20M + 12M = 80M)
+        if s_idx == 0 or "SECTION A" in sec_name.upper():
+            return {
+                "targetMaxMarks": 20.0,
+                "targetQuestions": min(20, q_len) if q_len > 0 else 20,
+                "choiceNote": "20 Compulsory Questions × 1 Mark"
+            }
+        elif s_idx == 1 or "SECTION B" in sec_name.upper():
+            return {
+                "targetMaxMarks": 10.0,
+                "targetQuestions": min(5, q_len) if q_len > 0 else 5,
+                "choiceNote": f"Attempt any 5 of {q_len or 7} Questions (2 Marks each)"
+            }
+        elif s_idx == 2 or "SECTION C" in sec_name.upper():
+            return {
+                "targetMaxMarks": 18.0,
+                "targetQuestions": min(6, q_len) if q_len > 0 else 6,
+                "choiceNote": f"Attempt any 6 of {q_len or 8} Questions (3 Marks each)"
+            }
+        elif s_idx == 3 or "SECTION D" in sec_name.upper():
+            return {
+                "targetMaxMarks": 20.0,
+                "targetQuestions": min(4, q_len) if q_len > 0 else 4,
+                "choiceNote": f"Attempt any 4 of {q_len or 6} Questions (5 Marks each)"
+            }
+        else:
+            return {
+                "targetMaxMarks": 12.0,
+                "targetQuestions": min(3, q_len) if q_len > 0 else 3,
+                "choiceNote": f"Attempt any 3 of {q_len or 5} Questions (4 Marks each)"
+            }
+
+
 def _normalize_paper_sections(paper_data: dict, include_answers: bool = False) -> list:
     """Normalizes sections into a standard list format.
     If include_answers is False, strips correct_answer and explanation.
     """
     sections = []
     global_num = 1
+    board_val = paper_data.get("board", "CBSE")
 
     if "sections" in paper_data and isinstance(paper_data["sections"], list):
         for s_idx, sec in enumerate(paper_data["sections"]):
@@ -757,11 +834,18 @@ def _normalize_paper_sections(paper_data: dict, include_answers: bool = False) -
                 questions.append(q_item)
                 global_num += 1
 
+            sec_name = sec_title.split("—")[0].strip() if "—" in sec_title else sec_title.split("(")[0].strip()
+            bp = _get_board_section_blueprint(board_val, s_idx, sec_name, questions)
+
             sections.append({
                 "id": f"sec_{s_idx}",
-                "name": sec_title.split("—")[0].strip() if "—" in sec_title else sec_title.split("(")[0].strip(),
+                "name": sec_name,
                 "title": sec_title,
                 "type": sec_type,
+                "targetMaxMarks": bp["targetMaxMarks"],
+                "targetQuestions": bp["targetQuestions"],
+                "totalQuestions": len(questions),
+                "choiceNote": bp.get("choiceNote", ""),
                 "questions": questions,
             })
 
@@ -804,11 +888,16 @@ def _normalize_paper_sections(paper_data: dict, include_answers: bool = False) -
             sec_a_questions.append(item)
             global_num += 1
 
+        bp_a = _get_board_section_blueprint("ICSE", 0, "SECTION A", sec_a_questions)
         sections.append({
             "id": "sec_0",
             "name": "SECTION A",
             "title": sec_a_raw.get("title", "SECTION A (40 Marks) — Compulsory"),
             "type": "mixed",
+            "targetMaxMarks": bp_a["targetMaxMarks"],
+            "targetQuestions": bp_a["targetQuestions"],
+            "totalQuestions": len(sec_a_questions),
+            "choiceNote": bp_a.get("choiceNote", ""),
             "questions": sec_a_questions
         })
 
@@ -832,11 +921,16 @@ def _normalize_paper_sections(paper_data: dict, include_answers: bool = False) -
             sec_b_questions.append(item)
             global_num += 1
 
+        bp_b = _get_board_section_blueprint("ICSE", 1, "SECTION B", sec_b_questions)
         sections.append({
             "id": "sec_1",
             "name": "SECTION B",
             "title": sec_b_raw.get("title", "SECTION B (40 Marks)"),
             "type": "long",
+            "targetMaxMarks": bp_b["targetMaxMarks"],
+            "targetQuestions": bp_b["targetQuestions"],
+            "totalQuestions": len(sec_b_questions),
+            "choiceNote": bp_b.get("choiceNote", ""),
             "questions": sec_b_questions
         })
 
@@ -845,7 +939,13 @@ def _normalize_paper_sections(paper_data: dict, include_answers: bool = False) -
 
 def _evaluate_single_subjective(student_ans: str, correct_ans: str, explanation: str, max_marks: float) -> dict:
     import re
-    if not student_ans or not student_ans.strip():
+    s_clean = (student_ans or "").strip().lower()
+    trivial_set = {
+        "na", "n/a", "none", "no", "nil", "blank", "skip", "skipped",
+        "don't know", "dont know", "not attempted", "not answered",
+        "left", "left blank", "-", "--", ".", "..", "...", "?", "??", "???"
+    }
+    if not s_clean or s_clean in trivial_set:
         return {
             "marksAwarded": 0.0,
             "isCorrect": False,
@@ -952,24 +1052,15 @@ def _evaluate_single_mcq(student_ans: str, correct_ans: str, options: list, mark
 
         if matched_student_letter:
             is_correct = (matched_student_letter == correct_letter)
-            student_letter = matched_student_letter
         else:
-            is_correct = False
+            is_correct = (student_clean.lower() == correct_clean.lower())
 
-    display_student = f"Option ({student_letter})" if student_letter else f"'{student_clean}'"
-
-    if is_correct:
-        return {
-            "marksAwarded": float(marks),
-            "isCorrect": True,
-            "feedback": f"Correct! Option ({correct_letter}) is the right answer.",
-        }
-    else:
-        return {
-            "marksAwarded": 0.0,
-            "isCorrect": False,
-            "feedback": f"Incorrect. You selected {display_student}, but the correct option is ({correct_letter}).",
-        }
+    marks_awarded = float(marks) if is_correct else 0.0
+    return {
+        "marksAwarded": marks_awarded,
+        "isCorrect": is_correct,
+        "feedback": "Correct option selected!" if is_correct else f"Incorrect. The correct option is ({correct_letter}).",
+    }
 
 
 @token_required
@@ -1010,14 +1101,113 @@ def preview_subject_model_paper(subscription_id: int):
             set_number=set_num
         )
 
-        # Standardized sections without answers for test taking
-        sanitized_sections = _normalize_paper_sections(raw_paper, include_answers=False)
+        is_view_mode = (
+            (request.args.get("mode") in ("view", "review"))
+            or (role == "PARENT" and sub.user_id == user_id and sub.student_id != user_id)
+            or (sub.exam_status == "COMPLETED")
+        )
+
+        # Standardized sections: include answers/solutions if exam is completed or opened in review/view mode
+        sections_data = _normalize_paper_sections(raw_paper, include_answers=bool(is_view_mode or sub.exam_status == "COMPLETED"))
 
         # If student starts test and status is UNATTEMPTED, update to IN_PROGRESS
-        is_view_mode = (request.args.get("mode") == "view") or (role == "PARENT" and sub.user_id == user_id and sub.student_id != user_id)
         if not is_view_mode and (sub.exam_status is None or sub.exam_status in ("UNATTEMPTED", "")):
             sub.exam_status = "IN_PROGRESS"
             session.commit()
+
+        eval_result = None
+        if sub.exam_status == "COMPLETED":
+            if getattr(sub, "evaluation_data_json", None):
+                try:
+                    eval_result = json.loads(sub.evaluation_data_json)
+                except Exception as parse_err:
+                    logger.warning(f"Failed to parse evaluation_data_json for sub #{sub.id}: {parse_err}")
+                    eval_result = None
+
+            if not eval_result:
+                tot_score = float(sub.score_obtained or 0.0)
+                max_marks_val = float(sub.total_marks or raw_paper.get("max_marks", 80))
+                acc_pct = float(sub.accuracy_percentage or 0.0)
+                if acc_pct >= 90:
+                    grade_label = "Outstanding (A+)"
+                elif acc_pct >= 75:
+                    grade_label = "Distinction (A)"
+                elif acc_pct >= 60:
+                    grade_label = "First Class (B+)"
+                elif acc_pct >= 40:
+                    grade_label = "Pass (C)"
+                else:
+                    grade_label = "Needs Improvement (D)"
+
+                evaluated_sections_breakdown = []
+                all_eval_items = []
+                total_target_questions = 0
+                total_available_questions = 0
+
+                for s_idx, sec in enumerate(sections_data):
+                    sec_questions = sec.get("questions", [])
+                    sec_name = sec.get("name", f"SECTION {chr(65 + s_idx)}")
+                    bp = _get_board_section_blueprint(sub.board, s_idx, sec_name, sec_questions)
+
+                    sec_max = bp["targetMaxMarks"]
+                    sec_target_q = bp["targetQuestions"]
+                    total_target_questions += sec_target_q
+                    total_available_questions += len(sec_questions)
+
+                    for q in sec_questions:
+                        all_eval_items.append({
+                            "key": q.get("key"),
+                            "num": q.get("num", 1),
+                            "sectionName": sec_name,
+                            "sectionTitle": sec.get("title"),
+                            "question": q.get("question"),
+                            "type": q.get("type", "saq"),
+                            "options": q.get("options"),
+                            "marksAwarded": 0.0,
+                            "maxMarks": q.get("marks", 1),
+                            "isCorrect": False,
+                            "studentAnswer": "",
+                            "correctAnswer": q.get("correct_answer", ""),
+                            "explanation": q.get("explanation", ""),
+                            "feedback": "Not Attempted / Left Blank",
+                        })
+
+                    evaluated_sections_breakdown.append({
+                        "id": sec.get("id") or f"sec_{s_idx}",
+                        "name": sec_name,
+                        "title": sec.get("title") or sec_name,
+                        "type": sec.get("type", "saq"),
+                        "marksObtained": 0.0,
+                        "maxMarks": round(sec_max, 1),
+                        "targetQuestions": sec_target_q,
+                        "totalQuestions": len(sec_questions),
+                        "percentage": 0.0,
+                        "choiceNote": bp.get("choiceNote", ""),
+                        "questions": sec_questions,
+                    })
+
+                eval_result = {
+                    "subscriptionId": sub.id,
+                    "board": sub.board,
+                    "classGrade": sub.class_grade,
+                    "subject": sub.subject,
+                    "setNumber": set_num,
+                    "totalMarksObtained": tot_score,
+                    "maxMarks": max_marks_val,
+                    "accuracyPercentage": acc_pct,
+                    "grade": grade_label,
+                    "timeSpentSeconds": 0,
+                    "summary": {
+                        "totalQuestions": total_available_questions,
+                        "targetQuestions": total_target_questions,
+                        "attemptedCount": 0,
+                        "correctCount": 0,
+                        "partialCount": 0,
+                        "incorrectCount": total_available_questions,
+                    },
+                    "sectionBreakdown": evaluated_sections_breakdown,
+                    "questionEvaluations": all_eval_items,
+                }
 
         return success({
             "subscriptionId": sub.id,
@@ -1027,10 +1217,14 @@ def preview_subject_model_paper(subscription_id: int):
             "setNumber": set_num,
             "status": sub.status,
             "examStatus": sub.exam_status or "UNATTEMPTED",
+            "scoreObtained": sub.score_obtained,
+            "totalMarks": sub.total_marks or raw_paper.get("max_marks", 80),
+            "accuracyPercentage": sub.accuracy_percentage,
             "timeAllowed": raw_paper.get("time_allowed", "3 Hours (180 Minutes)"),
             "maxMarks": raw_paper.get("max_marks", 80),
             "instructions": raw_paper.get("instructions", []),
-            "sections": sanitized_sections,
+            "sections": sections_data,
+            "evaluationResult": eval_result,
         })
 
 
@@ -1088,6 +1282,7 @@ def evaluate_subject_model_paper(subscription_id: int):
         total_marks_obtained = 0.0
         max_marks_total = float(raw_paper.get("max_marks", 80))
         total_questions_count = 0
+        total_target_questions_count = 0
         attempted_count = 0
         correct_count = 0
         partial_count = 0
@@ -1096,18 +1291,24 @@ def evaluate_subject_model_paper(subscription_id: int):
         evaluated_sections = []
         all_evaluations = []
 
-        for sec in full_sections:
-            sec_marks_obtained = 0.0
-            sec_max_marks = 0.0
+        for s_idx, sec in enumerate(full_sections):
+            sec_name = sec.get("name", f"SECTION {chr(65 + s_idx)}")
+            sec_questions = sec.get("questions", [])
+            bp = _get_board_section_blueprint(sub.board, s_idx, sec_name, sec_questions)
+
+            sec_target_max = bp["targetMaxMarks"]
+            sec_target_q = bp["targetQuestions"]
+            total_target_questions_count += sec_target_q
+
+            sec_marks_raw = 0.0
             sec_attempted = 0
             sec_correct = 0
             sec_questions_eval = []
 
-            for q in sec.get("questions", []):
+            for q in sec_questions:
                 q_key = q.get("key")
                 q_type = q.get("type", "saq").lower()
                 q_max_marks = float(q.get("marks", 1))
-                sec_max_marks += q_max_marks
                 total_questions_count += 1
 
                 # Find student answer by key or by stringified question number
@@ -1143,8 +1344,7 @@ def evaluate_subject_model_paper(subscription_id: int):
                     )
 
                 marks_awarded = res.get("marksAwarded", 0.0)
-                sec_marks_obtained += marks_awarded
-                total_marks_obtained += marks_awarded
+                sec_marks_raw += marks_awarded
 
                 if marks_awarded >= q_max_marks:
                     correct_count += 1
@@ -1157,7 +1357,7 @@ def evaluate_subject_model_paper(subscription_id: int):
                 eval_item = {
                     "key": q_key,
                     "num": q.get("num"),
-                    "sectionName": sec.get("name"),
+                    "sectionName": sec_name,
                     "sectionTitle": sec.get("title"),
                     "question": q.get("question"),
                     "type": q_type,
@@ -1175,17 +1375,23 @@ def evaluate_subject_model_paper(subscription_id: int):
                 sec_questions_eval.append(eval_item)
                 all_evaluations.append(eval_item)
 
+            # Cap section marks to blueprint target max marks
+            sec_marks_final = min(sec_marks_raw, sec_target_max)
+            total_marks_obtained += sec_marks_final
+
             evaluated_sections.append({
-                "id": sec.get("id"),
-                "name": sec.get("name"),
-                "title": sec.get("title"),
-                "type": sec.get("type"),
-                "marksObtained": round(sec_marks_obtained, 1),
-                "maxMarks": sec_max_marks,
-                "percentage": round((sec_marks_obtained / max(sec_max_marks, 1)) * 100, 1),
+                "id": sec.get("id") or f"sec_{s_idx}",
+                "name": sec_name,
+                "title": sec.get("title") or sec_name,
+                "type": sec.get("type", "saq"),
+                "marksObtained": round(sec_marks_final, 1),
+                "maxMarks": round(sec_target_max, 1),
+                "targetQuestions": sec_target_q,
+                "totalQuestions": len(sec_questions),
+                "percentage": round((sec_marks_final / max(sec_target_max, 1)) * 100, 1),
                 "attempted": sec_attempted,
                 "correct": sec_correct,
-                "totalQuestions": len(sec.get("questions", [])),
+                "choiceNote": bp.get("choiceNote", ""),
                 "questions": sec_questions_eval
             })
 
@@ -1203,12 +1409,36 @@ def evaluate_subject_model_paper(subscription_id: int):
         else:
             grade = "Needs Improvement (D)"
 
-        # Update subscription status and score metrics
+        eval_result_payload = {
+            "subscriptionId": sub.id,
+            "board": sub.board,
+            "classGrade": sub.class_grade,
+            "subject": sub.subject,
+            "setNumber": set_num,
+            "totalMarksObtained": round(total_marks_obtained, 1),
+            "maxMarks": max_marks_total,
+            "accuracyPercentage": accuracy_pct,
+            "grade": grade,
+            "timeSpentSeconds": time_spent,
+            "summary": {
+                "totalQuestions": total_questions_count,
+                "targetQuestions": total_target_questions_count,
+                "attemptedCount": attempted_count,
+                "correctCount": correct_count,
+                "partialCount": partial_count,
+                "incorrectCount": incorrect_count
+            },
+            "sectionBreakdown": evaluated_sections,
+            "questionEvaluations": all_evaluations
+        }
+
+        # Update subscription status, score metrics and full evaluation payload
         sub.exam_status = "COMPLETED"
         sub.score_obtained = round(total_marks_obtained, 1)
         sub.total_marks = max_marks_total
         sub.accuracy_percentage = accuracy_pct
         sub.submitted_at = now_ist()
+        sub.evaluation_data_json = json.dumps(eval_result_payload)
         session.commit()
 
         # Automatic PDF Report Generation & Parent Email Dispatch
@@ -1295,27 +1525,7 @@ def evaluate_subject_model_paper(subscription_id: int):
             except Exception as email_err:
                 logger.warning(f"Failed to generate/email model paper PDF report: {email_err}")
 
-        return success({
-            "subscriptionId": sub.id,
-            "board": sub.board,
-            "classGrade": sub.class_grade,
-            "subject": sub.subject,
-            "setNumber": set_num,
-            "totalMarksObtained": round(total_marks_obtained, 1),
-            "maxMarks": max_marks_total,
-            "accuracyPercentage": accuracy_pct,
-            "grade": grade,
-            "timeSpentSeconds": time_spent,
-            "summary": {
-                "totalQuestions": total_questions_count,
-                "attemptedCount": attempted_count,
-                "correctCount": correct_count,
-                "partialCount": partial_count,
-                "incorrectCount": incorrect_count
-            },
-            "sectionBreakdown": evaluated_sections,
-            "questionEvaluations": all_evaluations
-        })
+        return success(eval_result_payload)
 
 
 @token_required

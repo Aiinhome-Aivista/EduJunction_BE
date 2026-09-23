@@ -18,6 +18,7 @@ from controller.notification_controller import create_notification
 from utils.errors import AppError, NotFoundError, ValidationError
 from utils.response import success
 from utils.audit_helper import log_audit
+from utils.logger import logger
 from utils.serializers import submission_to_dict
 from utils.validators import require_fields, validate_board, validate_class_grade, validate_board_class, validate_subject, validate_difficulty
 
@@ -410,6 +411,12 @@ def submit_exam(exam_id):
         student = session.get(Student, exam.student_id)
         student_name = student.user.name if student and student.user else "Student"
 
+        # Enrich evaluations with per-question time tracking data
+        per_q_time = payload.get("timeSpentPerQuestion") or {}
+        for ev in evaluations:
+            q_time = per_q_time.get(str(ev["questionId"])) or per_q_time.get(ev["questionId"]) or 0
+            ev["timeSpentSeconds"] = int(q_time) if str(q_time).isdigit() else 0
+
         analysis, analysis_source = diagnostic_engine.generate_diagnostic_analysis(
             exam, marks_obtained, evaluations, time_taken_seconds, student_name
         )
@@ -423,14 +430,12 @@ def submit_exam(exam_id):
         session.add(submission)
         session.flush()
 
-        per_q_time = payload.get("timeSpentPerQuestion") or {}
         for ev in evaluations:
-            q_time = per_q_time.get(str(ev["questionId"])) or per_q_time.get(ev["questionId"]) or 0
             session.add(
                 QuestionEvaluation(
                     id=str(uuid.uuid4()), submission_id=submission.id, question_id=ev["questionId"],
                     student_answer=ev["studentAnswer"],
-                    time_spent_seconds=int(q_time) if str(q_time).isdigit() else 0,
+                    time_spent_seconds=ev.get("timeSpentSeconds", 0),
                     is_correct=ev["isCorrect"],
                     marks_awarded=ev["marksAwarded"], misconception_identified=ev["misconceptionIdentified"],
                     feedback=ev.get("feedback"),
