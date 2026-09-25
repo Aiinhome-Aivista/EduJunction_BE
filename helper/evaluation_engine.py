@@ -332,7 +332,7 @@ def evaluate_exam(
                     items_to_evaluate=subjective_items_to_llm,
                 )
                 raw_response = mistral_client.generate_json(
-                    subjective_evaluation_prompt.SYSTEM_PROMPT, user_prompt
+                    subjective_evaluation_prompt.SYSTEM_PROMPT, user_prompt, scenario="evaluation"
                 )
                 validated = SubjectiveEvaluationResponse.model_validate(raw_response)
 

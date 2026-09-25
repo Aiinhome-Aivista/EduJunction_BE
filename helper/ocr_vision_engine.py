@@ -41,16 +41,19 @@ def extract_scanned_pdf_with_vision(
         logger.error("google-generativeai package not installed; cannot perform Vision OCR.")
         return ""
 
-    from model.mistral_client import _get_active_db_llm_config
+    from model.mistral_client import get_scenario_llm_config
     
-    db_cfg = _get_active_db_llm_config()
+    db_cfg = get_scenario_llm_config("vision_ocr")
     if not db_cfg or not db_cfg.get("api_key") or "gemini" not in db_cfg["provider"]:
-        logger.warning("Active Gemini configuration not found in Admin Panel; Vision OCR skipped.")
+        logger.warning("Active Gemini configuration not found for 'vision_ocr'; Vision OCR skipped.")
         return ""
     
     api_key = db_cfg["api_key"]
     genai.configure(api_key=api_key)
-    model_name = db_cfg.get("model_name") or "gemini-2.0-flash"
+    model_name = db_cfg.get("model_name")
+    if not model_name:
+        logger.warning("Model Name not configured for 'vision_ocr' in database.")
+        return ""
     model = genai.GenerativeModel(model_name=model_name)
 
     extracted_pages = []

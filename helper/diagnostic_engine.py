@@ -35,7 +35,7 @@ def generate_diagnostic_analysis(
                 time_taken_seconds=time_taken_seconds,
                 evaluations=evaluations,
             )
-            raw = mistral_client.generate_json(evaluation_prompt.SYSTEM_PROMPT, user_prompt)
+            raw = mistral_client.generate_json(evaluation_prompt.SYSTEM_PROMPT, user_prompt, scenario="diagnostic")
             validated = DiagnosticAnalysisSchema.model_validate(raw)
             analysis = validated.model_dump()
             analysis["masteryScorePercentage"] = accuracy_percentage

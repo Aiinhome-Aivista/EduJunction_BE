@@ -53,7 +53,7 @@ def recalculate_student_mastery_from_evaluations(session: Session, student_id: i
         
         row = session.query(Mastery).filter(
             Mastery.student_id == student_id, Mastery.topic == topic
-        ).one_or_none()
+        ).first()
         
         if row is None:
             row = Mastery(

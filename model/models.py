@@ -12,7 +12,7 @@ def get_ist_now() -> datetime:
 
 from sqlalchemy import (
     Column, String, Integer, Boolean, DateTime, Date, ForeignKey, Enum, JSON,
-    Numeric, Text, UniqueConstraint,
+    Numeric, Text, UniqueConstraint, Float,
 )
 from sqlalchemy.orm import declarative_base, relationship
 
@@ -743,23 +743,36 @@ class UserSubscription(Base):
 
 
 # ------------------------------------------------------------
-# 17. Dynamic LLM Configuration Table
+# 17. Dynamic LLM Configuration & Scenario Assignments
 # ------------------------------------------------------------
 class LLMConfig(Base):
     __tablename__ = "llm_config"
 
-    id = Column(String(36), primary_key=True, default=gen_uuid)
-    provider_name = Column(String(50), nullable=False)  # 'gemini', 'openai', 'claude', 'ollama', 'deepseek', 'groq', 'custom'
-    display_title = Column(String(100), nullable=False)
-    base_url = Column(String(255), nullable=True)
-    api_key = Column(String(255), nullable=True)
-    model_name = Column(String(100), nullable=False)  # 'gemini-2.0-flash', 'gpt-4o', etc.
-    max_tokens = Column(Integer, default=4096)
-    temperature = Column(Numeric(3, 2), default=0.30)
-    timeout_seconds = Column(Integer, default=30)
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String(100), nullable=False)
+    provider_type = Column(String(50), nullable=False)  # 'gemini', 'mistral', 'openai', 'claude', 'ollama'
+    model_name = Column(String(100), nullable=False)
+    base_url = Column(String(500), nullable=True)
+    api_key = Column(Text, nullable=True)
+    timeout_seconds = Column(Integer, default=600)
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=get_ist_now)
     updated_at = Column(DateTime, default=get_ist_now, onupdate=get_ist_now)
+
+    scenario_assignments = relationship("LLMScenarioAssignment", back_populates="provider", cascade="all, delete-orphan")
+
+
+class LLMScenarioAssignment(Base):
+    __tablename__ = "llm_scenario_assignments"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    scenario = Column(String(50), unique=True, nullable=False)
+    provider_id = Column(Integer, ForeignKey("llm_config.id", ondelete="CASCADE"), nullable=False)
+    temperature = Column(Float, default=0.30)
+    max_tokens = Column(Integer, default=2048)
+
+    provider = relationship("LLMConfig", back_populates="scenario_assignments")
+
 
 
 

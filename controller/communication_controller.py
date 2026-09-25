@@ -122,7 +122,7 @@ def create_or_get_conversation():
                 Conversation.teacher_id == teacher_id,
                 Conversation.student_id == student_id,
             )
-            .one_or_none()
+            .first()
         )
         if not conversation:
             conversation = Conversation(
@@ -213,7 +213,7 @@ def get_public_dossier(share_token):
         dossier = (
             session.query(SharedDossier)
             .filter(SharedDossier.share_token == share_token)
-            .one_or_none()
+            .first()
         )
         if not dossier:
             raise NotFoundError("Academic dossier not found or link has expired")

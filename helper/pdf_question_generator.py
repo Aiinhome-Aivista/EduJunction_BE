@@ -228,7 +228,7 @@ def generate_questions_from_doc(
 INSTRUCTION: Generate EXACTLY {count} distinct examination questions following the guidelines above. Output strictly valid JSON matching the schema."""
 
     try:
-        response_json = mistral_client.generate_json(SYSTEM_PROMPT, user_prompt, temperature=0.35)
+        response_json = mistral_client.generate_json(SYSTEM_PROMPT, user_prompt, temperature=0.35, scenario="pdf_generation")
         raw_questions = response_json.get("questions", [])
         if not isinstance(raw_questions, list):
             raw_questions = []
@@ -255,7 +255,7 @@ Requirements:
 --- END EXCERPT ---
 Return strictly JSON with 'questions' array containing {missing} items."""
             try:
-                topup_json = mistral_client.generate_json(SYSTEM_PROMPT, topup_prompt, temperature=0.4)
+                topup_json = mistral_client.generate_json(SYSTEM_PROMPT, topup_prompt, temperature=0.4, scenario="pdf_generation")
                 topup_raw = topup_json.get("questions", [])
                 if isinstance(topup_raw, list):
                     for q in topup_raw:
@@ -517,7 +517,7 @@ INSTRUCTION: Perform a deep holistic pedagogical analysis of ALL these curriculu
 Return strictly valid JSON matching the schema."""
 
     try:
-        response_json = mistral_client.generate_json(BOOK_ANALYSIS_SYSTEM_PROMPT, user_prompt, temperature=0.3)
+        response_json = mistral_client.generate_json(BOOK_ANALYSIS_SYSTEM_PROMPT, user_prompt, temperature=0.3, scenario="pdf_generation")
         summary = response_json.get("summary") or f"Comprehensive subject overview for {board} {class_grade} {subject}."
         core_concepts = response_json.get("core_concepts") or []
         key_formulas = response_json.get("key_formulas_or_rules") or []

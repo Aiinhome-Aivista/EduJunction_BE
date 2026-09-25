@@ -115,7 +115,8 @@ def generate_model_paper_diagnostic(
 
             raw = mistral_client.generate_json(
                 model_paper_diagnostic_prompt.SYSTEM_PROMPT,
-                user_prompt
+                user_prompt,
+                scenario="diagnostic"
             )
 
             if isinstance(raw, dict) and "strengths" in raw and "areasToImprove" in raw:

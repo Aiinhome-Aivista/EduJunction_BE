@@ -691,10 +691,20 @@ def create_app() -> Flask:
     def api_admin_test_llm_config(config_id):
         return llm_config_controller.test_llm_connection(config_id)
 
+    @app.route("/api/v1/admin/llm-scenarios", methods=["GET"])
+    @app.route("/api/v1/admin/llm/scenarios", methods=["GET"])
+    def api_admin_get_llm_scenarios():
+        return llm_config_controller.get_llm_scenarios()
+
+    @app.route("/api/v1/admin/llm-scenarios", methods=["PUT"])
+    @app.route("/api/v1/admin/llm/scenarios", methods=["PUT"])
+    def api_admin_update_llm_scenarios():
+        return llm_config_controller.update_llm_scenarios()
+
     return app
 
 
 app = create_app()
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5002, debug=(config.APP_ENV == "development"))
+    app.run(host="0.0.0.0", port=8000, debug=(config.APP_ENV == "development"))

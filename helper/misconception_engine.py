@@ -23,7 +23,7 @@ def record_misconceptions_from_evaluations(session: Session, student_id: str, ev
                 Misconception.description == ev["misconceptionIdentified"],
                 Misconception.status != "RESOLVED",
             )
-            .one_or_none()
+            .first()
         )
         if existing:
             existing.evidence = f"Repeated on question: {ev['questionText'][:200]}"

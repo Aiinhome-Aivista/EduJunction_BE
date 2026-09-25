@@ -118,7 +118,7 @@ Provide practical, positive home-study and routine guidance for a {grade} studen
         if msg.get("role") in ["user", "assistant"]:
             formatted_messages.append({"role": msg["role"], "content": msg["content"]})
 
-    raw_response = call_llm_chat(formatted_messages, json_mode=False, temperature=0.4)
+    raw_response = call_llm_chat(formatted_messages, json_mode=False, temperature=0.4, scenario="doubt_chat")
     return _clean_chat_response(raw_response)
 
 
