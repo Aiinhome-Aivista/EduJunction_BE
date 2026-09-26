@@ -11,9 +11,15 @@ from utils.security import decode_token
 
 def _extract_token() -> str:
     auth_header = request.headers.get("Authorization", "")
-    if not auth_header.startswith("Bearer "):
-        raise UnauthorizedError("Missing or malformed Authorization header")
-    return auth_header.split(" ", 1)[1].strip()
+    if auth_header.startswith("Bearer "):
+        return auth_header.split(" ", 1)[1].strip()
+    
+    # Fallback to query param 'token' for direct browser tab opens / exports
+    token_param = request.args.get("token", "").strip()
+    if token_param:
+        return token_param
+
+    raise UnauthorizedError("Missing or malformed Authorization header")
 
 
 def token_required(fn):

@@ -362,6 +362,15 @@ def is_subject_compatible(target_subject: str, detected_subject: str) -> bool:
     if t in {"science", "general science"}:
         return d in {"science", "general science", "physics", "chemistry", "biology", "life science", "physical science"}
 
+    # Substring / partial match fallback
+    if t in d or d in t:
+        return True
+
+    # If the target subject is a custom subject not in the standard STEM taxonomy, accept it dynamically
+    standard_categories = bio_synonyms | chem_synonyms | phys_synonyms | math_synonyms | cs_synonyms | sst_synonyms | eng_synonyms | {"science", "general science"}
+    if t not in standard_categories:
+        return True
+
     return False
 
 

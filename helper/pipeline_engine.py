@@ -125,17 +125,50 @@ def _print_step_header(step_num: int, step_name: str, color: str = TermColors.YE
 
 
 def perform_contextual_analysis(
-    text_content: str,
-    filename: str,
-    board: str,
-    class_grade: str,
-    subject: str,
-    document_type: str,
+    text_content: str = "",
+    filename: str = "",
+    board: str = "",
+    class_grade: str = "",
+    subject: str = "",
+    document_type: str = "textbook",
+    session: Optional[Session] = None,
+    cleaned_text: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Generates a fast, high-quality contextual analysis of the document and identifies subject accurately."""
-    excerpt = text_content[:7000]
+    """Generates a fast, high-quality contextual analysis of the document and identifies subject & chapter accurately without hallucination."""
+    raw_text = cleaned_text if cleaned_text is not None else text_content
+    excerpt = raw_text[:7000]
 
-    system_prompt = """You are an expert curriculum auditor and senior board paper reviewer.
+    # Pre-fetch existing official chapters from MySQL for this (Board, Class, Subject)
+    official_chapters: List[str] = []
+    if session:
+        try:
+            sql = text("""
+                SELECT ch.chapter_name
+                FROM chapter_master ch
+                JOIN subject_master s ON ch.subject_id = s.id
+                JOIN board_master b ON s.board_id = b.id
+                JOIN class_master c ON s.class_id = c.id
+                WHERE LOWER(TRIM(b.board_name)) = LOWER(TRIM(:b))
+                  AND (LOWER(TRIM(c.class_name)) = LOWER(TRIM(:c)) OR LOWER(TRIM(REPLACE(c.class_name, 'Class ', ''))) = LOWER(TRIM(:c)))
+                  AND (LOWER(TRIM(s.subject_name)) = LOWER(TRIM(:s)) OR (LOWER(TRIM(:s)) = 'science' AND LOWER(TRIM(s.subject_name)) IN ('physics', 'chemistry', 'biology', 'science')))
+                  AND ch.is_active = 1
+                ORDER BY ch.id ASC
+            """)
+            official_chapters = [r[0] for r in session.execute(sql, {"b": board, "c": class_grade, "s": subject}).fetchall()]
+        except Exception:
+            pass
+
+    chapters_ref_prompt = ""
+    if official_chapters:
+        chapters_ref_prompt = f"""
+Official Curriculum Chapters for this Subject:
+{json.dumps(official_chapters, indent=2)}
+
+ANTI-HALLUCINATION REQUIREMENT:
+- If the uploaded text matches one of the official curriculum chapters above, you MUST set "title" to the EXACT matching official chapter title from this list (do NOT invent new names or add Chapter numbers).
+"""
+
+    system_prompt = f"""You are an expert curriculum auditor and senior board paper reviewer.
 Analyze the provided educational document excerpt and accurately determine:
 1. The EXACT, SPECIFIC educational subject/discipline of the document.
    CRITICAL REQUIREMENT:
@@ -146,7 +179,7 @@ Analyze the provided educational document excerpt and accurately determine:
    - For other subjects, output "Mathematics", "Social Studies", "English", or "Computer Science".
 2. The core chapter or paper title.
 3. Summary of concepts covered.
-4. Specific key concept topics."""
+4. Specific key concept topics.{chapters_ref_prompt}"""
 
     user_prompt = f"""Document Metadata:
 - File Name: {filename}
@@ -183,13 +216,13 @@ Note: recommended_question_count MUST be between 10 (minimum) and 15 (maximum).
         logger.warning(f"Contextual analysis LLM fallback: {e}")
 
     # Fallback contextual analysis with regex
-    meta = document_processor.detect_curriculum_metadata(text_content[:3000])
+    meta = document_processor.detect_curriculum_metadata(raw_text[:3000])
     detected_sub = meta.get("subject") or subject
-    first_lines = [line.strip() for line in text_content.splitlines() if line.strip()][:5]
+    first_lines = [line.strip() for line in raw_text.splitlines() if line.strip()][:5]
     guessed_title = first_lines[0] if first_lines else filename.rsplit(".", 1)[0]
     return {
         "title": guessed_title[:120],
-        "summary": f"Curriculum document for {board} {class_grade} {detected_sub} containing {len(text_content)} characters.",
+        "summary": f"Curriculum document for {board} {class_grade} {detected_sub} containing {len(raw_text)} characters.",
         "detected_subject": detected_sub,
         "detected_topics": [detected_sub, "General Concepts"],
         "estimated_difficulty": "medium",
@@ -607,15 +640,27 @@ def _ensure_curriculum_tables(session: Session):
             session.rollback()
 
 
+def _normalize_title(text_val: str) -> str:
+    """Helper to clean chapter and topic strings for robust matching."""
+    if not text_val:
+        return ""
+    # Strip common prefixes like 'Chapter 1: ', 'Unit 2 - ', 'Ch. 3 '
+    cleaned = re.sub(r'^(?:Chapter|Unit|Ch\.?|Lesson|Section)\s*\d+[\s\:\-\.]*', '', text_val, flags=re.IGNORECASE).strip()
+    # Remove special characters and lowercase
+    return re.sub(r'[^a-zA-Z0-9]', '', cleaned).lower()
+
+
 def resolve_subject_topic_id(
     session: Session,
     board: str,
     class_grade: str,
     subject: str,
     target_topic_id: Optional[int] = None,
-    title: Optional[str] = None
+    title: Optional[str] = None,
+    detected_topics: Optional[List[str]] = None,
 ) -> int:
-    """Strictly resolves or creates a matching topic_id for the given Board, Class, and Subject."""
+    """Strictly resolves or creates a matching topic_id for the given Board, Class, and Subject,
+    preventing duplicate chapters and topics."""
     # 1. If target_topic_id is provided, verify it strictly belongs to this (board, class_grade, subject)
     if target_topic_id:
         try:
@@ -640,30 +685,8 @@ def resolve_subject_topic_id(
         except Exception:
             pass
 
-    # 2. Query topic_master for exact (board, class, subject) match
-    try:
-        match_topic = session.execute(
-            text("""
-                SELECT t.id 
-                FROM topic_master t
-                JOIN chapter_master ch ON t.chapter_id = ch.id
-                JOIN subject_master s ON ch.subject_id = s.id
-                JOIN board_master b ON s.board_id = b.id
-                JOIN class_master c ON s.class_id = c.id
-                WHERE LOWER(TRIM(b.board_name)) = LOWER(TRIM(:b))
-                  AND (LOWER(TRIM(c.class_name)) = LOWER(TRIM(:c)) OR LOWER(TRIM(REPLACE(c.class_name, 'Class ', ''))) = LOWER(TRIM(:c)))
-                  AND (LOWER(TRIM(s.subject_name)) = LOWER(TRIM(:s)) OR (LOWER(TRIM(:s)) = 'science' AND LOWER(TRIM(s.subject_name)) IN ('physics', 'chemistry', 'biology', 'science')))
-                ORDER BY t.id ASC
-                LIMIT 1
-            """),
-            {"b": board, "c": class_grade, "s": subject}
-        ).scalar()
-        if match_topic:
-            return int(match_topic)
-    except Exception:
-        pass
-
-    # 3. If no topic exists for this subject, auto-create a dedicated chapter & topic under the subject
+    # 2. Lookup subject_id in subject_master
+    sub_id = None
     try:
         sub_id = session.execute(
             text("""
@@ -673,24 +696,93 @@ def resolve_subject_topic_id(
                 JOIN class_master c ON s.class_id = c.id
                 WHERE LOWER(TRIM(b.board_name)) = LOWER(TRIM(:b))
                   AND (LOWER(TRIM(c.class_name)) = LOWER(TRIM(:c)) OR LOWER(TRIM(REPLACE(c.class_name, 'Class ', ''))) = LOWER(TRIM(:c)))
-                  AND LOWER(TRIM(s.subject_name)) = LOWER(TRIM(:s))
+                  AND (LOWER(TRIM(s.subject_name)) = LOWER(TRIM(:s)) OR (LOWER(TRIM(:s)) = 'science' AND LOWER(TRIM(s.subject_name)) IN ('physics', 'chemistry', 'biology', 'science')))
+                ORDER BY s.id ASC
                 LIMIT 1
             """),
             {"b": board, "c": class_grade, "s": subject}
         ).scalar()
-
-        if sub_id:
-            ch_name = title or f"General {subject}"
-            session.execute(text("INSERT INTO chapter_master (subject_id, chapter_name, is_active) VALUES (:sid, :cn, 1)"), {"sid": sub_id, "cn": ch_name})
-            session.commit()
-            ch_id = session.execute(text("SELECT id FROM chapter_master WHERE subject_id = :sid AND chapter_name = :cn ORDER BY id DESC LIMIT 1"), {"sid": sub_id, "cn": ch_name}).scalar()
-            session.execute(text("INSERT INTO topic_master (chapter_id, topic_name, is_active) VALUES (:chid, :tn, 1)"), {"chid": ch_id, "tn": f"{ch_name} Concepts"})
-            session.commit()
-            new_tid = session.execute(text("SELECT id FROM topic_master WHERE chapter_id = :chid ORDER BY id DESC LIMIT 1"), {"chid": ch_id}).scalar()
-            if new_tid:
-                return int(new_tid)
     except Exception:
         pass
+
+    if not sub_id:
+        first_topic = session.execute(text("SELECT id FROM topic_master LIMIT 1")).scalar()
+        return int(first_topic or 1)
+
+    norm_title = _normalize_title(title or "")
+    matched_chapter_id = None
+
+    # 3. Search existing chapters under this subject_id to avoid duplication
+    try:
+        existing_chapters = session.execute(
+            text("SELECT id, chapter_name FROM chapter_master WHERE subject_id = :sid AND is_active = 1"),
+            {"sid": sub_id}
+        ).fetchall()
+
+        for ch_id, ch_name in existing_chapters:
+            norm_ch = _normalize_title(ch_name)
+            if norm_title and (norm_title == norm_ch or norm_title in norm_ch or norm_ch in norm_title):
+                matched_chapter_id = ch_id
+                break
+    except Exception:
+        pass
+
+    # 4. If no existing chapter matched, create chapter under subject_id
+    if not matched_chapter_id:
+        try:
+            ch_name_to_create = title.strip() if title and len(title.strip()) > 2 else f"General {subject}"
+            session.execute(
+                text("INSERT INTO chapter_master (subject_id, chapter_name, is_active) VALUES (:sid, :cn, 1)"),
+                {"sid": sub_id, "cn": ch_name_to_create}
+            )
+            session.commit()
+            matched_chapter_id = session.execute(
+                text("SELECT id FROM chapter_master WHERE subject_id = :sid AND chapter_name = :cn ORDER BY id DESC LIMIT 1"),
+                {"sid": sub_id, "cn": ch_name_to_create}
+            ).scalar()
+        except Exception:
+            session.rollback()
+
+    if not matched_chapter_id:
+        first_topic = session.execute(text("SELECT id FROM topic_master LIMIT 1")).scalar()
+        return int(first_topic or 1)
+
+    # 5. Search existing topics under this matched chapter
+    primary_topic_name = (detected_topics[0] if detected_topics and detected_topics[0] else title) or f"{subject} Concepts"
+    norm_topic = _normalize_title(primary_topic_name)
+
+    try:
+        existing_topics = session.execute(
+            text("SELECT id, topic_name FROM topic_master WHERE chapter_id = :chid AND is_active = 1"),
+            {"chid": matched_chapter_id}
+        ).fetchall()
+
+        for t_id, t_name in existing_topics:
+            norm_t = _normalize_title(t_name)
+            if norm_topic and (norm_topic == norm_t or norm_topic in norm_t or norm_t in norm_topic):
+                return int(t_id)
+
+        # If chapter already has topics, reuse the first one
+        if existing_topics:
+            return int(existing_topics[0][0])
+    except Exception:
+        pass
+
+    # 6. If no topic under chapter, create it
+    try:
+        session.execute(
+            text("INSERT INTO topic_master (chapter_id, topic_name, is_active) VALUES (:chid, :tn, 1)"),
+            {"chid": matched_chapter_id, "tn": primary_topic_name.strip()[:150]}
+        )
+        session.commit()
+        new_tid = session.execute(
+            text("SELECT id FROM topic_master WHERE chapter_id = :chid ORDER BY id DESC LIMIT 1"),
+            {"chid": matched_chapter_id}
+        ).scalar()
+        if new_tid:
+            return int(new_tid)
+    except Exception:
+        session.rollback()
 
     first_topic = session.execute(text("SELECT id FROM topic_master LIMIT 1")).scalar()
     return int(first_topic or 1)
@@ -736,7 +828,15 @@ def process_curriculum_document_pipeline(
     # STEP 2: SHORT CONTEXTUAL ANALYSIS
     # -------------------------------------------------------------------------
     _print_step_header(2, "SHORT CONTEXTUAL ANALYSIS", TermColors.YELLOW)
-    analysis = perform_contextual_analysis(cleaned_text, filename, board, class_grade, subject, document_type)
+    analysis = perform_contextual_analysis(
+        cleaned_text=cleaned_text,
+        filename=filename,
+        board=board,
+        class_grade=class_grade,
+        subject=subject,
+        document_type=document_type,
+        session=session,
+    )
     title = analysis.get("title", filename)
     summary = analysis.get("summary", "")
     detected_topics = analysis.get("detected_topics", [subject])
@@ -838,6 +938,7 @@ def process_curriculum_document_pipeline(
         subject=subject,
         target_topic_id=target_topic_id,
         title=title,
+        detected_topics=detected_topics,
     )
 
     # Preload types and diff lookup dicts
@@ -1062,7 +1163,15 @@ def extract_curriculum_questions_preview(
 
     # 2. CONTEXTUAL ANALYSIS
     _print_step_header(2, "SHORT CONTEXTUAL ANALYSIS", TermColors.YELLOW)
-    analysis = perform_contextual_analysis(cleaned_text, filename, board, class_grade, subject, document_type)
+    analysis = perform_contextual_analysis(
+        cleaned_text=cleaned_text,
+        filename=filename,
+        board=board,
+        class_grade=class_grade,
+        subject=subject,
+        document_type=document_type,
+        session=session,
+    )
     title = analysis.get("title", filename)
     summary = analysis.get("summary", "")
     detected_topics = analysis.get("detected_topics", [subject])
@@ -1122,6 +1231,7 @@ def extract_curriculum_questions_preview(
         subject=subject,
         target_topic_id=target_topic_id,
         title=title,
+        detected_topics=detected_topics,
     )
 
     final_questions = []
@@ -1209,6 +1319,7 @@ def save_curriculum_extracted_questions_pipeline(
         subject=subject,
         target_topic_id=target_topic_id,
         title=title,
+        detected_topics=detected_topics,
     )
 
     # 2. Lookup Dicts for Question Types and Difficulties

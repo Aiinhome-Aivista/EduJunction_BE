@@ -855,6 +855,64 @@ def save_extracted_curriculum_questions_api():
         return success(result, 201)
 
 
+@token_required
+def get_knowledge_graph_api():
+    """Admin API endpoint to retrieve full knowledge graph payload for interactive visualization."""
+    from database.graph_db import get_knowledge_graph_payload
+    board = request.args.get("board", "").strip()
+    class_grade = request.args.get("classGrade", "").strip()
+    subject = request.args.get("subject", "").strip()
+    student_id = request.args.get("studentId", "").strip()
+    mode = request.args.get("mode", "curriculum").strip()
+
+    with get_session() as session:
+        payload = get_knowledge_graph_payload(
+            session=session,
+            board=board if board != "ALL" else None,
+            class_grade=class_grade if class_grade != "ALL" else None,
+            subject=subject if subject != "ALL" else None,
+            student_id=student_id if student_id else None,
+            mode=mode,
+        )
+        return success(payload)
+
+
+@token_required
+def export_knowledge_graph_html_api():
+    """Returns standalone interactive HTML document of the knowledge graph."""
+    from database.graph_db import get_knowledge_graph_payload, generate_standalone_k_graph_html
+    from flask import Response
+
+    board = request.args.get("board", "").strip()
+    class_grade = request.args.get("classGrade", "").strip()
+    subject = request.args.get("subject", "").strip()
+    student_id = request.args.get("studentId", "").strip()
+    mode = request.args.get("mode", "curriculum").strip()
+
+    with get_session() as session:
+        payload = get_knowledge_graph_payload(
+            session=session,
+            board=board if board != "ALL" else None,
+            class_grade=class_grade if class_grade != "ALL" else None,
+            subject=subject if subject != "ALL" else None,
+            student_id=student_id if student_id else None,
+            mode=mode,
+        )
+        html_content = generate_standalone_k_graph_html(payload)
+        return Response(html_content, mimetype="text/html")
+
+
+@token_required
+def sync_knowledge_graph_api():
+    """Admin API endpoint to non-destructively reconcile MySQL curriculum into ArangoDB."""
+    from database.graph_db import sync_full_mysql_curriculum_to_arango
+    with get_session() as session:
+        result = sync_full_mysql_curriculum_to_arango(session)
+        return success(result)
+
+
+
+
 
 
 

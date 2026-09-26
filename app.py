@@ -459,6 +459,18 @@ def create_app() -> Flask:
     def api_admin_rag_status():
         return upload_file_controller.get_rag_status()
 
+    @app.route("/api/v1/admin/rag/knowledge-graph", methods=["GET"])
+    def api_admin_get_knowledge_graph():
+        return upload_file_controller.get_knowledge_graph_api()
+
+    @app.route("/api/v1/admin/rag/knowledge-graph/export-html", methods=["GET"])
+    def api_admin_export_knowledge_graph_html():
+        return upload_file_controller.export_knowledge_graph_html_api()
+
+    @app.route("/api/v1/admin/rag/sync-knowledge-graph", methods=["POST"])
+    def api_admin_sync_knowledge_graph():
+        return upload_file_controller.sync_knowledge_graph_api()
+
     @app.route("/api/v1/admin/rag/documents/<document_id>", methods=["DELETE"])
     def api_admin_delete_rag_document(document_id):
         return upload_file_controller.delete_rag_document(document_id)
