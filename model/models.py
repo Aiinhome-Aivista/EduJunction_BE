@@ -774,6 +774,26 @@ class LLMScenarioAssignment(Base):
     provider = relationship("LLMConfig", back_populates="scenario_assignments")
 
 
+# ------------------------------------------------------------
+# 18. Dynamic SEO Metadata Management
+# ------------------------------------------------------------
+class SeoMetadata(Base):
+    __tablename__ = "seo_metadata"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    page_route = Column(String(150), nullable=False, unique=True, index=True)
+    page_name = Column(String(100), nullable=False)
+    title = Column(String(255), nullable=False)
+    description = Column(Text, nullable=True)
+    keywords = Column(String(255), nullable=True)
+    og_image = Column(String(255), nullable=True)
+    canonical_url = Column(String(255), nullable=True)
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=get_ist_now)
+    updated_at = Column(DateTime, default=get_ist_now, onupdate=get_ist_now)
+
+
+
 
 
 

@@ -29,6 +29,7 @@ from controller import (
     mock_test_controller,
     subscription_controller,
     llm_config_controller,
+    seo_controller,
 )
 from middleware.dbContext import register_db_teardown
 from middleware.errorMiddleware import register_error_handlers
@@ -700,6 +701,22 @@ def create_app() -> Flask:
     @app.route("/api/v1/admin/llm/scenarios", methods=["PUT"])
     def api_admin_update_llm_scenarios():
         return llm_config_controller.update_llm_scenarios()
+
+    # Dynamic SEO Metadata API
+    @app.route("/api/v1/seo/metadata", methods=["GET"])
+    @app.route("/api/v1/admin/seo", methods=["GET"])
+    def api_get_seo_metadata():
+        return seo_controller.get_all_seo_metadata()
+
+    @app.route("/api/v1/seo/metadata", methods=["POST"])
+    @app.route("/api/v1/admin/seo", methods=["POST"])
+    def api_save_seo_metadata():
+        return seo_controller.save_seo_metadata()
+
+    @app.route("/api/v1/seo/metadata/<int:seo_id>", methods=["DELETE"])
+    @app.route("/api/v1/admin/seo/<int:seo_id>", methods=["DELETE"])
+    def api_delete_seo_metadata(seo_id):
+        return seo_controller.delete_seo_metadata(seo_id)
 
     return app
 
