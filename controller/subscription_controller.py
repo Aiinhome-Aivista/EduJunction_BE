@@ -12,12 +12,12 @@ import re
 from datetime import datetime, timedelta
 from flask import request, g
 import requests
-from sqlalchemy import and_, or_, desc
+from sqlalchemy import and_, or_, desc, func
 
 from database.dbConnection import get_session
 from middleware.authMiddleware import token_required
 from middleware.roleMiddleware import assert_owns_student
-from model.models import SubscriptionPlan, UserSubscription, User, Student
+from model.models import SubscriptionPlan, UserSubscription, User, Student, BoardMaster
 from utils.date_helper import now_ist
 from utils.errors import AppError, NotFoundError, ValidationError, ForbiddenError
 from utils.logger import logger
@@ -728,16 +728,39 @@ def admin_get_subscription_history():
                 "razorpayOrderId": sub.razorpay_order_id,
                 "razorpayPaymentId": sub.razorpay_payment_id,
                 "status": sub.status,
-                "examStatus": sub.exam_status,
                 "createdAt": sub.created_at.isoformat() if sub.created_at else None,
             })
+
+        # Active boards for dynamic dropdown
+        try:
+            active_boards = [
+                b.board_name for b in session.query(BoardMaster).filter(BoardMaster.is_active == True).order_by(BoardMaster.id).all()
+            ]
+        except Exception:
+            active_boards = ["CBSE", "ICSE", "ISC", "WBBSE"]
+
+        # Global metrics across all subscriptions
+        total_orders = session.query(func.count(UserSubscription.id)).scalar() or 0
+        active_papers = session.query(func.count(UserSubscription.id)).filter(UserSubscription.status == "ACTIVE").scalar() or 0
+        pending_papers = session.query(func.count(UserSubscription.id)).filter(UserSubscription.status == "PENDING").scalar() or 0
+
+        realized_revenue = session.query(func.coalesce(func.sum(UserSubscription.amount_paid), 0)).filter(UserSubscription.status == "ACTIVE").scalar() or 0
+        pending_revenue = session.query(func.coalesce(func.sum(UserSubscription.amount_paid), 0)).filter(UserSubscription.status == "PENDING").scalar() or 0
 
         return success({
             "transactions": transactions,
             "total": total_count,
             "page": page,
             "limit": limit,
-            "totalPages": (total_count + limit - 1) // limit
+            "totalPages": (total_count + limit - 1) // limit,
+            "metrics": {
+                "totalOrders": total_orders,
+                "activePapers": active_papers,
+                "pendingPapers": pending_papers,
+                "realizedRevenue": float(realized_revenue),
+                "pendingRevenue": float(pending_revenue)
+            },
+            "boards": active_boards
         })
 
 
