@@ -19,7 +19,7 @@ from utils.response import success
 # Human-friendly scenario labels & descriptions
 SCENARIO_METADATA = {
     "exam_generation": {
-        "label": "Exam Paper Generation",
+        "label": "All Exams",
         "description": "Generates curriculum-aligned question papers (MCQ, Short, Long) with solution keys."
     },
     "pdf_generation": {
@@ -39,7 +39,7 @@ SCENARIO_METADATA = {
         "description": "Generates weak-area diagnostics, mastery scores, and remedial study plans."
     },
     "embeddings": {
-        "label": "RAG Vector Embeddings",
+        "label": "RAG Vector Embeddings (K-Graph)",
         "description": "Generates text embeddings for syllabus RAG retrieval and vector similarity search."
     },
     "vision_ocr": {
