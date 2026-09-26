@@ -401,7 +401,7 @@ def analyze_book_and_question_bank(
 INSTRUCTION: Perform a deep pedagogical analysis of this curriculum text. Return the JSON object matching the exact schema above."""
 
     try:
-        response_json = mistral_client.generate_json(BOOK_ANALYSIS_SYSTEM_PROMPT, user_prompt, temperature=0.3)
+        response_json = mistral_client.generate_json(BOOK_ANALYSIS_SYSTEM_PROMPT, user_prompt, temperature=0.3, scenario="pdf_generation")
         summary = response_json.get("summary") or "Comprehensive chapter overview derived from curriculum text."
         core_concepts = response_json.get("core_concepts") or []
         key_formulas = response_json.get("key_formulas_or_rules") or []

@@ -204,7 +204,7 @@ Return strictly a JSON object with this exact structure:
 Note: recommended_question_count MUST be between 10 (minimum) and 15 (maximum).
 """
     try:
-        res = mistral_client.generate_json(system_prompt, user_prompt, temperature=0.2)
+        res = mistral_client.generate_json(system_prompt, user_prompt, temperature=0.2, scenario="pdf_generation")
         if isinstance(res, dict) and "title" in res:
             rec_q = res.get("recommended_question_count")
             if isinstance(rec_q, (int, float)):
@@ -455,7 +455,7 @@ CRITICAL INSTRUCTIONS:
 4. Extract all distinguishable questions present in this section without an artificial limit."""
 
             try:
-                response_json = mistral_client.generate_json(system_prompt, user_prompt, temperature=0.25)
+                response_json = mistral_client.generate_json(system_prompt, user_prompt, temperature=0.25, scenario="pdf_generation")
                 q_list = response_json.get("questions", []) if isinstance(response_json, dict) else []
                 if isinstance(q_list, list) and q_list:
                     raw_questions.extend(q_list)
@@ -511,7 +511,7 @@ CRITICAL INSTRUCTIONS:
 Extract/generate EXACTLY {q_count} comprehensive structured questions covering all key concepts, definitions, numericals, and core topics in the document."""
 
         try:
-            response_json = mistral_client.generate_json(system_prompt, user_prompt, temperature=0.35)
+            response_json = mistral_client.generate_json(system_prompt, user_prompt, temperature=0.35, scenario="pdf_generation")
             raw_questions = response_json.get("questions", []) if isinstance(response_json, dict) else []
         except Exception as e:
             logger.error(f"LLM question extraction failed: {e}")
