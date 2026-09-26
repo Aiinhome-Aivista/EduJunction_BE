@@ -662,6 +662,8 @@ def admin_delete_subscription_plan(plan_id: int):
 def admin_get_subscription_history():
     """Admin endpoint to view all parent & student payment transactions with filtering and search."""
     _ensure_admin()
+    from sqlalchemy.orm import aliased
+
     search = request.args.get("search", "").strip()
     board = request.args.get("board", "").strip()
     class_grade = request.args.get("classGrade", "").strip()
@@ -671,10 +673,15 @@ def admin_get_subscription_history():
     limit = min(100, max(1, int(request.args.get("limit", 20))))
 
     with get_session() as session:
-        query = session.query(UserSubscription, User, Student).outerjoin(
-            User, UserSubscription.user_id == User.id
+        ParentUser = aliased(User)
+        StudentUser = aliased(User)
+
+        query = session.query(UserSubscription, ParentUser, StudentUser, Student).outerjoin(
+            ParentUser, UserSubscription.user_id == ParentUser.id
         ).outerjoin(
             Student, UserSubscription.student_id == Student.id
+        ).outerjoin(
+            StudentUser, Student.id == StudentUser.id
         )
 
         if board:
@@ -690,9 +697,10 @@ def admin_get_subscription_history():
             search_pattern = f"%{search}%"
             query = query.filter(
                 or_(
-                    User.name.ilike(search_pattern),
-                    User.email.ilike(search_pattern),
-                    Student.name.ilike(search_pattern),
+                    ParentUser.name.ilike(search_pattern),
+                    ParentUser.email.ilike(search_pattern),
+                    StudentUser.name.ilike(search_pattern),
+                    StudentUser.username.ilike(search_pattern),
                     UserSubscription.razorpay_order_id.ilike(search_pattern),
                     UserSubscription.razorpay_payment_id.ilike(search_pattern),
                     UserSubscription.subject.ilike(search_pattern),
@@ -703,18 +711,19 @@ def admin_get_subscription_history():
         results = query.order_by(UserSubscription.created_at.desc()).offset((page - 1) * limit).limit(limit).all()
 
         transactions = []
-        for sub, user, student in results:
+        for sub, parent_user, student_user, student in results:
+            student_display_name = student_user.name if student_user else (parent_user.name if parent_user else "Student")
             transactions.append({
                 "id": sub.id,
                 "userId": sub.user_id,
-                "parentName": user.name if user else "N/A",
-                "parentEmail": user.email if user else "N/A",
+                "parentName": parent_user.name if parent_user else "N/A",
+                "parentEmail": parent_user.email if parent_user else "N/A",
                 "studentId": sub.student_id,
-                "studentName": student.name if student else (user.name if user else "Student"),
+                "studentName": student_display_name,
                 "board": sub.board,
                 "classGrade": sub.class_grade,
                 "subject": sub.subject,
-                "amountPaid": float(sub.amount_paid),
+                "amountPaid": float(sub.amount_paid) if sub.amount_paid is not None else 0.0,
                 "currency": sub.currency,
                 "razorpayOrderId": sub.razorpay_order_id,
                 "razorpayPaymentId": sub.razorpay_payment_id,

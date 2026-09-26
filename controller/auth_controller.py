@@ -529,44 +529,11 @@ def reset_password():
 
 
 def admin_reset_password():
+    """Securely resets admin password requiring 6-digit email OTP verification."""
     payload = request.get_json(force=True, silent=True) or {}
-    require_fields(payload, ["email", "newPassword"])
-
-    email = payload["email"].strip()
-    new_password = payload["newPassword"]
-
-    if len(new_password) < 6:
-        raise AppError("WEAK_PASSWORD", "Password must be at least 6 characters.", 400)
-
-    with get_session() as session:
-        user = session.query(User).filter((User.email == email) | (User.name == email) | (User.username == email)).first()
-        if not user:
-            raise AppError("NOT_FOUND", "Admin account not found", 404)
-
-        if user.role_id != 4:
-            raise UnauthorizedError("Password reset only available for admin accounts here", code="FORBIDDEN_ROLE")
-
-        user.password_hash = hash_password(new_password)
-        user.updated_at = now_ist()
-        session.commit()
-
-        if user.email:
-            send_password_changed_email(
-                to_email=user.email,
-                name=user.name,
-                username=user.username,
-                role_name="Admin",
-            )
-
-        log_audit(
-            session,
-            action="ADMIN_PASSWORD_RESET",
-            user_id=user.id,
-            entity_type="USER",
-            entity_id=str(user.id),
-        )
-
-        return success({"reset": True}, message="Password updated successfully. A confirmation email has been sent.")
+    if "email" in payload and "identifier" not in payload:
+        payload["identifier"] = payload["email"]
+    return reset_password()
 
 
 def google_auth():
@@ -602,7 +569,7 @@ def google_auth():
         import requests
         try:
             res = requests.get(
-                "https://www.googleapis.com/oauth2/v3/userinfo",
+                config.GOOGLE_USERINFO_URL,
                 headers={"Authorization": f"Bearer {token_str}"},
                 timeout=10
             )
