@@ -273,6 +273,18 @@ def sanitize_question_item(
         except Exception:
             extracted_marks = None
 
+    corr = str(q.get("correct_answer") or "").strip()
+
+    # Smart Sentence Merger: If question text is just an instruction and correct_answer has the sentence/blank
+    if re.search(r"^(?:(?:A|B|C|D|Q\d+)?\.?\s*)?(?:complete\s+the\s+sentence|fill\s+in\s+the\s+blank|choose\s+the\s+correct\s+word|state\s+whether|give\s+one\s+word|change\s+the\s+tense)", q_text, re.IGNORECASE):
+        if "_" in corr or ("(" in corr and ")" in corr and len(corr.split()) >= 3):
+            q_text = f"{q_text.rstrip('. :')}: {corr}"
+            bracket_match = re.search(r'\(([^)]+)\)', corr)
+            if bracket_match:
+                corr = bracket_match.group(1).strip()
+            else:
+                corr = "Refer to the completed sentence."
+
     raw_type = str(q.get("type") or default_type or "MCQ").strip().upper()
     if "CASE" in raw_type:
         resolved_type = "CASE STUDY"
@@ -331,22 +343,25 @@ def sanitize_question_item(
                     clean_opt_list.append(opt_val)
             clean_opts = clean_opt_list
 
-        # Ensure standard prefix A), B), C), D)
-        formatted_opts = []
-        for opt_idx, opt_val in enumerate(clean_opts[:4]):
-            prefix = chr(65 + opt_idx)  # A, B, C, D
-            if not re.match(r"^[A-D][\)\.\:\s]", opt_val, re.IGNORECASE):
-                formatted_opts.append(f"{prefix}) {opt_val}")
-            else:
-                formatted_opts.append(opt_val)
-        if len(formatted_opts) < 2:
-            formatted_opts = ["A) Option A", "B) Option B", "C) Option C", "D) Option D"]
-        clean_opts = formatted_opts
+        # Check for dummy options
+        is_dummy = any(re.match(r"^(?:[A-D]\s*[\)\.\:\-]\s*)?option\s*[A-D]?$", opt, re.IGNORECASE) for opt in clean_opts)
+        if len(clean_opts) < 2 or is_dummy:
+            resolved_type = "OBJECTIVE"
+            clean_opts = []
+        else:
+            # Ensure standard prefix A), B), C), D)
+            formatted_opts = []
+            for opt_idx, opt_val in enumerate(clean_opts[:4]):
+                prefix = chr(65 + opt_idx)  # A, B, C, D
+                if not re.match(r"^[A-D][\)\.\:\s]", opt_val, re.IGNORECASE):
+                    formatted_opts.append(f"{prefix}) {opt_val}")
+                else:
+                    formatted_opts.append(opt_val)
+            clean_opts = formatted_opts
     else:
         clean_opts = []
 
     # Clean correct_answer
-    corr = str(q.get("correct_answer") or "").strip()
     if resolved_type in ["MCQ", "ASSERTION REASON"] and clean_opts and corr:
         match_prefix = re.match(r"^([A-D])[\)\.\:\s]", corr, re.IGNORECASE)
         if match_prefix:

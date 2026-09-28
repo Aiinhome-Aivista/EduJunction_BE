@@ -67,9 +67,12 @@ def validate_question_quality(q: Dict[str, Any], requested_subject: Optional[str
     if len(q_text) < 10:
         return False, f"Question text too short ({len(q_text)} chars)"
 
-    # Detect broken fragments (e.g. 'Explain the principle:' without substance)
+    # Detect broken fragments (e.g. 'Explain the principle:' without substance or ending with hanging prepositions/articles)
     if re.search(r"^(?:explain\s+the\s+principle\s*:\s*|state\s+whether\s*:\s*|calculate\s*:\s*)$", q_text, re.IGNORECASE):
         return False, "Question is an incomplete prompt prefix"
+
+    if re.search(r"\b(?:complete\s+the|to\s+the|of\s+the|in\s+the|at\s+the|for\s+the|is\s+a|is\s+an|is\s+the|are\s+the|such\s+as|like\s+a)\s*[\?\.\:]*$", q_text, re.IGNORECASE):
+        return False, "Question ends abruptly with a truncated sentence fragment"
 
     # 1. Missing Image / Diagram check
     has_image = bool(q.get("image_url") or q.get("imageUrl") or q.get("image") or q.get("has_image"))

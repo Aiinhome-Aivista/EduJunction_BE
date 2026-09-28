@@ -357,23 +357,22 @@ def _fetch_questions_from_db(
                     options_list = [opt.strip() for opt in raw_options.split("|") if opt.strip()]
 
         raw_type = str(q.get("question_type", "mcq")).lower()
-        raw_marks = int(q.get("marks", 1))
+        has_real_options = bool(options_list and isinstance(options_list, list) and len(options_list) >= 2)
 
-        if "saq" in raw_type or "short" in raw_type or raw_marks == 2:
-            final_type = "saq"
-            final_marks = 2
-        elif "num" in raw_type:
-            final_type = "numerical"
-            final_marks = 1
-        elif "logic" in raw_type:
-            final_type = "logical"
-            final_marks = 1
-        elif "obj" in raw_type and not options_list:
-            final_type = "objective"
-            final_marks = 1
-        else:
+        if has_real_options:
             final_type = "mcq"
             final_marks = 1
+        else:
+            options_list = None
+            if "num" in raw_type:
+                final_type = "numerical"
+                final_marks = 1
+            elif "obj" in raw_type:
+                final_type = "objective"
+                final_marks = 1
+            else:
+                final_type = "saq"
+                final_marks = 2
 
         formatted_questions.append({
             "id": q.get("question_id") or q.get("id"),
@@ -495,23 +494,38 @@ def generate_exam(
     # Determine class-based marks blueprint
     tier = _get_grade_tier(class_grade)
     cg_lower = (class_grade or "").lower()
+    is_assigned_challenge = bool(is_assigned)
 
-    if tier == "kid":
-        default_q_count = 5
-        default_grade_marks = 5
+    ref_links = matching_runbooks[0].curated_reference_urls if matching_runbooks else []
+
+    if is_assigned_challenge:
+        # Parent Challenge: target_count questions, ALL 100% Genuine MCQs (1 Mark each)
+        target_question_count = question_count or 10
+        target_mcq_count = target_question_count
+        target_saq_count = 0
+        target_total_marks = target_question_count * 1
+        default_duration_mins = max(10, target_question_count * 1)
+    elif tier == "kid":
+        # Class 1-4: Exactly 5 MCQs (1 Mark each) = 5 Marks Total
+        target_question_count = 5
+        target_mcq_count = 5
+        target_saq_count = 0
+        target_total_marks = 5
         default_duration_mins = 10
     elif tier == "senior":
-        default_q_count = cfg_q_count
-        default_grade_marks = cfg_marks
-        default_duration_mins = cfg_duration
+        # Class 11-12 / NEET / IIT: Exactly 10 Questions (2 Marks each) = 20 Marks Total
+        target_question_count = 10
+        target_mcq_count = 5
+        target_saq_count = 5
+        target_total_marks = 20
+        default_duration_mins = 25
     else:
-        # Class 5 to 10
-        default_q_count = cfg_q_count
-        default_grade_marks = cfg_marks
-        default_duration_mins = cfg_duration
-
-    is_assigned_challenge = bool(is_assigned)
-    target_question_count = question_count or default_q_count
+        # Class 5 to 10: Exactly 10 Questions = 15 Marks Total (5 MCQs @ 1 Mark + 5 SAQs @ 2 Marks)
+        target_question_count = 10
+        target_mcq_count = 5
+        target_saq_count = 5
+        target_total_marks = 15
+        default_duration_mins = cfg_duration or 15
 
     # ------------------------------------------------------------
     # 1. Primary Generation Layer: Relational Database Question Bank
@@ -524,141 +538,89 @@ def generate_exam(
         difficulty=difficulty,
         chapter_topic=chapter_topic,
         student_id=student_id,
-        target_count=target_question_count,
+        target_count=target_question_count * 2,
     )
-    db_count = len(db_questions)
-    questions_data = list(db_questions)
     source = "rag-engine-curated"
     llm_used = False
 
-    # If DB questions found, slice or supplement
-    if questions_data and len(questions_data) > target_question_count:
-        questions_data = questions_data[:target_question_count]
+    # Separate DB pool into genuine MCQs (options >= 2) and SAQs (no options)
+    db_mcq_pool = [q for q in db_questions if q.get("options") and isinstance(q.get("options"), list) and len(q.get("options")) >= 2]
+    db_saq_pool = [q for q in db_questions if not (q.get("options") and isinstance(q.get("options"), list) and len(q.get("options")) >= 2)]
 
-    # ------------------------------------------------------------
-    # 2. Secondary Layer: LLM + RAG (kept inactive during initial launch)
-    # ------------------------------------------------------------
-    USE_LLM_LAYER = False
-    if (not questions_data or len(questions_data) < target_question_count) and USE_LLM_LAYER and mistral_client.is_configured():
-        try:
-            user_prompt = exam_generation_prompt.build_user_prompt(
-                board=board, class_grade=class_grade, subject=subject, difficulty=difficulty,
-                student_name=student_name, weak_topics=weak_topics, rag_context=rag_context,
-            )
-            raw = mistral_client.generate_json(exam_generation_prompt.SYSTEM_PROMPT, user_prompt)
-            validated = GeneratedExamSchema.model_validate(raw)
-            questions_data = [q.model_dump() for q in validated.questions][:target_question_count]
-            source = "mistral-rag"
-            llm_used = True
-        except (mistral_client.MistralUnavailableError, PydanticValidationError) as exc:
-            logger.error(f"Exam generation via Mistral failed, using fallback: {exc}")
-
-    # ------------------------------------------------------------
-    # 3. Deterministic Fallback Bank (Safety backup / full question complement)
-    # ------------------------------------------------------------
-    fallback_used = False
-    if not questions_data or len(questions_data) < target_question_count:
-        ref_links = matching_runbooks[0].curated_reference_urls if matching_runbooks else []
-        fallback_qs = fallback_exam_bank.build_fallback_questions(
+    # 1. Fill MCQ Slots
+    final_mcq_list = list(db_mcq_pool[:target_mcq_count])
+    if len(final_mcq_list) < target_mcq_count:
+        needed_mcqs = target_mcq_count - len(final_mcq_list)
+        fb_mcqs = fallback_exam_bank.build_fallback_questions(
             board=board,
             subject=subject,
             difficulty=difficulty,
             ref_links=ref_links,
             class_grade=class_grade,
-            limit=target_question_count,
-            force_mcq=is_assigned_challenge,
+            limit=needed_mcqs * 2,
+            force_mcq=True,
         )
-        fallback_used = True
-        if not questions_data:
-            questions_data = fallback_qs
-        else:
-            # Supplement remaining needed
-            needed = target_question_count - len(questions_data)
-            questions_data.extend(fallback_qs[:needed])
-
-    # Re-index questionNumber
-    for idx, q in enumerate(questions_data):
-        q["questionNumber"] = idx + 1
-
-    fallback_count = max(0, len(questions_data) - db_count)
-
-    # Determine visual source label for terminal tracking
-    if db_count >= len(questions_data):
-        source_label = f"DATABASE ({db_count}/{len(questions_data)} from question_master)"
-    elif llm_used:
-        source_label = f"LLM ({len(questions_data)} from AI Engine)"
-    elif db_count == 0:
-        source_label = f"FALLBACK_EXAM_BANK (0 from Database + {fallback_count} from fallback_exam_bank.py)"
-    else:
-        source_label = f"HYBRID ({db_count} from Database + {fallback_count} from Fallback)"
-
-    # If parent assigned challenge, enforce 100% MCQ format (1 mark each)
-    if is_assigned_challenge:
-        for q in questions_data:
-            q["type"] = "mcq"
-            q["marks"] = 1
-        calculated_marks = len(questions_data)
-        exam_title = title or f"{class_grade} {board} {subject} ({difficulty.upper()}) Assigned {calculated_marks}-Mark Challenge"
-    else:
-        # Standard Diagnostic Blueprint:
-        # Class 1-4: 5 MCQs (1 Mark each) = 5 Marks Total
-        # Class 5-10: 5 MCQs (1 Mark each) + 5 SAQs (2 Marks each) = 15 Marks Total
-        # Class 11-12/NEET/IIT: 10 Questions (2 Marks each) = 20 Marks Total
-        if tier == "kid":
-            for q in questions_data:
-                q["marks"] = 1
-                q["type"] = "mcq"
-        elif tier == "senior":
-            for q in questions_data:
-                q["marks"] = 2
-        else:
-            # Class 5 to 10
-            for idx, q in enumerate(questions_data):
-                if idx < 5:
-                    q["marks"] = 1
-                    q["type"] = "mcq"
-                else:
-                    q["marks"] = 2
-                    q["type"] = "saq"
-                    q["options"] = None
-
-    # ------------------------------------------------------------
-    # 4. Mandatory Quality & Sanity Layer: AI Auditor & Polisher
-    # ------------------------------------------------------------
-    questions_data, is_llm_verified = llm_audit_and_curate_questions(
-        questions=questions_data,
-        board=board,
-        class_grade=class_grade,
-        subject=subject,
-        difficulty=difficulty,
-        target_count=target_question_count,
-        force_mcq=is_assigned_challenge,
-    )
-
-    # ------------------------------------------------------------
-    # 5. Guarantee Full Target Count (Refill if any were dropped)
-    # ------------------------------------------------------------
-    if len(questions_data) < target_question_count:
-        needed = target_question_count - len(questions_data)
-        ref_links = matching_runbooks[0].curated_reference_urls if matching_runbooks else []
-        supplemental_qs = fallback_exam_bank.build_fallback_questions(
-            board=board,
-            subject=subject,
-            difficulty=difficulty,
-            ref_links=ref_links,
-            class_grade=class_grade,
-            limit=needed * 2,
-            force_mcq=is_assigned_challenge,
-        )
-        existing_texts = {q.get("questionText", "") for q in questions_data}
-        added = 0
-        for sq in supplemental_qs:
-            if sq.get("questionText") not in existing_texts:
-                sq["origin"] = "fallback"
-                questions_data.append(sq)
-                added += 1
-                if added >= needed:
+        existing_texts = {q.get("questionText", "") for q in final_mcq_list}
+        for fb_q in fb_mcqs:
+            if fb_q.get("questionText") not in existing_texts and fb_q.get("options") and len(fb_q.get("options", [])) >= 2:
+                fb_q["origin"] = "fallback"
+                final_mcq_list.append(fb_q)
+                if len(final_mcq_list) >= target_mcq_count:
                     break
+
+    # 2. Fill SAQ Slots (if any)
+    final_saq_list = list(db_saq_pool[:target_saq_count])
+    if len(final_saq_list) < target_saq_count:
+        # Convert extra DB MCQs to SAQs if available
+        unused_mcqs = [q for q in db_mcq_pool if q not in final_mcq_list]
+        for q in unused_mcqs:
+            q_copy = dict(q)
+            q_copy["options"] = None
+            q_copy["type"] = "saq"
+            final_saq_list.append(q_copy)
+            if len(final_saq_list) >= target_saq_count:
+                break
+
+    if len(final_saq_list) < target_saq_count:
+        needed_saqs = target_saq_count - len(final_saq_list)
+        fb_saqs = fallback_exam_bank.build_fallback_questions(
+            board=board,
+            subject=subject,
+            difficulty=difficulty,
+            ref_links=ref_links,
+            class_grade=class_grade,
+            limit=needed_saqs * 2,
+            force_mcq=False,
+        )
+        existing_texts = {q.get("questionText", "") for q in final_saq_list}
+        for fb_q in fb_saqs:
+            if fb_q.get("questionText") not in existing_texts:
+                fb_q_copy = dict(fb_q)
+                fb_q_copy["options"] = None
+                fb_q_copy["type"] = "saq"
+                fb_q_copy["origin"] = "fallback"
+                final_saq_list.append(fb_q_copy)
+                if len(final_saq_list) >= target_saq_count:
+                    break
+
+    # 3. Assemble and apply exact blueprint marks
+    questions_data = []
+
+    # Add MCQs
+    for q in final_mcq_list[:target_mcq_count]:
+        q["type"] = "mcq"
+        if tier == "senior":
+            q["marks"] = 2
+        else:
+            q["marks"] = 1
+        questions_data.append(q)
+
+    # Add SAQs
+    for q in final_saq_list[:target_saq_count]:
+        q["type"] = "saq"
+        q["options"] = None
+        q["marks"] = 2
+        questions_data.append(q)
 
     # Re-index questionNumber and calculate final marks
     for idx, q in enumerate(questions_data):
@@ -666,7 +628,9 @@ def generate_exam(
 
     calculated_marks = sum(int(q.get("marks", 1)) for q in questions_data)
 
-    if not is_assigned_challenge:
+    if is_assigned_challenge:
+        exam_title = title or f"{class_grade} {board} {subject} ({difficulty.upper()}) Assigned {calculated_marks}-Mark Challenge"
+    else:
         if title:
             exam_title = title
         elif chapter_topic:
@@ -677,17 +641,22 @@ def generate_exam(
     # Compute 100% Dynamic Origins Breakdown
     final_db_count = sum(1 for q in questions_data if q.get("origin") == "db")
     final_fallback_count = sum(1 for q in questions_data if q.get("origin") == "fallback" or str(q.get("id", "")).startswith("fb_"))
-    final_ai_count = max(0, len(questions_data) - final_db_count - final_fallback_count)
 
     # Dynamic Source Label
     if final_db_count >= len(questions_data):
         source_label = f"DATABASE ({final_db_count}/{len(questions_data)} from question_master)"
     elif final_fallback_count >= len(questions_data):
         source_label = f"FALLBACK_EXAM_BANK ({final_fallback_count}/{len(questions_data)} from fallback_exam_bank.py)"
-    elif is_llm_verified and final_ai_count > 0:
-        source_label = f"AI ENGINE ({final_ai_count} AI Curated + {final_db_count} DB + {final_fallback_count} Fallback)"
     else:
         source_label = f"HYBRID ({final_db_count} from Database + {final_fallback_count} from Fallback)"
+
+    # Dynamic Quality Status Label
+    if final_db_count >= len(questions_data):
+        quality_label = "100% VERIFIED DATABASE CURRICULUM (Instant 0.05s Load)"
+    elif final_fallback_count >= len(questions_data):
+        quality_label = f"100% STANDARD FALLBACK BANK ({final_fallback_count} Pre-curated Questions)"
+    else:
+        quality_label = f"HYBRID CURATION ({final_db_count} Database + {final_fallback_count} Fallback Bank)"
 
     mcq_count = sum(1 for q in questions_data if q.get("type") == "mcq")
     saq_count = sum(1 for q in questions_data if q.get("type") == "saq")
@@ -700,8 +669,8 @@ def generate_exam(
     print(f">> Target    : {board} | {class_grade} | {subject} (Difficulty: {difficulty})")
     print(f">> Mode      : {'PARENT ASSIGNED CHALLENGE' if is_assigned_challenge else 'STUDENT DIAGNOSTIC BLUEPRINT'}")
     print(f">> SOURCE    : >>> {source_label} <<<")
-    print(f">> AI Guard  : {'>>> AI VERIFIED & POLISHED (Active) <<<' if is_llm_verified else '>>> RULE-BASED SANITY GUARD (Active) <<<'}")
-    print(f">> Breakdown : Database: {final_db_count} Qs | Fallback: {final_fallback_count} Qs | AI Curated: {final_ai_count} Qs | Total: {len(questions_data)} Qs")
+    print(f">> Quality   : >>> {quality_label} <<<")
+    print(f">> Breakdown : Database: {final_db_count} Qs | Fallback: {final_fallback_count} Qs | Total: {len(questions_data)} Qs")
     print(f">> Types     : {mcq_count} MCQs @ 1M, {saq_count} SAQs @ 2M{f', {other_count} Other' if other_count > 0 else ''}")
     print(f">> Marks     : {calculated_marks} Marks Total | Time: {time_limit_minutes or default_duration_mins} Mins")
     print("=" * 78 + "\n")

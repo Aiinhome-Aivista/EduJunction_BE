@@ -271,7 +271,7 @@ def send_registration_email(
             🔒 <em>Security Tip: Keep your login credentials safe. You can change your password anytime from your profile settings.</em>
         </p>
 
-        <p><strong>Best regards,</strong><br>The EduJunction Team</p>
+        <p><strong>Best regards,</strong><br>Team EduJunction</p>
     """
 
     plain_text = (
