@@ -241,7 +241,7 @@ INSTRUCTION: Generate EXACTLY {count} distinct examination questions following t
 
         # ── Count Guarantee & Auto-Replenishment ──
         # If LLM generated fewer questions than requested, perform a targeted top-up call
-        if len(sanitized_questions) < count and count <= 20:
+        if len(sanitized_questions) < count and count <= 35:
             missing = count - len(sanitized_questions)
             logger.info(f"LLM generated {len(sanitized_questions)}/{count} questions. Running top-up for {missing} missing items.")
             topup_prompt = f"""The previous generation produced {len(sanitized_questions)} questions.

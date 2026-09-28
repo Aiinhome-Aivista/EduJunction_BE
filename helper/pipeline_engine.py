@@ -136,7 +136,11 @@ def perform_contextual_analysis(
 ) -> Dict[str, Any]:
     """Generates a fast, high-quality contextual analysis of the document and identifies subject & chapter accurately without hallucination."""
     raw_text = cleaned_text if cleaned_text is not None else text_content
-    excerpt = raw_text[:7000]
+    if len(raw_text) > 15000:
+        # Sample beginning + core chapter content to skip preface/copyright
+        excerpt = raw_text[:3500] + "\n\n...[Core Chapter Discussion]...\n\n" + raw_text[5000:10500]
+    else:
+        excerpt = raw_text[:8000]
 
     # Pre-fetch existing official chapters from MySQL for this (Board, Class, Subject)
     official_chapters: List[str] = []
@@ -150,7 +154,11 @@ def perform_contextual_analysis(
                 JOIN class_master c ON s.class_id = c.id
                 WHERE LOWER(TRIM(b.board_name)) = LOWER(TRIM(:b))
                   AND (LOWER(TRIM(c.class_name)) = LOWER(TRIM(:c)) OR LOWER(TRIM(REPLACE(c.class_name, 'Class ', ''))) = LOWER(TRIM(:c)))
-                  AND (LOWER(TRIM(s.subject_name)) = LOWER(TRIM(:s)) OR (LOWER(TRIM(:s)) = 'science' AND LOWER(TRIM(s.subject_name)) IN ('physics', 'chemistry', 'biology', 'science')))
+                  AND (
+                      LOWER(TRIM(s.subject_name)) = LOWER(TRIM(:s)) 
+                      OR (LOWER(TRIM(:s)) = 'science' AND LOWER(TRIM(s.subject_name)) IN ('physics', 'chemistry', 'biology', 'science'))
+                      OR (LOWER(TRIM(:s)) IN ('social science', 'social studies') AND LOWER(TRIM(s.subject_name)) IN ('history', 'geography', 'political science', 'civics', 'economics', 'social science', 'social studies'))
+                  )
                   AND ch.is_active = 1
                 ORDER BY ch.id ASC
             """)
@@ -161,25 +169,20 @@ def perform_contextual_analysis(
     chapters_ref_prompt = ""
     if official_chapters:
         chapters_ref_prompt = f"""
-Official Curriculum Chapters for this Subject:
+Official Curriculum Chapters for this Subject ({subject}):
 {json.dumps(official_chapters, indent=2)}
 
 ANTI-HALLUCINATION REQUIREMENT:
 - If the uploaded text matches one of the official curriculum chapters above, you MUST set "title" to the EXACT matching official chapter title from this list (do NOT invent new names or add Chapter numbers).
 """
 
-    system_prompt = f"""You are an expert curriculum auditor and senior board paper reviewer.
+    system_prompt = f"""You are an expert curriculum auditor and senior board paper reviewer for {board} {class_grade}.
+The user is uploading a textbook or exam document for the primary subject: "{subject}".
 Analyze the provided educational document excerpt and accurately determine:
-1. The EXACT, SPECIFIC educational subject/discipline of the document.
-   CRITICAL REQUIREMENT:
-   - For science topics, do NOT output generic "Science". You MUST specify the exact discipline:
-     • "Chemistry" (e.g. chemical reactions, acids, bases, salts, metals, carbon compounds, bonding, periodic table, mole concept, atoms, molecules, electrochemistry, organic chemistry)
-     • "Physics" (e.g. motion, force, gravitation, work, energy, sound, light, optics, electricity, magnetism, electromagnetic induction)
-     • "Biology" (e.g. life processes, cells, reproduction, genetics, heredity, evolution, ecology, anatomy, botany, zoology, photosynthesis, human physiology)
-   - For other subjects, output "Mathematics", "Social Studies", "English", or "Computer Science".
+1. The exact subject discipline. Note that sub-topics of {subject} (e.g. mechanics/optics for Physics/Science; organic/periodic for Chemistry/Science; botany/genetics for Biology/Science; history/civics/geography/economics for Social Science) are valid parts of {subject}.
 2. The core chapter or paper title.
 3. Summary of concepts covered.
-4. Specific key concept topics.{chapters_ref_prompt}"""
+4. Specific key concept topics (3-6 topics).{chapters_ref_prompt}"""
 
     user_prompt = f"""Document Metadata:
 - File Name: {filename}
@@ -196,37 +199,37 @@ Return strictly a JSON object with this exact structure:
 {{
   "title": "Clear Title of Chapter or Question Paper",
   "summary": "2-3 concise sentences summarizing the core content, concepts covered, and educational scope.",
-  "detected_subject": "Exact Specific Subject (Chemistry, Physics, Biology, Mathematics, Social Studies, English, or Computer Science - NEVER return generic 'Science' if specific discipline)",
-  "detected_topics": ["Topic 1", "Topic 2", "Topic 3"],
+  "detected_subject": "{subject}",
+  "detected_topics": ["Topic 1", "Topic 2", "Topic 3", "Topic 4"],
   "estimated_difficulty": "easy | medium | hard",
-  "recommended_question_count": 12
+  "recommended_question_count": 25
 }}
-Note: recommended_question_count MUST be between 10 (minimum) and 15 (maximum).
+Note: recommended_question_count should be between 20 (minimum) and 30 (maximum) for comprehensive chapter question bank generation.
 """
     try:
         res = mistral_client.generate_json(system_prompt, user_prompt, temperature=0.2, scenario="pdf_generation")
         if isinstance(res, dict) and "title" in res:
             rec_q = res.get("recommended_question_count")
             if isinstance(rec_q, (int, float)):
-                res["recommended_question_count"] = max(10, min(15, int(rec_q)))
+                res["recommended_question_count"] = max(15, min(35, int(rec_q)))
             else:
-                res["recommended_question_count"] = 12
+                res["recommended_question_count"] = 25
             return res
     except Exception as e:
         logger.warning(f"Contextual analysis LLM fallback: {e}")
 
     # Fallback contextual analysis with regex
-    meta = document_processor.detect_curriculum_metadata(raw_text[:3000])
+    meta = document_processor.detect_curriculum_metadata(raw_text[:4000])
     detected_sub = meta.get("subject") or subject
     first_lines = [line.strip() for line in raw_text.splitlines() if line.strip()][:5]
     guessed_title = first_lines[0] if first_lines else filename.rsplit(".", 1)[0]
     return {
         "title": guessed_title[:120],
-        "summary": f"Curriculum document for {board} {class_grade} {detected_sub} containing {len(raw_text)} characters.",
-        "detected_subject": detected_sub,
-        "detected_topics": [detected_sub, "General Concepts"],
+        "summary": f"Curriculum document for {board} {class_grade} {subject} containing {len(raw_text)} characters.",
+        "detected_subject": subject,
+        "detected_topics": [subject, "Core Concepts", "Applications"],
         "estimated_difficulty": "medium",
-        "recommended_question_count": 12,
+        "recommended_question_count": 25,
     }
 
 
@@ -482,19 +485,19 @@ CRITICAL INSTRUCTIONS:
                     })
 
     else:
-        # TEXTBOOK SYNTHESIS MODE
-        q_count = target_q_count or 12
+        # TEXTBOOK SYNTHESIS MODE (20 to 30 questions)
+        q_count = target_q_count or 25
         system_prompt = TEXTBOOK_QUESTION_PROMPT
         if len(cleaned_text) > 18000:
             doc_excerpt = (
                 cleaned_text[:9000]
-                + "\n\n...[Middle Concepts]...\n\n"
+                + "\n\n...[Middle Concepts & Problems]...\n\n"
                 + cleaned_text[len(cleaned_text) // 2 : len(cleaned_text) // 2 + 5000]
                 + "\n\n...[End Summaries & Exercises]...\n\n"
                 + cleaned_text[-5000:]
             )
         else:
-            doc_excerpt = cleaned_text[:15000]
+            doc_excerpt = cleaned_text[:16000]
 
         user_prompt = f"""Target Details:
 - Board: {board}
@@ -854,36 +857,30 @@ def process_curriculum_document_pipeline(
     # -------------------------------------------------------------------------
     # VALIDATION GATE: Check Subject Content Compatibility with Dropdown Target
     # -------------------------------------------------------------------------
-    if detected_subject and not document_processor.is_subject_compatible(subject, detected_subject):
-        concepts_str = ", ".join(detected_topics[:3]) if detected_topics else "unrelated domain"
-        error_msg = (
-            f"Content Mismatch: Uploaded document '{filename}' contains '{detected_subject}' content "
-            f"(Concepts: {concepts_str}), but you selected '{subject}' in the dropdown. "
-            f"Please change the dropdown Subject to '{detected_subject}' to process this file."
-        )
-        print(f"\n{TermColors.BOLD}\033[91m❌ [VALIDATION BLOCKED] {error_msg}{TermColors.END}")
-        raise ValidationError(error_msg)
+    if detected_subject and not document_processor.is_subject_compatible(subject, detected_subject, class_grade):
+        print(f"  • [AUTO-RECONCILED] Cross-disciplinary content '{detected_subject}' aligned to Admin target subject '{subject}'.")
+        detected_subject = subject
 
-    # Determine calibrated question count (min 10, max 15 questions per document/chapter)
+    # Determine calibrated question count (20-30 questions per document/chapter)
     rec_q = analysis.get("recommended_question_count")
-    if question_count and 10 <= int(question_count) <= 15:
+    if question_count and 15 <= int(question_count) <= 35:
         target_q_count = int(question_count)
-    elif rec_q and isinstance(rec_q, (int, float)) and 10 <= int(rec_q) <= 15:
+    elif rec_q and isinstance(rec_q, (int, float)) and 15 <= int(rec_q) <= 35:
         target_q_count = int(rec_q)
     else:
         # Dynamic calibration based on chapter text volume
         if char_count > 10000:
-            target_q_count = 15
+            target_q_count = 25
         elif char_count > 5000:
-            target_q_count = 13
+            target_q_count = 20
         else:
-            target_q_count = 10
+            target_q_count = 15
 
     print(f"  • Inferred Title  : {TermColors.BOLD}{title}{TermColors.END}")
     print(f"  • Inferred Subject: {TermColors.BOLD}{detected_subject or subject}{TermColors.END} (Target: {subject})")
     print(f"  • Detected Topics : {', '.join(detected_topics)}")
     print(f"  • Est. Difficulty : {est_diff.capitalize()}")
-    print(f"  • Target Questions: {TermColors.BOLD}{target_q_count}{TermColors.END} (Calibrated 10-15 per Chapter)")
+    print(f"  • Target Questions: {TermColors.BOLD}{target_q_count}{TermColors.END} (Comprehensive 20-30 per Chapter)")
     print(f"  • Overview Summary: {TermColors.CYAN}{summary}{TermColors.END}")
 
     # -------------------------------------------------------------------------
@@ -1186,24 +1183,18 @@ def extract_curriculum_questions_preview(
         elif not detected_subject:
             detected_subject = specific_sub or subject
 
-    if detected_subject and not document_processor.is_subject_compatible(subject, detected_subject):
-        concepts_str = ", ".join(detected_topics[:3]) if detected_topics else "unrelated domain"
-        error_msg = (
-            f"Content Mismatch: Uploaded document '{filename}' contains '{detected_subject}' content "
-            f"(Concepts: {concepts_str}), but you selected '{subject}' in the dropdown. "
-            f"Please change the dropdown Subject to '{detected_subject}' to process this file."
-        )
-        print(f"\n{TermColors.BOLD}\033[91m❌ [VALIDATION BLOCKED] {error_msg}{TermColors.END}")
-        raise ValidationError(error_msg)
+    if detected_subject and not document_processor.is_subject_compatible(subject, detected_subject, class_grade):
+        print(f"  • [BATCH AUTO-RECONCILED] Cross-disciplinary content '{detected_subject}' aligned to target subject '{subject}'.")
+        detected_subject = subject
 
-    # Calibrate Question Count
+    # Calibrate Question Count (20-30 questions per chapter)
     rec_q = analysis.get("recommended_question_count")
-    if question_count and 10 <= int(question_count) <= 25:
+    if question_count and 15 <= int(question_count) <= 35:
         target_q_count = int(question_count)
-    elif rec_q and isinstance(rec_q, (int, float)) and 10 <= int(rec_q) <= 25:
+    elif rec_q and isinstance(rec_q, (int, float)) and 15 <= int(rec_q) <= 35:
         target_q_count = int(rec_q)
     else:
-        target_q_count = 15 if char_count > 10000 else (13 if char_count > 5000 else 10)
+        target_q_count = 25 if char_count > 10000 else (20 if char_count > 5000 else 15)
 
     # 3. QUESTION DETECTION & EXTRACTION
     _print_step_header(3, f"QUESTION DETECTION & EXTRACTION ({document_type.upper()})", TermColors.BLUE)

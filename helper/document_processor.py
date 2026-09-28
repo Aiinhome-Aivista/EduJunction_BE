@@ -295,12 +295,70 @@ SUBJECT_PATTERNS = {
     "Computer Science": [
         r"\bcomputer\s+science\b", r"\binformatics\b", r"\bpython\b", r"\bdata\s+structures?\b",
         r"\bcoding\b", r"\bprogramming\b", r"\bdatabase\b", r"\bsql\b", r"\balgorithms?\b",
-        r"\bcyber\s+safety\b", r"\bcomputer\s+networks?\b"
+        r"\bcyber\s+safety\b", r"\bcomputer\s+networks?\b", r"\bcomputer\s+applications\b", r"\bit\b"
     ],
     "English": [
         r"\benglish\s+language\b", r"\benglish\s+literature\b", r"\benglish\s+grammar\b",
         r"\bfirst\s+flight\b", r"\bfootprints\s+without\s+feet\b", r"\bbeehive\b",
-        r"\bmoments\b", r"\bhoneydew\b", r"\bcomprehension\b", r"\bprose\b", r"\bpoetry\b"
+        r"\bmoments\b", r"\bhoneydew\b", r"\bcomprehension\b", r"\bprose\b", r"\bpoetry\b",
+        r"\bflamingo\b", r"\bvistas\b", r"\bhornbill\b", r"\bsnapshots\b", r"\bmarigold\b"
+    ],
+    "Hindi": [
+        r"\bhindi\b", r"\bhindi\s+literature\b", r"\bhindi\s+grammar\b", r"\bvyakaran\b",
+        r"\bkshitij\b", r"\bkritika\b", r"\bsparsh\b", r"\bsanchayan\b", r"\bvasant\b",
+        r"\brimjhim\b", r"\baroh\b", r"\bvitan\b", r"\bantra\b", r"\bantral\b",
+        r"\bsandhi\b", r"\bsamas\b", r"\bmuhavare\b", r"\bpatra\s+lekhan\b", r"\bnibandh\b",
+        r"[\u0900-\u097F]"  # Devanagari script presence
+    ],
+    "Bengali": [
+        r"\bbengali\b", r"\bbangla\b", r"\bbangla\s+sahitya\b", r"\bbyakaran\b",
+        r"[\u0980-\u09FF]"  # Bengali script presence
+    ],
+    "Sanskrit": [
+        r"\bsanskrit\b", r"\bsanskrith\b", r"\bshemushi\b", r"\bruchira\b", r"\bshloka\b",
+        r"\bshabda\s+roop\b", r"\bdhatu\s+roop\b", r"\bvibhakti\b"
+    ],
+    "Accountancy": [
+        r"\baccountancy\b", r"\baccounting\b", r"\baccounts?\b", r"\bjournal\s+entry\b",
+        r"\bledger\b", r"\btrial\s+balance\b", r"\bbalance\s+sheet\b", r"\bdepreciation\b",
+        r"\bpartnership\s+accounts?\b", r"\bgoodwill\b", r"\bshare\s+capital\b",
+        r"\bdebentures?\b", r"\bcash\s+flow\s+statement\b", r"\bfinancial\s+statements?\b",
+        r"\bratio\s+analysis\b", r"\baccounting\s+standards?\b"
+    ],
+    "Business Studies": [
+        r"\bbusiness\s+studies\b", r"\bbusiness\s+organization\b", r"\bcommerce\b",
+        r"\bprinciples\s+of\s+management\b", r"\bplanning\b", r"\borganising\b",
+        r"\bstaffing\b", r"\bdirecting\b", r"\bcontrolling\b", r"\bmarketing\s+management\b",
+        r"\bfinancial\s+management\b", r"\bfinancial\s+markets?\b", r"\bconsumer\s+protection\b"
+    ],
+    "Economics": [
+        r"\beconomics\b", r"\bmicroeconomics\b", r"\bmacroeconomics\b", r"\bnational\s+income\b",
+        r"\bmoney\s+and\s+banking\b", r"\bdemand\s+and\s+supply\b", r"\belasticity\b",
+        r"\bgdp\b", r"\binflation\b", r"\bfiscal\s+policy\b", r"\bmonetary\s+policy\b",
+        r"\bindian\s+economic\s+development\b", r"\bstatistics\s+for\s+economics\b"
+    ],
+    "Political Science": [
+        r"\bpolitical\s+science\b", r"\bpolitics\b", r"\bcivics\b", r"\bconstitution\b",
+        r"\bdemocracy\b", r"\bfederalism\b", r"\belection\b", r"\blegislature\b",
+        r"\bexecutive\b", r"\bjudiciary\b", r"\bpolitical\s+theory\b",
+        r"\bcontemporary\s+world\s+politics\b", r"\bindian\s+politics\b"
+    ],
+    "Physical Education": [
+        r"\bphysical\s+education\b", r"\bphys\s*ed\b", r"\byoga\b", r"\bsports\b",
+        r"\bfitness\b", r"\bnutrition\b", r"\bplanning\s+in\s+sports\b", r"\bbiomechanics\b",
+        r"\bexercise\s+physiology\b", r"\btraining\s+in\s+sports\b", r"\banatomy\s+and\s+physiology\b"
+    ],
+    "Geography": [
+        r"\bgeography\b", r"\bphysical\s+geography\b", r"\bhuman\s+geography\b",
+        r"\bresources\s+and\s+development\b", r"\bclimate\b", r"\bsoils?\b",
+        r"\bagriculture\b", r"\bminerals?\b", r"\bmanufacturing\s+industries\b",
+        r"\bpopulation\b", r"\bmap\s+work\b", r"\btopography\b"
+    ],
+    "History": [
+        r"\bhistory\b", r"\bancient\s+history\b", r"\bmedieval\s+history\b", r"\bmodern\s+history\b",
+        r"\bworld\s+history\b", r"\bharappan\s+civilisation\b", r"\bnationalism\s+in\s+india\b",
+        r"\bfrench\s+revolution\b", r"\brussian\s+revolution\b", r"\bindustrial\s+revolution\b",
+        r"\bcolonialism\b", r"\bmughal\s+empire\b", r"\bmurti\b", r"\btreaty\b"
     ],
     "Social Studies": [
         r"\bsocial\s+science\b", r"\bsocial\s+studies\b", r"\bhistory\b", r"\bgeography\b",
@@ -308,13 +366,17 @@ SUBJECT_PATTERNS = {
         r"\bcontemporary\s+india\b", r"\bindia\s+and\s+the\s+contemporary\s+world\b"
     ],
     "Science": [
-        r"\bscience\b", r"\bscientific\b", r"\bgeneral\s+science\b", r"\bnatural\s+science\b"
+        r"\bscience\b", r"\bscientific\b", r"\bgeneral\s+science\b", r"\bnatural\s+science\b",
+        r"\benvironmental\s+studies\b", r"\bevs\b", r"\bthe\s+world\s+around\s+us\b"
     ]
 }
 
 
-def is_subject_compatible(target_subject: str, detected_subject: str) -> bool:
-    """Checks whether detected subject is strictly compatible with target dropdown subject."""
+def is_subject_compatible(target_subject: str, detected_subject: str, class_grade: str = "") -> bool:
+    """Checks whether detected subject is compatible with target dropdown subject,
+
+    with full support for class tiers (Class 1-10 unified vs Class 11-12 split streams).
+    """
     t = (target_subject or "").strip().lower()
     d = (detected_subject or "").strip().lower()
 
@@ -323,55 +385,89 @@ def is_subject_compatible(target_subject: str, detected_subject: str) -> bool:
     if t == d:
         return True
 
-    # 1. Biology (Strict: Botany, Zoology, Life Science)
-    bio_synonyms = {"biology", "botany", "zoology", "life science", "life sciences", "bio"}
-    if t in bio_synonyms:
-        return d in bio_synonyms
+    # 1. Biology (Botanical, Zoological, Life Sciences)
+    bio_synonyms = {"biology", "botany", "zoology", "life science", "life sciences", "bio", "anatomy", "physiology"}
+    if t in bio_synonyms and d in bio_synonyms:
+        return True
 
-    # 2. Chemistry (Strict: Chemical Science, Organic/Inorganic)
+    # 2. Chemistry (Chemical sciences)
     chem_synonyms = {"chemistry", "chemical science", "organic chemistry", "inorganic chemistry", "physical chemistry", "chem"}
-    if t in chem_synonyms:
-        return d in chem_synonyms
+    if t in chem_synonyms and d in chem_synonyms:
+        return True
 
-    # 3. Physics (Strict: Physical Science, Applied Physics)
-    phys_synonyms = {"physics", "applied physics", "phys"}
-    if t in phys_synonyms:
-        return d in phys_synonyms
+    # 3. Physics (Physical sciences)
+    phys_synonyms = {"physics", "applied physics", "phys", "physical science"}
+    if t in phys_synonyms and d in phys_synonyms:
+        return True
 
-    # 4. Mathematics (Strict: Maths, Math, Algebra, Geometry, Calculus)
-    math_synonyms = {"mathematics", "math", "maths", "algebra", "geometry", "calculus", "applied mathematics", "pure mathematics"}
-    if t in math_synonyms:
-        return d in math_synonyms
+    # 4. Mathematics (Math, Calculus, Applied Math, Statistics)
+    math_synonyms = {"mathematics", "math", "maths", "algebra", "geometry", "calculus", "applied mathematics", "pure mathematics", "statistics"}
+    if t in math_synonyms and d in math_synonyms:
+        return True
 
-    # 5. Computer Science
-    cs_synonyms = {"computer science", "informatics", "informatics practices", "python", "computer", "information technology", "it", "ai", "artificial intelligence"}
-    if t in cs_synonyms:
-        return d in cs_synonyms
+    # 5. Computer Science / IT / Informatics
+    cs_synonyms = {"computer science", "informatics", "informatics practices", "python", "computer", "computer applications", "information technology", "it", "ai", "artificial intelligence"}
+    if t in cs_synonyms and d in cs_synonyms:
+        return True
 
-    # 6. Social Studies / Social Science
-    sst_synonyms = {"social studies", "social science", "history", "geography", "civics", "political science", "economics", "sst"}
-    if t in sst_synonyms:
-        return d in sst_synonyms
+    # 6. Languages (Hindi, Bengali, Sanskrit, English)
+    hindi_synonyms = {"hindi", "hindi literature", "hindi grammar", "vyakaran", "kshitij", "sparsh"}
+    if t in hindi_synonyms and d in hindi_synonyms:
+        return True
 
-    # 7. English
-    eng_synonyms = {"english", "english language", "english literature", "grammar"}
-    if t in eng_synonyms:
-        return d in eng_synonyms
+    bengali_synonyms = {"bengali", "bangla", "bangla sahitya"}
+    if t in bengali_synonyms and d in bengali_synonyms:
+        return True
 
-    # 8. General "Science" (Allowed for lower classes 1-10)
-    if t in {"science", "general science"}:
-        return d in {"science", "general science", "physics", "chemistry", "biology", "life science", "physical science"}
+    sanskrit_synonyms = {"sanskrit", "sanskrith", "shemushi", "ruchira"}
+    if t in sanskrit_synonyms and d in sanskrit_synonyms:
+        return True
+
+    eng_synonyms = {"english", "english language", "english literature", "grammar", "communicative english"}
+    if t in eng_synonyms and d in eng_synonyms:
+        return True
+
+    # 7. Commerce Stream (Accountancy, Business Studies, Economics)
+    commerce_synonyms = {"accountancy", "accounts", "business studies", "commerce", "commercial studies", "economics"}
+    if t in commerce_synonyms and (d in commerce_synonyms or d in math_synonyms or d in {"mathematics", "math"}):
+        return True
+    if t in {"accountancy", "accounts"} and d in {"accountancy", "accounts", "commerce", "mathematics"}:
+        return True
+    if t in {"business studies", "commerce"} and d in {"business studies", "commerce", "commercial studies", "management"}:
+        return True
+    if t == "economics" and d in {"economics", "microeconomics", "macroeconomics", "statistics", "social science", "social studies"}:
+        return True
+
+    # 8. Humanities / Arts Stream (History, Geography, Political Science, Civics, Economics)
+    arts_synonyms = {"history", "geography", "political science", "politics", "civics", "economics", "sociology", "psychology", "social studies", "social science", "sst"}
+    if t in arts_synonyms and d in arts_synonyms:
+        return True
+
+    # 9. Physical Education / Health / Sports
+    pe_synonyms = {"physical education", "health and physical education", "pe", "sports", "yoga", "fitness"}
+    if t in pe_synonyms and (d in pe_synonyms or d in bio_synonyms or d in {"biology", "human anatomy"}):
+        return True
+
+    # 10. Unified Science Tier (For Class 1-10 or generalized curricula)
+    science_cluster = {"science", "general science", "physics", "chemistry", "biology", "life science", "physical science", "environmental studies", "evs", "the world around us"}
+    if t in {"science", "general science", "environmental studies", "evs", "the world around us"} and d in science_cluster:
+        return True
+    if t in {"physics", "chemistry", "biology"} and d in {"science", "general science", "physical science", "life science"}:
+        return True
+
+    # 11. Unified Social Studies Tier
+    sst_cluster = {"social science", "social studies", "history", "geography", "civics", "political science", "economics", "sst", "democratic politics", "contemporary india"}
+    if t in {"social science", "social studies", "sst"} and d in sst_cluster:
+        return True
+    if t in {"history", "geography", "political science", "civics", "economics"} and d in {"social science", "social studies", "sst"}:
+        return True
 
     # Substring / partial match fallback
     if t in d or d in t:
         return True
 
-    # If the target subject is a custom subject not in the standard STEM taxonomy, accept it dynamically
-    standard_categories = bio_synonyms | chem_synonyms | phys_synonyms | math_synonyms | cs_synonyms | sst_synonyms | eng_synonyms | {"science", "general science"}
-    if t not in standard_categories:
-        return True
-
-    return False
+    # Non-standard / custom subjects: Admin choice trusted
+    return True
 
 
 def detect_curriculum_metadata(sample_text: str = "") -> dict:
