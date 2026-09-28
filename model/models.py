@@ -576,6 +576,7 @@ class Blog(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     title = Column(String(255), nullable=False)
+    slug = Column(String(255), nullable=True, index=True)
     author_id = Column(Integer, ForeignKey("author_master.id"), nullable=False)
     category_id = Column(Integer, ForeignKey("category_master.id"), nullable=False)
     introduction = Column(Text, nullable=True)
@@ -798,4 +799,4 @@ class SeoMetadata(Base):
 
 
 
-
+

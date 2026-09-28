@@ -275,6 +275,7 @@ def blog_to_dict(blog: Blog) -> dict:
     return {
         "id": blog.id,
         "title": blog.title,
+        "slug": blog.slug or "",
         "heading": blog.title,
         "introduction": blog.introduction or "",
         "content": blog.content or "",

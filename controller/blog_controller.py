@@ -20,6 +20,19 @@ from utils.serializers import blog_to_dict, category_to_dict, author_to_dict, no
 from utils.validators import require_fields
 from utils.audit_helper import log_audit
 
+import re
+import unicodedata
+
+def generate_slug(text: str) -> str:
+    """
+    Example: "My First Blog Post! #2026" -> "my-first-blog-post-2026"
+    """
+    if not text:
+        return ""
+    text = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode("utf-8")
+    text = re.sub(r"[^\w\s-]", "", text).strip().lower()
+    return re.sub(r"[-\s]+", "-", text)
+
 
 def _admin_required(fn):
     """Permits authenticated ADMIN/SUPER_ADMIN, or falls back gracefully in development mode."""
@@ -222,6 +235,7 @@ def create_blog():
     require_fields(payload, ["title"])
 
     title = str(payload["title"]).strip()
+    slug = generate_slug(title).strip()
     heading = str(payload.get("heading") or title).strip()
     introduction = str(payload.get("introduction") or "").strip()
     content = str(payload.get("content") or "").strip()
@@ -237,6 +251,7 @@ def create_blog():
 
         blog = Blog(
             title=title,
+            slug=slug,
             introduction=introduction,
             content=content,
             image_url=image_url,
@@ -286,6 +301,7 @@ def update_blog(blog_id: int):
             if not clean_title:
                 raise ValidationError("Blog title cannot be empty")
             blog.title = clean_title
+            blog.slug = generate_slug(clean_title).strip()
 
         if "introduction" in payload:
             blog.introduction = str(payload.get("introduction") or "").strip()
