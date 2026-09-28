@@ -40,6 +40,7 @@ def init_subscription_columns():
         with get_session() as session:
             from sqlalchemy import text
             for col_def in [
+                "ALTER TABLE user_subscriptions ADD COLUMN contact_phone VARCHAR(20) NULL",
                 "ALTER TABLE user_subscriptions ADD COLUMN score_obtained DECIMAL(10,2) NULL",
                 "ALTER TABLE user_subscriptions ADD COLUMN total_marks DECIMAL(10,2) DEFAULT 80.00",
                 "ALTER TABLE user_subscriptions ADD COLUMN accuracy_percentage DECIMAL(5,2) NULL",
@@ -124,6 +125,7 @@ def create_subject_order():
     student_id = payload.get("studentId") or payload.get("student_id")
     plan_id = payload.get("planId")
     quantity = max(1, min(10, int(payload.get("quantity", 1))))
+    contact_phone = str(payload.get("contactPhone") or payload.get("phone") or payload.get("contact") or "").strip()
 
     if not board or not class_grade or not subject:
         raise ValidationError("Board, Class Grade, and Subject are required")
@@ -180,6 +182,7 @@ def create_subject_order():
                             "quantity": str(quantity),
                             "user_id": str(user_id),
                             "student_id": str(student_id) if student_id else "",
+                            "contact_phone": contact_phone,
                         }
                     },
                     timeout=10
@@ -204,6 +207,7 @@ def create_subject_order():
             amount_paid=total_amount_rupees,
             currency="INR",
             razorpay_order_id=order_id,
+            contact_phone=contact_phone or None,
             status="PENDING",
             exam_status="UNATTEMPTED",
             start_date=now_ist(),
@@ -230,9 +234,11 @@ def create_subject_order():
             "board": board,
             "classGrade": class_grade,
             "subject": subject,
+            "contactPhone": contact_phone,
             "prefill": {
                 "name": user_name,
                 "email": user_email,
+                "contact": contact_phone,
             }
         }, 201)
 
@@ -250,6 +256,7 @@ def verify_subject_payment():
     subject = str(payload.get("subject", "Mathematics")).strip()
     student_id = payload.get("studentId") or payload.get("student_id")
     quantity = max(1, min(10, int(payload.get("quantity", 1))))
+    contact_phone = str(payload.get("contactPhone") or payload.get("phone") or payload.get("contact") or "").strip()
 
     user_id = g.current_user_id
     role = getattr(g, "current_user_role", "").upper()
@@ -266,6 +273,25 @@ def verify_subject_payment():
             ).hexdigest()
 
             if generated_signature != signature:
+                try:
+                    from controller.email_controller import send_payment_failed_email
+                    with get_session() as session:
+                        usr = session.get(User, user_id)
+                        if usr and usr.email:
+                            send_payment_failed_email(
+                                usr.email,
+                                usr.name or "Student / Parent",
+                                {
+                                    "board": board,
+                                    "class_grade": class_grade,
+                                    "subject": subject,
+                                    "amount_paid": float(300.0 * quantity),
+                                    "order_id": order_id,
+                                },
+                                failure_reason="Security signature verification failed."
+                            )
+                except Exception:
+                    pass
                 raise ValidationError("Payment signature verification failed")
         except ValidationError:
             raise
@@ -305,11 +331,18 @@ def verify_subject_payment():
         if pending_sub:
             if pending_sub.student_id and not student_id:
                 student_id = pending_sub.student_id
+            if not contact_phone and pending_sub.contact_phone:
+                contact_phone = pending_sub.contact_phone
             if pending_sub.model_test_id and pending_sub.model_test_id.startswith("QTY_"):
                 try:
                     quantity = int(pending_sub.model_test_id.replace("QTY_", ""))
                 except Exception:
                     pass
+
+        # Determine unit price and total dynamic amount
+        plan = session.get(SubscriptionPlan, pending_sub.plan_id) if (pending_sub and pending_sub.plan_id) else None
+        unit_price = float(plan.price_inr) if plan else 300.00
+        total_amount = unit_price * quantity
 
         created_subscriptions = []
 
@@ -319,8 +352,9 @@ def verify_subject_payment():
             pending_sub.student_id = student_id or pending_sub.student_id
             pending_sub.razorpay_payment_id = payment_id
             pending_sub.razorpay_signature = signature or "verified_checkout"
+            pending_sub.contact_phone = contact_phone or pending_sub.contact_phone
             pending_sub.status = "ACTIVE"
-            pending_sub.amount_paid = 300.00
+            pending_sub.amount_paid = unit_price
             pending_sub.model_test_id = f"{board}_{class_grade}_{subject}_SET_{start_set}".replace(" ", "_")
             created_subscriptions.append(pending_sub)
         else:
@@ -331,11 +365,12 @@ def verify_subject_payment():
                 class_grade=class_grade,
                 subject=subject,
                 model_test_id=f"{board}_{class_grade}_{subject}_SET_{start_set}".replace(" ", "_"),
-                amount_paid=300.00,
+                amount_paid=unit_price,
                 currency="INR",
                 razorpay_order_id=order_id or f"order_{uuid.uuid4().hex[:10]}",
                 razorpay_payment_id=payment_id,
                 razorpay_signature=signature or "verified_checkout",
+                contact_phone=contact_phone or None,
                 status="ACTIVE",
                 exam_status="UNATTEMPTED",
                 start_date=now_ist(),
@@ -354,11 +389,12 @@ def verify_subject_payment():
                 class_grade=class_grade,
                 subject=subject,
                 model_test_id=f"{board}_{class_grade}_{subject}_SET_{next_set}".replace(" ", "_"),
-                amount_paid=300.00,
+                amount_paid=unit_price,
                 currency="INR",
                 razorpay_order_id=order_id or f"order_{uuid.uuid4().hex[:10]}",
                 razorpay_payment_id=payment_id,
                 razorpay_signature=signature or "verified_checkout",
+                contact_phone=contact_phone or None,
                 status="ACTIVE",
                 exam_status="UNATTEMPTED",
                 start_date=now_ist(),
@@ -367,11 +403,17 @@ def verify_subject_payment():
             session.add(extra_sub)
             created_subscriptions.append(extra_sub)
 
-        # Dispatch notification to student if student_id is set
+        # Fetch user and student info for notifications and emails
+        user = session.get(User, user_id)
+        user_email = user.email if user else ""
+        user_name = user.name if user else "Student / Parent"
+        target_student = session.get(Student, student_id) if student_id else None
+        student_name = target_student.user.name if (target_student and target_student.user) else user_name
+
+        # Dispatch in-app notification to student if student_id is set
         if student_id:
             try:
                 from controller.notification_controller import create_notification
-                stu = session.get(Student, student_id)
                 sets_str = f"{quantity} set{'s' if quantity > 1 else ''}"
                 first_sub_id = created_subscriptions[0].id if created_subscriptions else None
                 
@@ -396,11 +438,33 @@ def verify_subject_payment():
             except Exception as notif_err:
                 logger.warning(f"Failed to create student notification on subject subscription: {notif_err}")
 
+        # Dispatch dynamic payment confirmation email to Student/Parent and Company
+        if user_email:
+            try:
+                from controller.email_controller import send_payment_confirmation_email
+                order_details = {
+                    "order_id": order_id or (pending_sub.razorpay_order_id if pending_sub else "N/A"),
+                    "payment_id": payment_id,
+                    "board": board,
+                    "class_grade": class_grade,
+                    "subject": subject,
+                    "quantity": quantity,
+                    "amount_paid": total_amount,
+                    "currency": "INR",
+                    "contact_phone": contact_phone,
+                    "student_name": student_name,
+                    "parent_name": user_name,
+                }
+                send_payment_confirmation_email(user_email, user_name, order_details)
+            except Exception as email_err:
+                logger.warning(f"Failed to send payment confirmation email: {email_err}")
+
         session.commit()
 
         return success({
             "success": True,
             "quantity": quantity,
+            "amountPaid": total_amount,
             "message": f"Payment successful! {quantity} Full-Length Model Test Paper set{'s' if quantity > 1 else ''} for {board} {class_grade} {subject} are now unlocked.",
             "unlockedSets": [s.model_test_id for s in created_subscriptions]
         })
@@ -488,6 +552,7 @@ def get_user_subject_subscriptions():
                 "subject": s.subject,
                 "modelTestId": s.model_test_id,
                 "amount": float(s.amount_paid) if s.amount_paid else 300.00,
+                "contactPhone": s.contact_phone,
                 "razorpayOrderId": s.razorpay_order_id,
                 "razorpayPaymentId": s.razorpay_payment_id,
                 "status": s.status,
@@ -718,6 +783,7 @@ def admin_get_subscription_history():
                 "userId": sub.user_id,
                 "parentName": parent_user.name if parent_user else "N/A",
                 "parentEmail": parent_user.email if parent_user else "N/A",
+                "contactPhone": sub.contact_phone or (parent_user.phone_number if (parent_user and hasattr(parent_user, 'phone_number')) else None),
                 "studentId": sub.student_id,
                 "studentName": student_display_name,
                 "board": sub.board,

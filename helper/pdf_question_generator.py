@@ -15,36 +15,32 @@ from utils.logger import logger
 SYSTEM_PROMPT = """You are an expert curriculum designer and national board examiner (CBSE, ICSE, Cambridge, IIT-JEE, NEET).
 Your task is to analyze the provided curriculum document text and generate high-quality, pedagogically accurate examination questions.
 
-QUESTION TYPES:
-1. 'MCQ' (Multiple Choice): Provide exactly 4 options labeled 'A) ', 'B) ', 'C) ', 'D) '. 'correct_answer' must be the single letter ('A', 'B', 'C', or 'D'). Marks: 1.
+QUESTION TYPES & FORMATTING:
+1. 'MCQ' (Multiple Choice): Provide exactly 4 realistic, authentic options labeled 'A) ', 'B) ', 'C) ', 'D) '. 'correct_answer' must be the single letter ('A', 'B', 'C', or 'D'). Marks: 1.
+   CRITICAL: NEVER output dummy/placeholder options like 'Option A' or 'Option B'. If the source text is a fill-in-the-blank without 4 distinct choices, format it as 'OBJECTIVE' or 'SAQ', NOT 'MCQ'.
 2. 'SAQ' (Short Answer Question): Conceptual explanation, theorem statement, or 2-3 line answer. 'options' MUST be empty list []. 'correct_answer' is the clear concise model answer. Marks: 2 or 3.
 3. 'NUMERICAL': Quantitative calculation or formula derivation. 'options' MUST be empty list []. 'correct_answer' is the exact numerical value with units. 'explanation' must contain step-by-step solution. Marks: 3 or 5.
 4. 'OBJECTIVE': One-word answer, direct definition, or fill-in-the-blank. 'options' MUST be empty list []. 'correct_answer' is the direct word/phrase. Marks: 1.
 
-DIFFICULTY GUIDELINES:
-- 'simple': Direct memory recall, basic definition, direct formula identification (Foundational / Easy level).
-  NOTE: Even if the uploaded document/PDF mentions 'Easy', 'Basic', or 'Level 1', you MUST ALWAYS translate/output it as 'simple'.
-- 'medium': Conceptual understanding, application of principles, standard calculations (Standard / Intermediate level).
-- 'hard': HOTS (Higher Order Thinking Skills), multi-step problem solving, tricky traps, analytical synthesis (Advanced / Difficult level).
-
-CRITICAL RULES:
-1. Every question MUST be grounded strictly in the provided text.
-2. The output array 'questions' MUST contain EXACTLY the requested number of questions. Do NOT generate fewer.
-3. 'difficulty' must be one of: 'simple', 'medium', 'hard'. (Use 'simple' for Easy questions).
-4. Return strictly valid JSON object with a "questions" array. No Markdown or commentary outside JSON.
+CRITICAL EXTRACTION RULES:
+1. STANDALONE QUESTIONS: Every question MUST be complete and self-contained. NEVER output a bare instruction like 'Complete the sentence using past tense.' or 'Fill in the blank.' as the questionText. ALWAYS combine the instruction with the actual target sentence/problem (e.g. 'Complete the sentence with the correct past tense: Yesterday, the frog ____________ (jump) into the pond.').
+2. Every question MUST be grounded strictly in the provided text.
+3. The output array 'questions' MUST contain EXACTLY the requested number of questions. Do NOT generate fewer.
+4. 'difficulty' must be one of: 'simple', 'medium', 'hard'. (Use 'simple' for Easy questions).
+5. Return strictly valid JSON object with a "questions" array. No Markdown or commentary outside JSON.
 
 JSON Schema:
 {
   "questions": [
     {
-      "question": "State the relationship between electric current and drift velocity in a conductor.",
-      "type": "SAQ",
-      "difficulty": "medium",
-      "marks": 2,
+      "question": "Complete the sentence with the correct past tense form: Yesterday, the frog ____________ (jump) into the pond.",
+      "type": "OBJECTIVE",
+      "difficulty": "simple",
+      "marks": 1,
       "options": [],
-      "correct_answer": "I = n * e * A * v_d, where I is current, n is charge carrier density, e is electron charge, A is cross-sectional area, and v_d is drift velocity.",
-      "explanation": "Derived from the transport of charge carriers across unit cross section per unit time.",
-      "topic_suggested": "Current Electricity"
+      "correct_answer": "jumped",
+      "explanation": "The past tense of the regular verb 'jump' is 'jumped'.",
+      "topic_suggested": "Past Tense"
     }
   ]
 }
@@ -107,6 +103,20 @@ def _sanitize_single_question(q: dict, default_type: str, target_diff: str, meta
     if not q_text:
         return None
 
+    corr = str(q.get("correct_answer") or "").strip()
+
+    # Smart Sentence Merger: If question text is just an instruction and correct_answer has the sentence/blank
+    if re.search(r"^(?:(?:A|B|C|D|Q\d+)?\.?\s*)?(?:complete\s+the\s+sentence|fill\s+in\s+the\s+blank|choose\s+the\s+correct\s+word|state\s+whether|give\s+one\s+word|change\s+the\s+tense)", q_text, re.IGNORECASE):
+        if "_" in corr or ("(" in corr and ")" in corr and len(corr.split()) >= 3):
+            # Target sentence was mistakenly put into correct_answer!
+            q_text = f"{q_text.rstrip('. :')}: {corr}"
+            # Extract bracketed root or blank target as answer if possible
+            bracket_match = re.search(r'\(([^)]+)\)', corr)
+            if bracket_match:
+                corr = bracket_match.group(1).strip()
+            else:
+                corr = "Refer to the completed sentence."
+
     raw_type = str(q.get("type") or default_type or "MCQ").strip().upper()
     if raw_type in ["TRUE_FALSE", "TRUE/FALSE", "TF"]:
         resolved_type = "OBJECTIVE"
@@ -123,26 +133,29 @@ def _sanitize_single_question(q: dict, default_type: str, target_diff: str, meta
 
     # Clean options
     q_opts = q.get("options")
+    clean_opts = []
     if resolved_type == "MCQ":
         if isinstance(q_opts, list):
             clean_opts = [str(opt).strip() for opt in q_opts if str(opt).strip()]
         elif isinstance(q_opts, dict):
             clean_opts = [f"{k}) {v}" for k, v in q_opts.items()]
-        else:
+
+        # Reject dummy options like Option A / Option B
+        is_dummy = any(re.match(r"^(?:[A-D]\s*[\)\.\:\-]\s*)?option\s*[A-D]?$", opt, re.IGNORECASE) for opt in clean_opts)
+        if len(clean_opts) < 2 or is_dummy:
+            # Convert to OBJECTIVE or SAQ rather than putting broken dummy options
+            resolved_type = "OBJECTIVE"
             clean_opts = []
-        if len(clean_opts) < 2:
-            clean_opts = ["A) Option A", "B) Option B", "C) Option C", "D) Option D"]
     else:
         clean_opts = []
 
     # Clean correct_answer
-    corr = str(q.get("correct_answer") or "").strip()
     if resolved_type == "MCQ" and clean_opts and corr:
         match_prefix = re.match(r"^([A-D])[\)\.\:\s]", corr, re.IGNORECASE)
         if match_prefix:
             corr = match_prefix.group(1).upper()
 
-    # Determine calibrated difficulty with fallback/translation from any 'easy' label to DB-fitted 'simple'
+    # Determine calibrated difficulty
     raw_diff = q.get("difficulty")
     if target_diff and target_diff.lower() not in ["all", "mix", "any"]:
         final_difficulty = _normalize_difficulty(target_diff)

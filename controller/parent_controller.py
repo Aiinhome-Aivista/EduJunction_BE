@@ -19,7 +19,7 @@ from utils.security import hash_password
 from utils.serializers import student_to_child_account, submission_to_dict, learning_path_node_to_dict
 from utils.constants import BOARD_CLASS_MAPPING
 from utils.validators import require_fields, validate_board, validate_class_grade, validate_board_class, validate_username, validate_email
-from controller.email_controller import send_school_student_registered_email
+from controller.email_controller import send_school_student_registered_email, send_child_registration_email
 
 
 def get_child_registration_options():
@@ -421,7 +421,21 @@ def add_child():
             entity_id=str(student.id),
             request=request,
         )
-        session.commit()
+        # Send credentials email to parent
+        if parent_email:
+            try:
+                send_child_registration_email(
+                    to_parent_email=parent_email,
+                    parent_name=parent_user.name if parent_user else "Parent",
+                    child_name=name,
+                    child_username=username,
+                    child_password=password,
+                    class_grade=class_grade,
+                    board=target_board,
+                )
+            except Exception as email_err:
+                from utils.logger import logger
+                logger.warning(f"Failed to send child registration email to parent: {email_err}")
 
         # Send notification email to school if school_email provided
         if school_email:
