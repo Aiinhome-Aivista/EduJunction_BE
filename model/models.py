@@ -725,6 +725,7 @@ class UserSubscription(Base):
     currency = Column(String(10), default="INR")
     razorpay_order_id = Column(String(100), nullable=True)
     razorpay_payment_id = Column(String(100), nullable=True)
+    contact_phone = Column(String(20), nullable=True)
     razorpay_signature = Column(String(255), nullable=True)
     status = Column(String(50), default="ACTIVE")  # ACTIVE, ATTEMPTED, EXPIRED
     exam_status = Column(String(50), default="UNATTEMPTED")  # UNATTEMPTED, IN_PROGRESS, COMPLETED

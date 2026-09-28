@@ -217,23 +217,47 @@ def send_email(to_email: str) -> bool:
     return True
 
 
-def send_registration_email(to_email: str, name: str = "", username: str = "", role_name: str = "PARENT") -> bool:
-    """Sends a personalized welcome email upon successful account registration."""
-    display_name = name.strip() if name else "Learner"
-    subject = "Welcome to EduJunction! 🎓 Your Account is Ready"
+def send_registration_email(
+    to_email: str,
+    name: str = "",
+    username: str = "",
+    role_name: str = "PARENT",
+    password: str = "",
+    login_method: str = "Standard"
+) -> bool:
+    """Sends a personalized welcome email upon successful account registration including login credentials."""
+    if not to_email or not to_email.strip():
+        return False
 
-    username_info = f"<p><strong>Username:</strong> <code>{username}</code></p>" if username else ""
-    role_info = f"<p><strong>Role:</strong> {role_name.title()}</p>" if role_name else ""
+    display_name = name.strip() if name else "Learner"
+    subject = "Welcome to EduJunction! 🎓 Your Account Credentials"
+
+    username_info = f"<p style='margin: 4px 0;'><strong>Username:</strong> <code style='background: #e2e8f0; padding: 2px 6px; border-radius: 4px; font-weight: bold;'>{username}</code></p>" if username else ""
+    role_info = f"<p style='margin: 4px 0;'><strong>Account Type:</strong> {role_name.title()}</p>" if role_name else ""
+    
+    if password:
+        password_info = f"<p style='margin: 4px 0;'><strong>Password:</strong> <code style='background: #fef08a; color: #854d0e; padding: 2px 6px; border-radius: 4px; font-weight: bold;'>{password}</code></p>"
+    elif login_method == "Google":
+        password_info = "<p style='margin: 4px 0;'><strong>Login Method:</strong> <span style='color: #2563eb; font-weight: 600;'>Google 1-Click Sign-in</span> (No separate password required)</p>"
+    else:
+        password_info = ""
 
     content_html = f"""
-        <h2 style="color: #1e293b; margin-top: 0;">Welcome aboard, {display_name}! 🎉</h2>
+        <h2 style="color: #1e293b; margin-top: 0;">Welcome to EduJunction, {display_name}! 🎉</h2>
         <p>Thank you for joining <strong>EduJunction</strong>. Your account has been created successfully.</p>
         
-        <div class="card">
-            <h3 style="margin-top: 0; font-size: 15px; color: #334155;">📋 Account Details:</h3>
+        <div class="card" style="border-left: 4px solid #eab308; background: #fffbeb; padding: 18px 20px; border-radius: 10px; margin: 20px 0;">
+            <h3 style="margin-top: 0; font-size: 15px; color: #854d0e;">📋 Your Login Credentials:</h3>
             <p style="margin: 4px 0;"><strong>Email:</strong> {to_email}</p>
             {username_info}
+            {password_info}
             {role_info}
+        </div>
+
+        <div style="text-align: center; margin: 24px 0;">
+            <a href="https://www.edujunction.co.in/login" style="display: inline-block; background: #f59e0b; color: #ffffff; text-decoration: none; font-weight: bold; font-size: 14px; padding: 12px 28px; border-radius: 8px;">
+                🚀 Log In to Your Account
+            </a>
         </div>
 
         <p>With EduJunction, you can:</p>
@@ -243,20 +267,84 @@ def send_registration_email(to_email: str, name: str = "", username: str = "", r
             <li>Collaborate with teachers, parents, and students seamlessly.</li>
         </ul>
 
-        <p>Get started today and unlock the power of adaptive education!</p>
+        <p style="font-size: 12px; color: #64748b; margin-top: 20px;">
+            🔒 <em>Security Tip: Keep your login credentials safe. You can change your password anytime from your profile settings.</em>
+        </p>
+
         <p><strong>Best regards,</strong><br>The EduJunction Team</p>
     """
 
     plain_text = (
-        f"Welcome aboard, {display_name}!\n\n"
+        f"Welcome to EduJunction, {display_name}!\n\n"
         f"Thank you for registering on EduJunction.\n"
         f"Email: {to_email}\n"
         f"Username: {username}\n"
-        f"Role: {role_name}\n\n"
+        + (f"Password: {password}\n" if password else (f"Login Method: Google 1-Click Sign-in\n" if login_method == "Google" else ""))
+        + f"Role: {role_name}\n\n"
+        f"Log in here: https://www.edujunction.co.in/login\n\n"
         f"Best regards,\nThe EduJunction Team"
     )
 
     send_email_async(to_email, subject, content_html, plain_text)
+    return True
+
+
+def send_child_registration_email(
+    to_parent_email: str,
+    parent_name: str,
+    child_name: str,
+    child_username: str,
+    child_password: str,
+    class_grade: str,
+    board: str
+) -> bool:
+    """Sends student login credentials to parent upon creating a child account."""
+    if not to_parent_email or not to_parent_email.strip():
+        return False
+
+    display_parent = parent_name.strip() if parent_name else "Parent"
+    display_child = child_name.strip() if child_name else "Student"
+    subject = f"🎓 Student Profile Created for {display_child} - Login Credentials"
+
+    content_html = f"""
+        <h2 style="color: #1e293b; margin-top: 0;">Student Account Ready! 🎓</h2>
+        <p>Dear <strong>{display_parent}</strong>,</p>
+        <p>You have successfully registered a student profile for <strong>{display_child}</strong> on <strong>EduJunction</strong>.</p>
+        
+        <div class="card" style="border-left: 4px solid #3b82f6; background: #eff6ff; padding: 18px 20px; border-radius: 10px; margin: 20px 0;">
+            <h3 style="margin-top: 0; font-size: 15px; color: #1e40af;">👦 Student Login Credentials:</h3>
+            <p style="margin: 4px 0;"><strong>Student Name:</strong> {display_child}</p>
+            <p style="margin: 4px 0;"><strong>Curriculum & Class:</strong> {board} — {class_grade}</p>
+            <p style="margin: 4px 0;"><strong>Student Username:</strong> <code style="background: #dbeafe; color: #1e40af; padding: 2px 6px; border-radius: 4px; font-weight: bold;">{child_username}</code></p>
+            <p style="margin: 4px 0;"><strong>Student Password:</strong> <code style="background: #fef08a; color: #854d0e; padding: 2px 6px; border-radius: 4px; font-weight: bold;">{child_password}</code></p>
+        </div>
+
+        <div style="text-align: center; margin: 24px 0;">
+            <a href="https://www.edujunction.co.in/login" style="display: inline-block; background: #2563eb; color: #ffffff; text-decoration: none; font-weight: bold; font-size: 14px; padding: 12px 28px; border-radius: 8px;">
+                🚀 Student Log In Portal
+            </a>
+        </div>
+
+        <p style="font-size: 13px; color: #475569;">
+            Your child can log in anytime using their unique Username and Password to access interactive exams, track daily streak XP, and take mock test series.
+        </p>
+
+        <p><strong>Warm regards,</strong><br>The EduJunction Team</p>
+    """
+
+    plain_text = (
+        f"Dear {display_parent},\n\n"
+        f"Student account for {display_child} has been created on EduJunction.\n\n"
+        f"--- Student Login Details ---\n"
+        f"Student Name: {display_child}\n"
+        f"Curriculum: {board} - {class_grade}\n"
+        f"Username: {child_username}\n"
+        f"Password: {child_password}\n\n"
+        f"Log in here: https://www.edujunction.co.in/login\n\n"
+        f"Best regards,\nThe EduJunction Team"
+    )
+
+    send_email_async(to_parent_email, subject, content_html, plain_text)
     return True
 
 
@@ -514,4 +602,189 @@ def send_student_exam_report_email(
     ]
 
     send_email_async(to_email.strip(), subject, content_html, plain_text, attachments)
+    return True
+
+
+def send_payment_confirmation_email(
+    user_email: str,
+    user_name: str,
+    order_details: dict,
+) -> bool:
+    """Dispatches a dynamic, branded payment confirmation & invoice email to the student/parent
+
+    and sends an instant notification copy to the company's official receiving email.
+    """
+    if not user_email or not user_email.strip():
+        logger.warning("[EMAIL] send_payment_confirmation_email called with empty user_email.")
+        return False
+
+    display_name = user_name.strip() if user_name else "Valued Student / Parent"
+    student_name = order_details.get("student_name") or display_name
+    board = order_details.get("board", "CBSE")
+    class_grade = order_details.get("class_grade", "Class 10")
+    subject_name = order_details.get("subject", "General")
+    quantity = int(order_details.get("quantity", 1))
+    amount_paid = float(order_details.get("amount_paid", 0.0))
+    currency = order_details.get("currency", "INR")
+    currency_symbol = "₹" if currency == "INR" else f"{currency} "
+    order_id = order_details.get("order_id", "N/A")
+    payment_id = order_details.get("payment_id", "N/A")
+    contact_phone = order_details.get("contact_phone", "N/A")
+    tx_date = order_details.get("date") or datetime.now().strftime("%d %b %Y, %I:%M %p IST")
+    sets_text = f"{quantity} Full-Length Model Test Paper Set{'s' if quantity > 1 else ''}"
+
+    subject = f"🎉 Payment Successful ({currency_symbol}{amount_paid:,.2f}): {board} {class_grade} {subject_name} Unlocked!"
+
+    content_html = f"""
+        <h2 style="color: #0f172a; margin-top: 0; font-size: 22px;">🎉 Payment Confirmed & Test Paper Unlocked!</h2>
+        <p>Dear <strong>{display_name}</strong>,</p>
+        <p>Thank you for choosing <strong>EduJunction</strong>. Your payment of <strong><span style="color: #15803d; font-size: 18px;">{currency_symbol}{amount_paid:,.2f}</span></strong> has been successfully processed, and your Model Test Paper sets are now active and ready for practice.</p>
+
+        <div class="card" style="border-left: 4px solid #16a34a; background: #f0fdf4; padding: 20px; border-radius: 12px; margin: 24px 0;">
+            <h3 style="margin-top: 0; color: #15803d; font-size: 16px; border-bottom: 1px solid #bbf7d0; padding-bottom: 8px;">
+                🧾 Official Payment Receipt & Order Breakdown:
+            </h3>
+            <table style="width: 100%; font-size: 14px; border-collapse: collapse; margin-top: 10px;">
+                <tr>
+                    <td style="padding: 6px 0; color: #64748b; width: 42%;"><strong>Candidate / Student:</strong></td>
+                    <td style="padding: 6px 0; color: #0f172a; font-weight: bold;">{student_name}</td>
+                </tr>
+                <tr>
+                    <td style="padding: 6px 0; color: #64748b;"><strong>Curriculum & Class:</strong></td>
+                    <td style="padding: 6px 0; color: #0f172a; font-weight: 600;">{board} — {class_grade}</td>
+                </tr>
+                <tr>
+                    <td style="padding: 6px 0; color: #64748b;"><strong>Subject & Sets:</strong></td>
+                    <td style="padding: 6px 0; color: #0f172a; font-weight: 600;">{subject_name} ({sets_text})</td>
+                </tr>
+                <tr>
+                    <td style="padding: 6px 0; color: #64748b;"><strong>Total Amount Paid:</strong></td>
+                    <td style="padding: 6px 0; color: #15803d; font-weight: 900; font-size: 16px;">{currency_symbol}{amount_paid:,.2f}</td>
+                </tr>
+                <tr>
+                    <td style="padding: 6px 0; color: #64748b;"><strong>Payment ID:</strong></td>
+                    <td style="padding: 6px 0; color: #334155; font-family: monospace; font-size: 12px;">{payment_id}</td>
+                </tr>
+                <tr>
+                    <td style="padding: 6px 0; color: #64748b;"><strong>Order ID:</strong></td>
+                    <td style="padding: 6px 0; color: #334155; font-family: monospace; font-size: 12px;">{order_id}</td>
+                </tr>
+                {f'<tr><td style="padding: 6px 0; color: #64748b;"><strong>Contact Mobile:</strong></td><td style="padding: 6px 0; color: #0f172a;">+91 {contact_phone}</td></tr>' if contact_phone and contact_phone != 'N/A' else ''}
+                <tr>
+                    <td style="padding: 6px 0; color: #64748b;"><strong>Date & Time:</strong></td>
+                    <td style="padding: 6px 0; color: #475569;">{tx_date}</td>
+                </tr>
+            </table>
+        </div>
+
+        <div style="text-align: center; margin: 30px 0;">
+            <a href="https://www.edujunction.co.in/dashboard" style="display: inline-block; background: linear-gradient(135deg, #f59e0b, #d97706); color: #ffffff; text-decoration: none; font-weight: bold; font-size: 15px; padding: 14px 32px; border-radius: 12px; box-shadow: 0 4px 12px rgba(217, 119, 6, 0.25);">
+                🚀 Start Practicing Model Papers Now
+            </a>
+        </div>
+
+        <p style="font-size: 13px; color: #64748b; line-height: 1.6;">
+            💡 <strong>Next Steps:</strong> You can log in to your EduJunction dashboard anytime to attempt the online timed exam, get instant evaluation, or download the printable specimen question paper PDF.
+        </p>
+
+        <p>If you have any questions or require support, feel free to reply directly to this email.</p>
+        <p><strong>Warm regards,</strong><br>The EduJunction Billing & Student Support Team</p>
+    """
+
+    plain_text = (
+        f"Dear {display_name},\n\n"
+        f"Thank you for choosing EduJunction! Your payment of {currency_symbol}{amount_paid:,.2f} is confirmed.\n\n"
+        f"--- Order Details ---\n"
+        f"Student: {student_name}\n"
+        f"Curriculum: {board} - {class_grade}\n"
+        f"Subject: {subject_name} ({sets_text})\n"
+        f"Amount Paid: {currency_symbol}{amount_paid:,.2f}\n"
+        f"Payment ID: {payment_id}\n"
+        f"Order ID: {order_id}\n"
+        f"Date: {tx_date}\n\n"
+        f"Access your model papers anytime at https://www.edujunction.co.in/dashboard\n\n"
+        f"Best regards,\nThe EduJunction Team"
+    )
+
+    # 1. Send confirmation to Student / Parent
+    send_email_async(user_email.strip(), subject, content_html, plain_text)
+
+    # 2. Send instant business transaction copy to Company Official Receiving Email
+    company_email = getattr(config, "SMTP_FROM_EMAIL", None) or getattr(config, "SMTP_USERNAME", None) or os.getenv("SMTP_FROM_EMAIL") or os.getenv("SMTP_USERNAME")
+    if company_email and company_email.strip() and company_email.strip().lower() != user_email.strip().lower():
+        admin_subject = f"[EduJunction Alert] 💰 {currency_symbol}{amount_paid:,.2f} Received - {student_name} ({board} {class_grade} {subject_name})"
+        admin_content_html = f"""
+            <h2 style="color: #0f172a; margin-top: 0;">💰 New Subscription Payment Received</h2>
+            <p>A new Model Paper subscription order has just been paid and activated.</p>
+            <div class="card" style="border-left: 4px solid #f59e0b; background: #fffbeb;">
+                <p style="margin: 4px 0;"><strong>Amount Received:</strong> <span style="font-size: 18px; font-weight: bold; color: #b45309;">{currency_symbol}{amount_paid:,.2f}</span></p>
+                <p style="margin: 4px 0;"><strong>Student:</strong> {student_name}</p>
+                <p style="margin: 4px 0;"><strong>Payer Name:</strong> {display_name}</p>
+                <p style="margin: 4px 0;"><strong>Payer Email:</strong> {user_email}</p>
+                <p style="margin: 4px 0;"><strong>Mobile Number:</strong> +91 {contact_phone}</p>
+                <p style="margin: 4px 0;"><strong>Curriculum:</strong> {board} {class_grade} — {subject_name} ({sets_text})</p>
+                <p style="margin: 4px 0;"><strong>Razorpay Payment ID:</strong> {payment_id}</p>
+                <p style="margin: 4px 0;"><strong>Razorpay Order ID:</strong> {order_id}</p>
+                <p style="margin: 4px 0;"><strong>Timestamp:</strong> {tx_date}</p>
+            </div>
+        """
+        admin_plain_text = f"New Subscription Received:\nAmount: {currency_symbol}{amount_paid:,.2f}\nStudent: {student_name}\nPayer: {display_name} ({user_email}, Phone: {contact_phone})\nCurriculum: {board} {class_grade} {subject_name} ({sets_text})\nPayment ID: {payment_id}\nOrder ID: {order_id}"
+        send_email_async(company_email.strip(), admin_subject, admin_content_html, admin_plain_text)
+
+    return True
+
+
+def send_payment_failed_email(
+    user_email: str,
+    user_name: str,
+    order_details: dict,
+    failure_reason: str = "Payment was cancelled or could not be completed.",
+) -> bool:
+    """Dispatches an empathetic notification when a payment attempt fails or is aborted."""
+    if not user_email or not user_email.strip():
+        return False
+
+    display_name = user_name.strip() if user_name else "Valued Student / Parent"
+    board = order_details.get("board", "CBSE")
+    class_grade = order_details.get("class_grade", "Class 10")
+    subject_name = order_details.get("subject", "General")
+    amount_paid = float(order_details.get("amount_paid", 0.0))
+    currency_symbol = "₹"
+    order_id = order_details.get("order_id", "N/A")
+    tx_date = order_details.get("date") or datetime.now().strftime("%d %b %Y, %I:%M %p IST")
+
+    subject = f"⚠️ Payment Incomplete: {board} {class_grade} {subject_name} Model Paper Pass"
+
+    content_html = f"""
+        <h2 style="color: #991b1b; margin-top: 0; font-size: 20px;">⚠️ Your Payment Could Not Be Completed</h2>
+        <p>Dear <strong>{display_name}</strong>,</p>
+        <p>We noticed that your recent attempt to unlock <strong>{board} {class_grade} {subject_name}</strong> Model Test Papers ({currency_symbol}{amount_paid:,.2f}) was not completed.</p>
+
+        <div class="card" style="border-left: 4px solid #ef4444; background: #fef2f2; padding: 16px; border-radius: 8px; margin: 20px 0;">
+            <p style="margin: 4px 0;"><strong>Status Note:</strong> {failure_reason}</p>
+            <p style="margin: 4px 0;"><strong>Order ID:</strong> {order_id}</p>
+            <p style="margin: 4px 0;"><strong>Time:</strong> {tx_date}</p>
+        </div>
+
+        <p>No money was deducted from your account. If any amount was debited by your bank, it will automatically be refunded within 3-5 business days as per banking norms.</p>
+
+        <div style="text-align: center; margin: 26px 0;">
+            <a href="https://www.edujunction.co.in/pricing" style="display: inline-block; background: #2563eb; color: #ffffff; text-decoration: none; font-weight: bold; font-size: 14px; padding: 12px 28px; border-radius: 10px;">
+                🔄 Try Again with UPI / Card
+            </a>
+        </div>
+
+        <p style="font-size: 13px; color: #64748b;">If you need assistance with payment or have any questions, simply reply to this email.</p>
+        <p><strong>Warm regards,</strong><br>The EduJunction Support Team</p>
+    """
+
+    plain_text = (
+        f"Dear {display_name},\n\n"
+        f"Your payment attempt for {board} {class_grade} {subject_name} ({currency_symbol}{amount_paid:,.2f}) was not completed.\n"
+        f"Reason: {failure_reason}\n\n"
+        f"No amount has been charged. You can retry your payment at: https://www.edujunction.co.in/pricing\n\n"
+        f"Best regards,\nEduJunction Support Team"
+    )
+
+    send_email_async(user_email.strip(), subject, content_html, plain_text)
     return True

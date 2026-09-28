@@ -173,8 +173,15 @@ def register():
         page_access = _get_page_access(session, role_name)
         session.commit()
 
-        # Send registration welcome email
-        send_registration_email(to_email=user.email, name=user.name, username=user.username, role_name=role_name)
+        # Send registration welcome email with credentials
+        send_registration_email(
+            to_email=user.email,
+            name=user.name,
+            username=user.username,
+            role_name=role_name,
+            password=payload["password"],
+            login_method="Standard"
+        )
 
         return success(
             {
@@ -220,11 +227,24 @@ def login():
     password = payload["password"]
 
     with get_session() as session:
+        # 1. First priority: Exact match on unique username (case-insensitive)
         user = session.query(User).filter(func.lower(User.username) == func.lower(username)).first()
 
+        # 2. Fallback: Search by email if identifier is not an exact username
         if not user:
-            # Optional fallback check on email if someone entered their email
-            user = session.query(User).filter(func.lower(User.email) == func.lower(username)).first()
+            candidates = session.query(User).filter(func.lower(User.email) == func.lower(username)).all()
+            if len(candidates) == 1:
+                user = candidates[0]
+            elif len(candidates) > 1:
+                # If multiple accounts share the same parent email (e.g. Parent and multiple Children),
+                # resolve to the specific account matching this password
+                for cand in candidates:
+                    if cand.password_hash and verify_password(password, cand.password_hash):
+                        user = cand
+                        break
+                if not user:
+                    # Default candidate for password verification failure logging
+                    user = next((c for c in candidates if c.role and c.role.role_name == "PARENT"), candidates[0])
 
         if not user:
             raise UnauthorizedError("Invalid username or password", code="INVALID_CREDENTIALS")
@@ -596,6 +616,7 @@ def google_auth():
         # Check if user already exists with this email
         user = session.query(User).filter(func.lower(User.email) == email).first()
 
+        is_new_user = False
         if not user:
             # If new user and no username provided, request username from frontend
             if not provided_username:
@@ -635,6 +656,8 @@ def google_auth():
                 session.add(parent)
                 session.flush()
 
+            is_new_user = True
+
         if not user.is_active:
             raise UnauthorizedError("This account is not active", code="ACCOUNT_INACTIVE")
 
@@ -652,8 +675,17 @@ def google_auth():
         )
         session.commit()
 
-        # Send Google login notification email
-        send_login_email(to_email=user.email, name=user.name, login_type="Google")
+        # Send Google registration welcome or login notification email
+        if is_new_user:
+            send_registration_email(
+                to_email=user.email,
+                name=user.name,
+                username=user.username,
+                role_name=user_role_name,
+                login_method="Google"
+            )
+        else:
+            send_login_email(to_email=user.email, name=user.name, login_type="Google")
 
         created_at_str = user.created_at.isoformat() if user.created_at else None
 
