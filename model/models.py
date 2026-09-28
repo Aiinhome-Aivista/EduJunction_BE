@@ -229,6 +229,7 @@ class Question(Base):
     topic = Column(String(190), nullable=False)
     reference_links = Column(JSON, nullable=True)
     hint = Column(Text, nullable=True)
+    importance_score = Column(Numeric(4, 2), default=7.00, nullable=True)
 
     exam = relationship("Exam", back_populates="questions")
 

@@ -441,6 +441,31 @@ def submit_exam(exam_id):
                     feedback=ev.get("feedback"),
                 )
             )
+            # Statistical update of question_master importance_score
+            try:
+                q_obj = session.get(Question, ev["questionId"])
+                if q_obj:
+                    is_corr = bool(ev.get("isCorrect"))
+                    mistake_inc = 0 if is_corr else 1
+                    session.execute(
+                        text("""
+                            UPDATE question_master 
+                            SET attempt_count = COALESCE(attempt_count, 0) + 1,
+                                mistake_count = COALESCE(mistake_count, 0) + :mistake_inc,
+                                importance_score = LEAST(10.00, GREATEST(4.00, 7.00 + (
+                                    CAST(COALESCE(mistake_count, 0) + :mistake_inc AS DECIMAL(10,2)) / 
+                                    CAST(COALESCE(attempt_count, 0) + 1 AS DECIMAL(10,2))
+                                ) * 2.50))
+                            WHERE id = :qm_id OR question = :q_text
+                        """),
+                        {
+                            "mistake_inc": mistake_inc,
+                            "qm_id": q_obj.id,
+                            "q_text": q_obj.question_text
+                        }
+                    )
+            except Exception as stat_err:
+                logger.debug(f"Question importance stats update skipped: {stat_err}")
 
         session.add(
             DiagnosticAnalysis(
