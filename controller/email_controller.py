@@ -126,6 +126,7 @@ def _send_email_sync(
 
         if not smtp_username or not smtp_password:
             logger.warning(f"[EMAIL] SMTP credentials not configured. Skipped sending email to {to_email}")
+            print(f"⚠️ [EMAIL SKIPPED] SMTP credentials not configured in .env. Skipped email to: {to_email}", flush=True)
             return False
 
         html_body = render_email_template(subject, content_html)
@@ -170,10 +171,12 @@ def _send_email_sync(
                 server.send_message(message)
 
         logger.info(f"[EMAIL] Successfully sent email '{subject}' to {to_email}")
+        print(f"✨ 📧 [EMAIL SENT SUCCESSFULLY] To: {to_email} | Subject: '{subject}'", flush=True)
         return True
 
     except Exception as e:
         logger.error(f"[EMAIL] Failed to send email to {to_email}: {str(e)}")
+        print(f"❌ 📧 [EMAIL SEND FAILED] To: {to_email} | Subject: '{subject}' | Error: {str(e)}", flush=True)
         return False
 
 

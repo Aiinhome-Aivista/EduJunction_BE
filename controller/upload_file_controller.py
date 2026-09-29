@@ -216,7 +216,7 @@ def save_generated_questions_api():
         # Check topic validity and get full breadcrumbs (Topic -> Chapter -> Subject)
         topic_info = session.execute(
             text("""
-                SELECT t.id, t.topic_name, ch.chapter_name, s.subject_name
+                SELECT t.id, t.topic_name, ch.id AS chapter_id, ch.chapter_name, s.subject_name
                 FROM topic_master t
                 JOIN chapter_master ch ON ch.id = t.chapter_id
                 JOIN subject_master s ON s.id = ch.subject_id
@@ -229,8 +229,18 @@ def save_generated_questions_api():
             raise ValidationError(f"Topic ID {topic_id} does not exist in topic_master")
 
         topic_name = topic_info["topic_name"]
+        chapter_id = topic_info["chapter_id"]
         chapter_name = topic_info["chapter_name"]
         subject_name = topic_info["subject_name"]
+
+        # Fetch all sibling topics for this chapter
+        chapter_topics = session.execute(
+            text("SELECT id, topic_name FROM topic_master WHERE chapter_id = :chid AND is_active = 1"),
+            {"chid": chapter_id}
+        ).fetchall()
+
+        from helper.pipeline_engine import _normalize_title
+        topic_map = {_normalize_title(r[1]): int(r[0]) for r in chapter_topics if r[1]}
 
         # Type mapping cache
         types_map = {
@@ -245,6 +255,35 @@ def save_generated_questions_api():
             q_text = (q.get("question") or "").strip()
             if not q_text:
                 continue
+
+            # Determine specific topic_id for this question
+            target_q_tid = int(topic_id)
+            explicit_tid = q.get("topic_id") or q.get("topicId")
+            if explicit_tid and str(explicit_tid).isdigit():
+                target_q_tid = int(explicit_tid)
+            else:
+                q_ts = q.get("topic_suggested") or q.get("topic") or q.get("topicName")
+                if q_ts and str(q_ts).strip():
+                    norm_ts = _normalize_title(str(q_ts))
+                    if norm_ts in topic_map:
+                        target_q_tid = topic_map[norm_ts]
+                    else:
+                        # Insert new dynamic topic into topic_master for this chapter
+                        try:
+                            session.execute(
+                                text("INSERT INTO topic_master (chapter_id, topic_name, is_active) VALUES (:chid, :tn, 1)"),
+                                {"chid": chapter_id, "tn": str(q_ts).strip()[:150]}
+                            )
+                            session.commit()
+                            new_tid = session.execute(
+                                text("SELECT id FROM topic_master WHERE chapter_id = :chid AND topic_name = :tn ORDER BY id DESC LIMIT 1"),
+                                {"chid": chapter_id, "tn": str(q_ts).strip()[:150]}
+                            ).scalar()
+                            if new_tid:
+                                target_q_tid = int(new_tid)
+                                topic_map[norm_ts] = target_q_tid
+                        except Exception:
+                            session.rollback()
 
             q_type = (q.get("type") or "MCQ").upper()
             type_id = types_map.get(q_type, 1)
@@ -274,7 +313,7 @@ def save_generated_questions_api():
                     WHERE topic_id = :topic_id AND LOWER(TRIM(question)) = LOWER(TRIM(:question))
                     LIMIT 1
                 """),
-                {"topic_id": topic_id, "question": q_text}
+                {"topic_id": target_q_tid, "question": q_text}
             ).mappings().first()
 
             if existing_q:
@@ -316,7 +355,7 @@ def save_generated_questions_api():
                     (:topic_id, :type_id, :diff_id, :question, :options, :correct_answer, :explanation, :marks, 1, NOW(), NOW())
                 """)
                 session.execute(ins_sql, {
-                    "topic_id": topic_id,
+                    "topic_id": target_q_tid,
                     "type_id": type_id,
                     "diff_id": diff_id,
                     "question": q_text,
@@ -332,10 +371,9 @@ def save_generated_questions_api():
 
         # Terminal step logging
         print(f"\n=======================================================", flush=True)
-        print(f">> [RAG / AI INGESTION] Topic: '{topic_name}'", flush=True)
-        print(f">> Chapter: '{chapter_name}' | Subject: '{subject_name}'", flush=True)
+        print(f">> [RAG / AI INGESTION] Chapter: '{chapter_name}' | Subject: '{subject_name}'", flush=True)
         print(f">> Total Processed: {len(questions)} | Inserted: {inserted_count} | Updated: {updated_count} | Skipped Duplicates: {duplicate_skipped_count}", flush=True)
-        print(f">> Saved to Database (question_master) & synchronized with Knowledge Graph!", flush=True)
+        print(f">> Saved to Database (question_master) across dynamic sub-topics!", flush=True)
         print(f"=======================================================\n", flush=True)
 
     msg = f"Processed {len(questions)} questions for '{topic_name}': {inserted_count} inserted, {updated_count} updated."
