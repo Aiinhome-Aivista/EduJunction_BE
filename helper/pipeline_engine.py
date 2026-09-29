@@ -83,11 +83,14 @@ def is_diagram_referenced_in_question(question_text: str) -> bool:
 TEXTBOOK_QUESTION_PROMPT = """You are an expert curriculum designer and senior board examiner (CBSE, ICSE, Cambridge, State Boards).
 Your task is to analyze the provided textbook/chapter text and generate high-yield, pedagogically accurate examination questions.
 
-QUESTION TYPES:
-1. 'MCQ' (Multiple Choice): Provide exactly 4 options labeled 'A) ', 'B) ', 'C) ', 'D) '. 'correct_answer' must be the single letter ('A', 'B', 'C', or 'D'). Marks: 1.
-2. 'SAQ' (Short Answer Question): Conceptual explanation, definition, or theorem statement (2-3 lines). 'options' MUST be empty list []. Marks: 2 or 3.
-3. 'NUMERICAL': Quantitative calculation or formula application with step-by-step solution in explanation. 'options' MUST be empty list []. Marks: 3 or 5.
-4. 'OBJECTIVE': Direct one-word answer, formula name, or fill-in-the-blank. 'options' MUST be empty list []. Marks: 1.
+QUESTION TYPES & ANSWER DEPTH REQUIREMENTS (STRICT BOARD MARKING SCHEME):
+1. 'MCQ' (Multiple Choice - 1M): Exactly 4 options ('A) ', 'B) ', 'C) ', 'D) '). 'correct_answer' must be the single letter ('A', 'B', 'C', or 'D'). Marks: 1.
+2. 'OBJECTIVE' (1M): Direct one-word/phrase answer or key term. 'options' MUST be empty list []. Marks: 1.
+3. 'SAQ' (Short Answer - 2M): 2-3 focused conceptual lines or 2 key points. Marks: 2.
+4. 'SHORT ANSWER (3M)': Structured 3 distinct key points or step-by-step formula working. Marks: 3.
+5. 'CASE STUDY' (4M): Passage or scenario with multi-step sub-answers. Marks: 4.
+6. 'LONG ANSWER' (5M): Comprehensive, detailed model answer. For 5 marks, 'correct_answer' and 'explanation' MUST contain at least 4-5 structured bullet points, detailed physiological/physical/mathematical mechanisms, or complete descriptive breakdown matching official board 5-mark marking criteria. DO NOT write short 1-line answers for 5 marks.
+7. 'NUMERICAL' (3M or 5M): ONLY for Physics/Math/Chemistry numerical calculations involving numbers/formulas. Never use for descriptive Biology/History/Theory questions.
 
 DIFFICULTY GUIDELINES:
 - 'easy': Foundational memory recall, basic definition, direct formula identification.
@@ -96,8 +99,13 @@ DIFFICULTY GUIDELINES:
 
 CRITICAL RULES:
 1. Every question MUST be grounded strictly in the provided text.
-2. TEXT-ONLY SELF-CONTAINED FORMULATION: Formulate all questions purely textually with complete standalone context. DO NOT invent or write references to 'as shown in figure', 'refer to diagram', or 'in the given picture' unless the source text explicitly provides a specific visual figure that cannot be understood textually.
-3. Return strictly valid JSON object matching the schema below. No Markdown outside JSON.
+2. ANSWER DEPTH MUST MATCH MARKS: 5-mark questions must have comprehensive 5-mark answers (4-5 detailed points/mechanisms).
+3. TEXT-ONLY SELF-CONTAINED FORMULATION: Formulate all questions purely textually with complete standalone context. DO NOT invent or write references to 'as shown in figure', 'refer to diagram', or 'in the given picture' unless the source text explicitly provides a specific visual figure that cannot be understood textually.
+4. CRITICAL TOPIC SPECIFICITY RULE:
+   - 'topic_suggested' MUST be a specific, granular concept or sub-topic name (e.g., 'Cell Organelles', 'Plant Tissues', 'Photosynthesis', 'Linear Equations', 'Electromagnetic Induction').
+   - STRICTLY FORBIDDEN: NEVER use generic subject names (e.g., 'Biology', 'Science', 'Mathematics', 'Physics', 'Chemistry', 'Social Science', 'General') as 'topic_suggested'.
+   - Each question must be assigned to its precise concept/sub-topic within the chapter.
+5. Return strictly valid JSON object matching the schema below. No Markdown outside JSON.
 
 JSON Schema:
 {
@@ -110,7 +118,7 @@ JSON Schema:
       "options": [],
       "correct_answer": "I = n * e * A * v_d, where I is current, n is charge carrier density, e is electron charge, A is cross-sectional area, and v_d is drift velocity.",
       "explanation": "Derived from the transport of charge carriers across unit cross section per unit time.",
-      "topic_suggested": "Current Electricity"
+      "topic_suggested": "Drift Velocity & Current"
     }
   ]
 }
@@ -139,7 +147,11 @@ CRITICAL BILINGUAL & MULTILINGUAL INSTRUCTIONS:
    - For Multiple Choice Questions (MCQ), extract all 4 options labeled 'A) ', 'B) ', 'C) ', 'D) ' and determine the correct single-letter answer key ('A', 'B', 'C', or 'D').
    - For descriptive questions, provide a comprehensive model answer in 'correct_answer' and detailed step-by-step working/explanation in 'explanation'.
 
-4. EXTRACTION COMPLETENESS:
+4. TOPIC SPECIFICITY RULE:
+   - 'topic_suggested' MUST be a specific, granular concept or sub-topic name.
+   - NEVER use generic subject names ('Biology', 'Science', 'Mathematics', 'General') as 'topic_suggested'.
+
+5. EXTRACTION COMPLETENESS:
    - Extract EVERY distinguishable question present in the text without skipping.
 
 JSON Schema:
@@ -153,7 +165,7 @@ JSON Schema:
       "options": ["A) CaO + H2O -> Ca(OH)2", "B) Fe + CuSO4 -> FeSO4 + Cu", "C) 2H2 + O2 -> 2H2O", "D) CaCO3 -> CaO + CO2"],
       "correct_answer": "B",
       "explanation": "Iron is more reactive than copper and displaces copper from copper sulphate solution.",
-      "topic_suggested": "Chemical Reactions and Equations"
+      "topic_suggested": "Displacement Reactions"
     }
   ]
 }
@@ -443,7 +455,22 @@ def sanitize_question_item(
     except (ValueError, TypeError):
         marks = extracted_marks or default_m
 
-    marks = max(1, min(marks, 20))
+    # Subject-aware validation for NUMERICAL:
+    # Never tag Biology/History/Theory questions as NUMERICAL unless they have calculations
+    sub_lower = str(meta.get("subject") or "").lower()
+    non_num_subjects = ["biology", "history", "geography", "civics", "political science", "english", "hindi", "bengali", "sanskrit", "social science", "social studies", "botany", "zoology"]
+    is_calculation = bool(re.search(r'\d+\s*[\+\-\*\/=]\s*\d+|\bcalculate\b|\bfind the value\b|\bsolve\b|\bhow many\b|\bmass of\b', q_text.lower()))
+    if resolved_type == "NUMERICAL" and (any(ns in sub_lower for ns in non_num_subjects) or not is_calculation):
+        if marks >= 5:
+            resolved_type = "LONG ANSWER"
+        elif marks == 4:
+            resolved_type = "CASE STUDY"
+        elif marks == 3:
+            resolved_type = "SHORT ANSWER (3M)"
+        elif marks == 2:
+            resolved_type = "SAQ"
+        else:
+            resolved_type = "OBJECTIVE"
 
     # Re-calibrate question type by marks if generic
     if marks == 1 and resolved_type not in ["MCQ", "ASSERTION REASON"]:
@@ -459,6 +486,27 @@ def sanitize_question_item(
     elif marks >= 8:
         resolved_type = "LONG EVALUATIVE"
 
+    # For 5-mark long answers, ensure answer is enriched with explanation points if too brief
+    if marks >= 5 and resolved_type in ["LONG ANSWER", "LONG EVALUATIVE"]:
+        if len(corr.split()) < 25 and clean_expl and clean_expl != "Derived directly from curriculum document.":
+            corr = f"{corr}\n\nDetailed Breakdown & Key Points:\n{clean_expl}"
+
+    raw_topic = str(q.get("topic_suggested") or "").strip()
+    sub_name = str(meta.get("subject") or "").strip()
+    title_name = str(meta.get("title") or "").strip()
+    det_topics = meta.get("detected_topics") or []
+
+    generic_terms = {sub_name.lower(), "general", "science", "biology", "mathematics", "math", "maths", "physics", "chemistry", "social science", "social studies", "english", "hindi"}
+    if not raw_topic or raw_topic.lower() in generic_terms:
+        if det_topics and len(det_topics) > 0:
+            resolved_topic = det_topics[index % len(det_topics)]
+        elif title_name and title_name.lower() not in generic_terms:
+            resolved_topic = title_name
+        else:
+            resolved_topic = "Core Concepts"
+    else:
+        resolved_topic = raw_topic
+
     return {
         "id": f"gen_{index + 1}",
         "question": q_text,
@@ -468,7 +516,7 @@ def sanitize_question_item(
         "options": clean_opts,
         "correct_answer": corr or (clean_opts[0] if clean_opts else "Model Solution"),
         "explanation": clean_expl,
-        "topic_suggested": q.get("topic_suggested") or meta.get("subject") or "General",
+        "topic_suggested": resolved_topic,
         "image_url": q.get("image_url") or q.get("imageUrl") or None,
     }
 
@@ -485,8 +533,20 @@ def extract_questions_from_document_text(
     detected_topics: Optional[List[str]] = None,
 ) -> List[Dict[str, Any]]:
     """Extracts all questions from curriculum document or question bank across all chunks without truncation."""
-    meta = {"board": board, "classGrade": class_grade, "subject": subject, "title": title}
+    meta = {
+        "board": board,
+        "classGrade": class_grade,
+        "subject": subject,
+        "title": title,
+        "detected_topics": detected_topics or []
+    }
     raw_questions: List[Dict[str, Any]] = []
+
+    topics_guide = ""
+    if detected_topics and isinstance(detected_topics, list):
+        clean_dt = [t.strip() for t in detected_topics if t and t.strip() and t.strip().lower() != subject.lower()]
+        if clean_dt:
+            topics_guide = f"\n- Specific Sub-Topics for this Chapter (assign each question to one of these): {json.dumps(clean_dt)}"
 
     if document_type in ["old_question_paper", "question_bank"]:
         # QUESTION BANK / PYQ MODE: Extract 100% of all questions across chunks
@@ -515,7 +575,7 @@ def extract_questions_from_document_text(
 - Board: {board}
 - Class/Grade: {class_grade}
 - Subject: {subject}
-- Chapter/Paper Title: {title}
+- Chapter/Paper Title: {title}{topics_guide}
 - Document Mode: {document_type}
 - Section: {section_label}
 
@@ -553,34 +613,80 @@ CRITICAL INSTRUCTIONS:
                         "options": [],
                         "correct_answer": f"Standard curriculum solution for {title}.",
                         "explanation": f"Extracted from {filename}",
-                        "topic_suggested": subject,
+                        "topic_suggested": title or "Core Concepts",
                     })
 
     else:
-        # TEXTBOOK SYNTHESIS MODE (20 to 30 questions)
-        # Partition chapter into 2 focused sections (Part 1: Foundational/Concepts, Part 2: Applications/Problems)
-        # to ensure zero LLM token cutoff, faster response times, and complete syllabus coverage.
+        # TEXTBOOK SYNTHESIS MODE (Supports both Single-Chapter files and Multi-Chapter Full Books)
         q_count = target_q_count or 24
         system_prompt = TEXTBOOK_QUESTION_PROMPT
         text_len = len(cleaned_text)
 
-        if text_len > 6000:
-            mid = text_len // 2
-            sections = [
-                ("Part 1: Core Concepts & Definitions", cleaned_text[:min(mid + 1000, 12000)], max(q_count // 2, 10)),
-                ("Part 2: Applications, Problems & Exercises", cleaned_text[max(0, mid - 1000):min(text_len, mid + 12000)], max(q_count - (q_count // 2), 10)),
-            ]
-        else:
-            sections = [
-                ("Full Chapter Synthesis", cleaned_text[:12000], q_count)
-            ]
+        # Check if the single uploaded file contains multiple chapters (e.g. Chapter 1, Chapter 2, Unit 1...)
+        chapter_regex = re.compile(
+            r'(?:\n|\A)(?:CHAPTER|Chapter|UNIT|Unit|LESSON|Lesson)\s*[\-:]?\s*(\d+|[IVXLCDM]+)[\s\:\.\-–—]+([^\n]{3,80})',
+            re.MULTILINE
+        )
+        detected_chap_matches = list(chapter_regex.finditer(cleaned_text))
 
-        for sec_name, sec_excerpt, sec_q_count in sections:
-            user_prompt = f"""Target Details:
+        if len(detected_chap_matches) >= 2 and text_len > 18000:
+            # MULTI-CHAPTER BOOK SEGMENTATION
+            print(f"  • [MULTI-CHAPTER BOOK DETECTED] Found {len(detected_chap_matches)} chapters inside single file '{filename}'. Parsing chapter by chapter...")
+            for c_idx, match in enumerate(detected_chap_matches):
+                start_p = match.start()
+                end_p = detected_chap_matches[c_idx + 1].start() if (c_idx + 1 < len(detected_chap_matches)) else text_len
+                chap_num = match.group(1).strip()
+                chap_raw_name = match.group(2).strip()
+                curr_chap_title = f"Chapter {chap_num}: {chap_raw_name}"
+                chap_chunk = cleaned_text[start_p:end_p].strip()
+                if len(chap_chunk) < 600:
+                    continue
+
+                per_chap_q_count = max(8, min(15, q_count // len(detected_chap_matches)))
+                chap_user_prompt = f"""Target Details:
 - Board: {board}
 - Class/Grade: {class_grade}
 - Subject: {subject}
-- Chapter/Paper Title: {title}
+- Chapter/Paper Title: {curr_chap_title}
+- Section Focus: Full Chapter Content
+- Required Question Count: {per_chap_q_count}
+- Document Mode: {document_type}
+
+--- DOCUMENT CONTENT ({curr_chap_title}) ---
+{chap_chunk[:10000]}
+--- END DOCUMENT CONTENT ---
+
+Generate EXACTLY {per_chap_q_count} comprehensive structured exam questions (MCQ, SAQ, Numerical/LAQ) strictly covering the concepts and problem-solving in this chapter. Assign each question's 'topic_suggested' to its specific sub-topic within {curr_chap_title}."""
+
+                try:
+                    res_j = mistral_client.generate_json(system_prompt, chap_user_prompt, temperature=0.30, scenario="pdf_generation")
+                    chap_qs = res_j.get("questions", []) if isinstance(res_j, dict) else []
+                    for cq in chap_qs:
+                        cq["chapter_title"] = curr_chap_title
+                    if chap_qs:
+                        raw_questions.extend(chap_qs)
+                        print(f"    -> [{curr_chap_title}] Synthesized {len(chap_qs)} question(s)")
+                except Exception as c_err:
+                    logger.warning(f"Error synthesizing for multi-chapter segment {curr_chap_title}: {c_err}")
+        else:
+            # SINGLE CHAPTER PARTITIONING (Part 1: Foundational/Concepts, Part 2: Applications/Problems)
+            if text_len > 6000:
+                mid = text_len // 2
+                sections = [
+                    ("Part 1: Core Concepts & Definitions", cleaned_text[:min(mid + 1000, 12000)], max(q_count // 2, 10)),
+                    ("Part 2: Applications, Problems & Exercises", cleaned_text[max(0, mid - 1000):min(text_len, mid + 12000)], max(q_count - (q_count // 2), 10)),
+                ]
+            else:
+                sections = [
+                    ("Full Chapter Synthesis", cleaned_text[:12000], q_count)
+                ]
+
+            for sec_name, sec_excerpt, sec_q_count in sections:
+                user_prompt = f"""Target Details:
+- Board: {board}
+- Class/Grade: {class_grade}
+- Subject: {subject}
+- Chapter/Paper Title: {title}{topics_guide}
 - Section Focus: {sec_name}
 - Required Question Count: {sec_q_count}
 - Document Mode: {document_type}
@@ -589,16 +695,18 @@ CRITICAL INSTRUCTIONS:
 {sec_excerpt}
 --- END DOCUMENT CONTENT ---
 
-Generate EXACTLY {sec_q_count} comprehensive structured exam questions (MCQ, SAQ, Numerical/LAQ) strictly covering the concepts, definitions, and problem-solving in this section."""
+Generate EXACTLY {sec_q_count} comprehensive structured exam questions (MCQ, SAQ, Numerical/LAQ) strictly covering the concepts, definitions, and problem-solving in this section. Map each question's 'topic_suggested' to its specific sub-topic."""
 
-            try:
-                response_json = mistral_client.generate_json(system_prompt, user_prompt, temperature=0.30, scenario="pdf_generation")
-                sec_questions = response_json.get("questions", []) if isinstance(response_json, dict) else []
-                if sec_questions:
-                    raw_questions.extend(sec_questions)
-                    print(f"    -> [{sec_name}] Synthesized {len(sec_questions)} question(s)")
-            except Exception as e:
-                logger.error(f"Error synthesizing questions for {sec_name}: {e}")
+                try:
+                    response_json = mistral_client.generate_json(system_prompt, user_prompt, temperature=0.30, scenario="pdf_generation")
+                    sec_questions = response_json.get("questions", []) if isinstance(response_json, dict) else []
+                    for sq in sec_questions:
+                        sq["chapter_title"] = title
+                    if sec_questions:
+                        raw_questions.extend(sec_questions)
+                        print(f"    -> [{sec_name}] Synthesized {len(sec_questions)} question(s)")
+                except Exception as e:
+                    logger.error(f"Error synthesizing questions for {sec_name}: {e}")
 
         # Fallback if both sections returned empty (e.g. LLM timeout)
         if not raw_questions and len(cleaned_text) > 200:
@@ -1504,6 +1612,7 @@ def extract_curriculum_questions_preview(
 
         norm["id"] = str(uuid.uuid4())
         norm["is_duplicate"] = is_dup
+        norm["chapter_title"] = title
         final_questions.append(norm)
 
         q_t = norm.get("type", "MCQ")
