@@ -35,6 +35,51 @@ class TermColors:
     END = "\033[0m"
 
 
+VISUAL_SUBJECTS = {
+    "science", "physics", "chemistry", "biology",
+    "mathematics", "math", "maths",
+    "social science", "geography", "history", "economics",
+    "computer science", "it"
+}
+
+
+def is_diagram_subject(subject_name: str) -> bool:
+    """Returns True only if the subject has legitimate exam diagram requirements."""
+    sub = str(subject_name or "").lower().strip()
+    return any(v in sub for v in VISUAL_SUBJECTS)
+
+
+# Regex patterns that identify genuine question requirements for diagrams / figures
+STRICT_FIGURE_PATTERNS = [
+    r"\b(?:refer to|study|observe|look at|see)\s+(?:the\s+)?(?:figure|fig\.?|diagram|circuit|ray diagram|map|graph|chart)\b",
+    r"\b(?:in|from)\s+(?:the\s+)?(?:adjoining|given|above|below|following)\s+(?:figure|fig\.?|diagram|circuit|ray diagram|map|graph|chart)\b",
+    r"\b(?:figure|fig\.?)\s+\d+(?:\.\d+)?\b",
+    r"\b(?:labeled|shaded|marked)\s+(?:part|region|area|component|zone)\b",
+    r"\bidentify\s+(?:the\s+)?(?:part|structure|organ|circuit|apparatus)\s+(?:labeled|marked)\b",
+    r"\b(?:circuit|ray)\s+diagram\s+(?:shows|illustrates|represents|given)\b",
+    r"\b(?:pie\s*chart|bar\s*graph|flow\s*chart)\s+(?:shows|indicates|given)\b",
+]
+
+# False positive terms where 'figure' or 'diagram' is used metaphorically or non-visually
+NON_VISUAL_FIGURE_EXCLUSIONS = [
+    r"\bfigure\s+out\b",
+    r"\b(?:historical|prominent|central|political|key|public|national|leading|literary)\s+figures?\b",
+    r"\bfigure\s+of\s+speech\b",
+]
+
+
+def is_diagram_referenced_in_question(question_text: str) -> bool:
+    """Checks if a question strictly references an embedded figure, diagram, map, or chart."""
+    if not question_text:
+        return False
+    q_low = question_text.lower()
+    # Check exclusions first
+    if any(re.search(excl, q_low) for excl in NON_VISUAL_FIGURE_EXCLUSIONS):
+        return False
+    return any(re.search(pat, q_low) for pat in STRICT_FIGURE_PATTERNS)
+
+
+
 TEXTBOOK_QUESTION_PROMPT = """You are an expert curriculum designer and senior board examiner (CBSE, ICSE, Cambridge, State Boards).
 Your task is to analyze the provided textbook/chapter text and generate high-yield, pedagogically accurate examination questions.
 
@@ -51,7 +96,8 @@ DIFFICULTY GUIDELINES:
 
 CRITICAL RULES:
 1. Every question MUST be grounded strictly in the provided text.
-2. Return strictly valid JSON object matching the schema below. No Markdown outside JSON.
+2. TEXT-ONLY SELF-CONTAINED FORMULATION: Formulate all questions purely textually with complete standalone context. DO NOT invent or write references to 'as shown in figure', 'refer to diagram', or 'in the given picture' unless the source text explicitly provides a specific visual figure that cannot be understood textually.
+3. Return strictly valid JSON object matching the schema below. No Markdown outside JSON.
 
 JSON Schema:
 {
@@ -249,6 +295,16 @@ def sanitize_question_item(
     sub_lower = str(meta.get("subject") or "").lower()
     is_lang_subject = any(lang in sub_lower for lang in ["hindi", "bengali", "bangla", "sanskrit", "arabic", "urdu"])
 
+    # 0. Anti-Garbage & Copyright Guardrail: Discard any question generated from publisher disclaimers
+    q_lower = q_text.lower()
+    from helper.document_processor import DISCLAIMER_PATTERNS
+    if any(re.search(pat, q_lower) for pat in DISCLAIMER_PATTERNS):
+        return None
+    if "alternative concept" in q_lower or "null condition" in q_lower or "secondary effect" in q_lower:
+        return None
+    if len(q_text) < 15:
+        return None
+
     # 1. Bilingual cleanup for CBSE / ICSE / ISC and STEM / General subjects
     if not is_lang_subject:
         # If question contains 'Non-English / English', extract the English part
@@ -413,6 +469,7 @@ def sanitize_question_item(
         "correct_answer": corr or (clean_opts[0] if clean_opts else "Model Solution"),
         "explanation": clean_expl,
         "topic_suggested": q.get("topic_suggested") or meta.get("subject") or "General",
+        "image_url": q.get("image_url") or q.get("imageUrl") or None,
     }
 
 
@@ -501,56 +558,69 @@ CRITICAL INSTRUCTIONS:
 
     else:
         # TEXTBOOK SYNTHESIS MODE (20 to 30 questions)
-        q_count = target_q_count or 25
+        # Partition chapter into 2 focused sections (Part 1: Foundational/Concepts, Part 2: Applications/Problems)
+        # to ensure zero LLM token cutoff, faster response times, and complete syllabus coverage.
+        q_count = target_q_count or 24
         system_prompt = TEXTBOOK_QUESTION_PROMPT
-        if len(cleaned_text) > 18000:
-            doc_excerpt = (
-                cleaned_text[:9000]
-                + "\n\n...[Middle Concepts & Problems]...\n\n"
-                + cleaned_text[len(cleaned_text) // 2 : len(cleaned_text) // 2 + 5000]
-                + "\n\n...[End Summaries & Exercises]...\n\n"
-                + cleaned_text[-5000:]
-            )
-        else:
-            doc_excerpt = cleaned_text[:16000]
+        text_len = len(cleaned_text)
 
-        user_prompt = f"""Target Details:
+        if text_len > 6000:
+            mid = text_len // 2
+            sections = [
+                ("Part 1: Core Concepts & Definitions", cleaned_text[:min(mid + 1000, 12000)], max(q_count // 2, 10)),
+                ("Part 2: Applications, Problems & Exercises", cleaned_text[max(0, mid - 1000):min(text_len, mid + 12000)], max(q_count - (q_count // 2), 10)),
+            ]
+        else:
+            sections = [
+                ("Full Chapter Synthesis", cleaned_text[:12000], q_count)
+            ]
+
+        for sec_name, sec_excerpt, sec_q_count in sections:
+            user_prompt = f"""Target Details:
 - Board: {board}
 - Class/Grade: {class_grade}
 - Subject: {subject}
 - Chapter/Paper Title: {title}
-- Required Question Count: {q_count}
+- Section Focus: {sec_name}
+- Required Question Count: {sec_q_count}
+- Document Mode: {document_type}
+
+--- DOCUMENT CONTENT ({sec_name}) ---
+{sec_excerpt}
+--- END DOCUMENT CONTENT ---
+
+Generate EXACTLY {sec_q_count} comprehensive structured exam questions (MCQ, SAQ, Numerical/LAQ) strictly covering the concepts, definitions, and problem-solving in this section."""
+
+            try:
+                response_json = mistral_client.generate_json(system_prompt, user_prompt, temperature=0.30, scenario="pdf_generation")
+                sec_questions = response_json.get("questions", []) if isinstance(response_json, dict) else []
+                if sec_questions:
+                    raw_questions.extend(sec_questions)
+                    print(f"    -> [{sec_name}] Synthesized {len(sec_questions)} question(s)")
+            except Exception as e:
+                logger.error(f"Error synthesizing questions for {sec_name}: {e}")
+
+        # Fallback if both sections returned empty (e.g. LLM timeout)
+        if not raw_questions and len(cleaned_text) > 200:
+            try:
+                sub_prompt = f"""Target Details:
+- Board: {board}
+- Class/Grade: {class_grade}
+- Subject: {subject}
+- Chapter/Paper Title: {title}
+- Required Question Count: 10
 - Document Mode: {document_type}
 
 --- DOCUMENT CONTENT ---
-{doc_excerpt}
+{cleaned_text[:6000]}
 --- END DOCUMENT CONTENT ---
 
-Extract/generate EXACTLY {q_count} comprehensive structured questions covering all key concepts, definitions, numericals, and core topics in the document."""
+Extract 10 essential structured questions covering key concepts."""
+                res_retry = mistral_client.generate_json(system_prompt, sub_prompt, temperature=0.25, scenario="pdf_generation")
+                raw_questions = res_retry.get("questions", []) if isinstance(res_retry, dict) else []
+            except Exception as e_retry:
+                logger.warning(f"Secondary question extraction retry: {e_retry}")
 
-        try:
-            response_json = mistral_client.generate_json(system_prompt, user_prompt, temperature=0.35, scenario="pdf_generation")
-            raw_questions = response_json.get("questions", []) if isinstance(response_json, dict) else []
-        except Exception as e:
-            logger.error(f"LLM question extraction failed: {e}")
-            raw_questions = []
-
-        if not raw_questions:
-            sentences = [s.strip() for s in re.split(r'[\n\.]+', cleaned_text) if len(s.strip()) > 20]
-            if not sentences:
-                sentences = [f"Core fundamental principle of {subject} in {title}"]
-            for s_idx in range(q_count):
-                sent = sentences[s_idx % len(sentences)]
-                raw_questions.append({
-                    "question": f"Explain the principle: {sent[:120]}?",
-                    "type": "SAQ" if s_idx % 2 == 0 else "MCQ",
-                    "difficulty": "easy" if s_idx < 3 else ("medium" if s_idx < 8 else "hard"),
-                    "marks": 2 if s_idx % 2 == 0 else 1,
-                    "options": [f"A) {sent[:30]}", "B) Alternative Concept", "C) Null Condition", "D) Secondary Effect"] if s_idx % 2 != 0 else [],
-                    "correct_answer": "A" if s_idx % 2 != 0 else f"Principle: {sent}.",
-                    "explanation": f"Derived directly from curriculum document: {sent}",
-                    "topic_suggested": subject,
-                })
 
     # Sanitize and deduplicate within extracted batch
     sanitized: List[Dict[str, Any]] = []
@@ -632,6 +702,7 @@ def _ensure_curriculum_tables(session: Session):
                 question_type_id INTEGER DEFAULT 1,
                 difficulty_level_id INTEGER DEFAULT 2,
                 question TEXT NOT NULL,
+                image_url VARCHAR(500) NULL,
                 options TEXT,
                 correct_answer TEXT NOT NULL,
                 explanation TEXT,
@@ -641,6 +712,13 @@ def _ensure_curriculum_tables(session: Session):
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
         """))
+        # Ensure image_url column exists in existing tables
+        try:
+            session.execute(text("ALTER TABLE question_master ADD COLUMN image_url VARCHAR(500) NULL"))
+            session.commit()
+        except Exception:
+            session.rollback()
+
         # Seed defaults if empty
         try:
             if not session.execute(text("SELECT id FROM question_type_master LIMIT 1")).scalar():
@@ -1021,6 +1099,26 @@ def process_curriculum_document_pipeline(
         detected_topics=detected_topics,
     )
 
+    # 3.5 In-Memory Diagram Extraction & On-Demand Save for Referenced Questions
+    if ext == "pdf":
+        try:
+            diagram_pool = document_processor.extract_pdf_diagrams(file_bytes, max_diagrams=15)
+            fig_keywords = ["figure", "diagram", "circuit", "adjoining", "graph", "shown below", "picture", "illustration", "shaded region", "ray diagram", "flow chart", "given below"]
+            for norm in final_questions:
+                if not norm.get("image_url") and diagram_pool:
+                    q_lower = norm.get("question", "").lower()
+                    if any(k in q_lower for k in fig_keywords):
+                        assigned_diag = diagram_pool.pop(0)
+                        saved_url = document_processor.save_diagram_to_disk(
+                            image_bytes=assigned_diag["image_bytes"],
+                            ext=assigned_diag.get("ext", "png"),
+                            prefix=f"diag_p{assigned_diag.get('page', 1)}"
+                        )
+                        if saved_url:
+                            norm["image_url"] = saved_url
+        except Exception as diag_err:
+            logger.warning(f"Diagram extraction notice: {diag_err}")
+
     # -------------------------------------------------------------------------
     # STEP 4: PREPARE JSON SCHEMA OBJECTS
     # -------------------------------------------------------------------------
@@ -1121,6 +1219,7 @@ def process_curriculum_document_pipeline(
                     UPDATE question_master
                     SET options = :options, correct_answer = :correct_answer, explanation = :explanation,
                         marks = :marks, difficulty_level_id = :diff_id, question_type_id = :type_id,
+                        image_url = COALESCE(:image_url, image_url),
                         updated_at = CURRENT_TIMESTAMP
                     WHERE id = :id
                 """),
@@ -1131,7 +1230,8 @@ def process_curriculum_document_pipeline(
                     "explanation": q["explanation"],
                     "marks": q["marks"],
                     "diff_id": diff_id,
-                    "type_id": q_type_id
+                    "type_id": q_type_id,
+                    "image_url": q.get("image_url") or None
                 }
             )
             updated_questions_count += 1
@@ -1139,15 +1239,16 @@ def process_curriculum_document_pipeline(
             session.execute(
                 text("""
                     INSERT INTO question_master 
-                    (topic_id, question_type_id, difficulty_level_id, question, options, correct_answer, explanation, marks, is_active, created_at, updated_at)
+                    (topic_id, question_type_id, difficulty_level_id, question, image_url, options, correct_answer, explanation, marks, is_active, created_at, updated_at)
                     VALUES 
-                    (:topic_id, :type_id, :diff_id, :question, :options, :correct_answer, :explanation, :marks, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                    (:topic_id, :type_id, :diff_id, :question, :image_url, :options, :correct_answer, :explanation, :marks, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                 """),
                 {
                     "topic_id": q_topic_id,
                     "type_id": q_type_id,
                     "diff_id": diff_id,
                     "question": q["question"],
+                    "image_url": q.get("image_url") or None,
                     "options": options_json,
                     "correct_answer": q["correct_answer"],
                     "explanation": q["explanation"],
@@ -1335,6 +1436,16 @@ def extract_curriculum_questions_preview(
         detected_topics=detected_topics,
     )
 
+    # 3.5 In-Memory Diagram Extraction & On-Demand Save (Visual Subjects Only)
+    diagram_pool = []
+    if ext == "pdf" and is_diagram_subject(subject):
+        try:
+            diagram_pool = document_processor.extract_pdf_diagrams(file_bytes, max_diagrams=15)
+            if diagram_pool:
+                print(f"  • Extracted {len(diagram_pool)} candidate diagram(s) in-memory for visual question linking")
+        except Exception as diag_err:
+            logger.warning(f"Diagram extraction notice: {diag_err}")
+
     # 4. JSON SCHEMA PREP & PRE-INSERTION DUPLICATE CHECKER
     _print_step_header(4, "SCHEMA PREPARATION & DUPLICATE CHECKER", TermColors.YELLOW)
     _ensure_curriculum_tables(session)
@@ -1352,12 +1463,27 @@ def extract_curriculum_questions_preview(
 
     final_questions = []
     duplicate_count = 0
+    type_counts: Dict[str, int] = {}
+    diff_counts: Dict[str, int] = {}
+    topics_map_count: Dict[str, int] = {}
     meta = {"board": board, "classGrade": class_grade, "subject": subject, "title": title}
 
     for idx, norm in enumerate(extracted_questions):
         if not norm:
             continue
         q_text = norm["question"]
+
+        # On-Demand Diagram Saving: only save to disk if the subject is visual AND question strictly references a figure
+        if not norm.get("image_url") and diagram_pool:
+            if is_diagram_referenced_in_question(q_text):
+                assigned_diag = diagram_pool.pop(0)
+                saved_url = document_processor.save_diagram_to_disk(
+                    image_bytes=assigned_diag["image_bytes"],
+                    ext=assigned_diag.get("ext", "png"),
+                    prefix=f"diag_p{assigned_diag.get('page', 1)}"
+                )
+                if saved_url:
+                    norm["image_url"] = saved_url
 
         # Check existing in question_master
         is_dup = False
@@ -1380,7 +1506,20 @@ def extract_curriculum_questions_preview(
         norm["is_duplicate"] = is_dup
         final_questions.append(norm)
 
+        q_t = norm.get("type", "MCQ")
+        q_d = norm.get("difficulty", "medium")
+        q_top = norm.get("topic_suggested") or subject
+        type_counts[q_t] = type_counts.get(q_t, 0) + 1
+        diff_counts[q_d] = diff_counts.get(q_d, 0) + 1
+        topics_map_count[q_top] = topics_map_count.get(q_top, 0) + 1
+
     print(f"  • Total Extracted : {len(final_questions)} Questions ({duplicate_count} Existing / Duplicates Detected)")
+
+    # Prepare rich pedagogical summary payload
+    core_concepts = analysis.get("core_concepts", []) or [f"Core principles of {title}"]
+    key_formulas = analysis.get("key_formulas_or_rules", []) or []
+    common_traps = analysis.get("common_traps", []) or []
+    topics_breakdown = [{"topic": t, "count": c} for t, c in topics_map_count.items()]
 
     return {
         "success": True,
@@ -1391,7 +1530,17 @@ def extract_curriculum_questions_preview(
         "subject": subject,
         "title": title,
         "summary": summary,
+        "core_concepts": core_concepts,
+        "key_formulas_or_rules": key_formulas,
+        "common_traps": common_traps,
         "detected_topics": detected_topics,
+        "topics_breakdown": topics_breakdown,
+        "difficulty_distribution": {
+            "easy": diff_counts.get("easy", 0),
+            "medium": diff_counts.get("medium", 0),
+            "hard": diff_counts.get("hard", 0),
+        },
+        "type_breakdown": type_counts,
         "estimated_difficulty": est_diff,
         "status": "PREVIEW_READY",
         "total_extracted": len(final_questions),
@@ -1419,10 +1568,13 @@ def save_curriculum_extracted_questions_pipeline(
     detected_topics: List[str] = None,
     title: str = None,
     summary: str = None,
+    core_concepts: List[str] = None,
+    key_formulas_or_rules: List[str] = None,
+    common_traps: List[str] = None,
 ) -> Dict[str, Any]:
     """Persists Admin-approved questions into question_master with Duplicate Protection,
 
-    stores document chunks, updates ChromaDB Vector Store, and syncs ArangoDB K-Graph.
+    stores document chunks, updates ChromaDB Vector Store, and syncs ArangoDB K-Graph with insights.
     """
     _print_separator(f"PERSISTING APPROVED QUESTIONS: {filename}", TermColors.GREEN)
     _ensure_curriculum_tables(session)
@@ -1501,6 +1653,7 @@ def save_curriculum_extracted_questions_pipeline(
                     UPDATE question_master
                     SET options = :options, correct_answer = :correct_answer, explanation = :explanation,
                         marks = :marks, difficulty_level_id = :diff_id, question_type_id = :type_id,
+                        image_url = COALESCE(:image_url, image_url),
                         updated_at = CURRENT_TIMESTAMP
                     WHERE id = :id
                 """),
@@ -1511,7 +1664,8 @@ def save_curriculum_extracted_questions_pipeline(
                     "explanation": q.get("explanation", ""),
                     "marks": int(q.get("marks", 1)),
                     "diff_id": diff_id,
-                    "type_id": q_type_id
+                    "type_id": q_type_id,
+                    "image_url": q.get("image_url") or q.get("imageUrl") or None
                 }
             )
             updated_count += 1
@@ -1520,15 +1674,16 @@ def save_curriculum_extracted_questions_pipeline(
             session.execute(
                 text("""
                     INSERT INTO question_master 
-                    (topic_id, question_type_id, difficulty_level_id, question, options, correct_answer, explanation, marks, is_active, created_at, updated_at)
+                    (topic_id, question_type_id, difficulty_level_id, question, image_url, options, correct_answer, explanation, marks, is_active, created_at, updated_at)
                     VALUES 
-                    (:topic_id, :type_id, :diff_id, :question, :options, :correct_answer, :explanation, :marks, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                    (:topic_id, :type_id, :diff_id, :question, :image_url, :options, :correct_answer, :explanation, :marks, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                 """),
                 {
                     "topic_id": q_topic_id,
                     "type_id": q_type_id,
                     "diff_id": diff_id,
                     "question": q_text,
+                    "image_url": q.get("image_url") or q.get("imageUrl") or None,
                     "options": options_json,
                     "correct_answer": q.get("correct_answer", "A"),
                     "explanation": q.get("explanation", ""),
@@ -1594,20 +1749,32 @@ def save_curriculum_extracted_questions_pipeline(
         except Exception as vec_err:
             logger.warning(f"Vector store indexing notice: {vec_err}")
 
-    # 5. ArangoDB Knowledge Graph Sync
+    # 5. ArangoDB Knowledge Graph Sync with Pedagogical Insights
     try:
         from database import graph_db
         if graph_db.is_enabled():
             chapter_name_clean = title or filename.replace(".pdf", "").replace(".docx", "").replace(".doc", "").replace("_", " ")
             topics_to_push = detected_topics if (detected_topics and len(detected_topics) > 0) else [chapter_name_clean]
+
+            # Aggregate per-topic question counts
+            topic_q_dist = {}
+            for q in questions:
+                top_name = q.get("topic_suggested") or q.get("topic_name") or chapter_name_clean
+                topic_q_dist[top_name] = topic_q_dist.get(top_name, 0) + 1
+
             graph_db.upsert_hierarchical_curriculum_branch(
                 board=board,
                 class_grade=class_grade,
                 subject=subject,
                 chapter=chapter_name_clean,
-                topics_list=topics_to_push
+                topics_list=topics_to_push,
+                chapter_summary=summary or f"Curriculum chapter for {subject}",
+                core_concepts=core_concepts or [],
+                key_formulas=key_formulas_or_rules or [],
+                common_traps=common_traps or [],
+                question_counts=topic_q_dist,
             )
-            print(f"  • ArangoDB Synced : Hierarchy & {len(topics_to_push)} topic node(s) linked to knowledge graph")
+            print(f"  • ArangoDB Synced : Hierarchy, Insights & {len(topics_to_push)} topic node(s) linked to knowledge graph")
     except Exception as graph_err:
         logger.warning(f"ArangoDB sync notice in pipeline: {graph_err}")
 
