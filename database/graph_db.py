@@ -117,8 +117,13 @@ def upsert_hierarchical_curriculum_branch(
     subject: str,
     chapter: str,
     topics_list: list = None,
+    chapter_summary: str = "",
+    core_concepts: list = None,
+    key_formulas: list = None,
+    common_traps: list = None,
+    question_counts: dict = None,
 ):
-    """Creates the full structured hierarchy: Board -> Class -> Subject -> Chapter -> Topics."""
+    """Creates the full structured hierarchy: Board -> Class -> Subject -> Chapter -> Topics with Pedagogical Insights."""
     if not _enabled or not _db:
         return
 
@@ -149,8 +154,20 @@ def upsert_hierarchical_curriculum_branch(
             "relation": "OFFERS"
         }, overwrite=True)
 
-        # 4. Chapter Node
-        _db.collection("chapters").insert({"_key": ch_key, "name": chapter, "subject": subject, "class": class_grade, "board": board, "type": "Chapter"}, overwrite=True)
+        # 4. Chapter Node (with pedagogical insights & summary)
+        ch_doc = {
+            "_key": ch_key,
+            "name": chapter,
+            "subject": subject,
+            "class": class_grade,
+            "board": board,
+            "type": "Chapter",
+            "summary": chapter_summary or f"Curriculum chapter for {board} {class_grade} {subject}",
+            "core_concepts": core_concepts or [],
+            "key_formulas": key_formulas or [],
+            "common_traps": common_traps or [],
+        }
+        _db.collection("chapters").insert(ch_doc, overwrite=True)
         _db.collection("SUBJECT_HAS_CHAPTER").insert({
             "_key": f"{s_key}__{ch_key}",
             "_from": f"subjects/{s_key}",
@@ -158,22 +175,32 @@ def upsert_hierarchical_curriculum_branch(
             "relation": "INCLUDES"
         }, overwrite=True)
 
-        # 5. Topics Nodes & Chapter-Topic Edges
+        # 5. Topics Nodes & Chapter-Topic Edges (with topic-level insight mapping)
         if topics_list:
             for t_item in topics_list:
                 t_name = t_item if isinstance(t_item, str) else t_item.get("name") or t_item.get("topic")
                 if not t_name:
                     continue
                 t_key = _safe_key(t_name)
-                _db.collection("topics").insert({
+                t_q_count = 0
+                if question_counts and isinstance(question_counts, dict):
+                    t_q_count = question_counts.get(t_name, question_counts.get(t_key, 0))
+
+                t_doc = {
                     "_key": t_key,
                     "name": t_name,
                     "chapter": chapter,
                     "subject": subject,
                     "class": class_grade,
                     "board": board,
-                    "type": "Topic"
-                }, overwrite=True)
+                    "type": "Topic",
+                    "question_count": t_q_count,
+                    "core_concepts": [c for c in (core_concepts or []) if any(w.lower() in c.lower() for w in t_name.split())] or core_concepts or [],
+                    "key_formulas": key_formulas or [],
+                    "common_traps": common_traps or [],
+                    "summary": f"Core topic '{t_name}' under chapter '{chapter}'."
+                }
+                _db.collection("topics").insert(t_doc, overwrite=True)
 
                 _db.collection("CHAPTER_HAS_TOPIC").insert({
                     "_key": f"{ch_key}__{t_key}",
@@ -437,12 +464,57 @@ def upsert_misconception_edge(student_id: str, topic: str, description: str, sev
 def get_knowledge_graph_payload(session, board=None, class_grade=None, subject=None, student_id=None, mode="curriculum"):
     """Extracts node & edge graph dataset from ArangoDB (or MySQL curriculum fallback).
     Supports both Global Curriculum Hierarchy and Student Mastery / Diagnostic modes.
+    Enriched with live question counts and pedagogical insights (Core Concepts, Traps, Formulas).
     """
     nodes_map = {}
     edges_list = []
     students_list = []
 
-    # 1. Fetch active students for dropdown
+    # 1. Fetch live question counts from MySQL question_master grouped by topic and chapter
+    topic_question_stats = {}
+    chapter_question_stats = {}
+    try:
+        q_stat_sql = text("""
+            SELECT 
+                t.id AS topic_id,
+                t.topic_name,
+                t.chapter_id,
+                ch.chapter_name,
+                COUNT(q.id) AS total_questions,
+                SUM(CASE WHEN LOWER(q.difficulty) = 'easy' THEN 1 ELSE 0 END) AS easy_count,
+                SUM(CASE WHEN LOWER(q.difficulty) = 'medium' THEN 1 ELSE 0 END) AS medium_count,
+                SUM(CASE WHEN LOWER(q.difficulty) = 'hard' THEN 1 ELSE 0 END) AS hard_count
+            FROM topic_master t
+            JOIN chapter_master ch ON t.chapter_id = ch.id
+            LEFT JOIN question_master q ON q.topic_id = t.id AND q.is_active = 1
+            WHERE t.is_active = 1
+            GROUP BY t.id, t.topic_name, t.chapter_id, ch.chapter_name
+        """)
+        q_rows = session.execute(q_stat_sql).mappings().fetchall()
+        for qr in q_rows:
+            t_name_key = _safe_key(qr["topic_name"])
+            t_id_key = str(qr["topic_id"])
+            c_name_key = _safe_key(qr["chapter_name"])
+            c_id_key = str(qr["chapter_id"])
+            
+            tot_q = int(qr["total_questions"] or 0)
+            stats = {
+                "total_questions": tot_q,
+                "easy": int(qr["easy_count"] or 0),
+                "medium": int(qr["medium_count"] or 0),
+                "hard": int(qr["hard_count"] or 0)
+            }
+            topic_question_stats[t_name_key] = stats
+            topic_question_stats[t_id_key] = stats
+            topic_question_stats[qr["topic_name"].strip().lower()] = stats
+            
+            chapter_question_stats[c_name_key] = chapter_question_stats.get(c_name_key, 0) + tot_q
+            chapter_question_stats[c_id_key] = chapter_question_stats.get(c_id_key, 0) + tot_q
+            chapter_question_stats[qr["chapter_name"].strip().lower()] = chapter_question_stats.get(qr["chapter_name"].strip().lower(), 0) + tot_q
+    except Exception as qe:
+        logger.warning(f"Failed to query topic question stats: {qe}")
+
+    # 1.2 Fetch active students for dropdown
     target_student = None
     try:
         from model.models import Student, User
@@ -583,14 +655,27 @@ def get_knowledge_graph_payload(session, board=None, class_grade=None, subject=N
                     elif not ch_sub and norm_sub not in ch_key.lower():
                         continue
 
+                ch_q_count = chapter_question_stats.get(_safe_key(ch_name), chapter_question_stats.get(ch_name.strip().lower(), 0))
+                ch_display_label = f"{ch_name} ({ch_q_count} Qs)" if ch_q_count > 0 else ch_name
+
                 node_obj = {
                     "id": f"chapters/{ch_key}",
-                    "label": ch_name,
+                    "label": ch_display_label,
                     "group": "chapter",
                     "type": "Chapter",
                     "color": "#10b981",
-                    "size": 14,
-                    "meta": {"name": ch_name, "subject": ch_sub, "class": ch_class, "board": ch_board}
+                    "size": 15,
+                    "meta": {
+                        "name": ch_name,
+                        "subject": ch_sub,
+                        "class": ch_class,
+                        "board": ch_board,
+                        "question_count": ch_q_count,
+                        "summary": ch.get("summary") or f"Curriculum chapter for {ch_sub}",
+                        "core_concepts": ch.get("core_concepts") or [],
+                        "key_formulas": ch.get("key_formulas") or [],
+                        "common_traps": ch.get("common_traps") or [],
+                    }
                 }
                 nodes_map[f"chapters/{ch_key}"] = node_obj
                 nodes_map[f"chap_{ch_key}"] = node_obj
@@ -625,14 +710,34 @@ def get_knowledge_graph_payload(session, board=None, class_grade=None, subject=N
                     elif not t_sub and norm_sub not in t_key.lower():
                         continue
 
+                t_stat = topic_question_stats.get(t_key, topic_question_stats.get(t_name.strip().lower(), {"total_questions": int(t.get("question_count") or 0), "easy": 0, "medium": 0, "hard": 0}))
+                t_q_count = t_stat["total_questions"]
+                t_display_label = f"{t_name} ({t_q_count} Qs)" if t_q_count > 0 else t_name
+
                 node_obj = {
                     "id": f"topics/{t_key}",
-                    "label": t_name,
+                    "label": t_display_label,
                     "group": "topic",
                     "type": "Topic",
                     "color": "#06b6d4",
-                    "size": 11,
-                    "meta": {"name": t_name, "chapter": t.get("chapter"), "subject": t_sub}
+                    "size": 12,
+                    "meta": {
+                        "name": t_name,
+                        "chapter": t.get("chapter"),
+                        "subject": t_sub,
+                        "class": t_class,
+                        "board": t_board,
+                        "question_count": t_q_count,
+                        "difficulty_breakdown": {
+                            "easy": t_stat["easy"],
+                            "medium": t_stat["medium"],
+                            "hard": t_stat["hard"]
+                        },
+                        "core_concepts": t.get("core_concepts") or [f"Core definitions and applications of {t_name}"],
+                        "key_formulas": t.get("key_formulas") or [],
+                        "common_traps": t.get("common_traps") or [],
+                        "summary": t.get("summary") or f"Detailed curriculum sub-topic for {t_name}."
+                    }
                 }
                 nodes_map[f"topics/{t_key}"] = node_obj
                 nodes_map[f"top_{t_key}"] = node_obj
@@ -789,15 +894,28 @@ def get_knowledge_graph_payload(session, board=None, class_grade=None, subject=N
                 # Chapter Node
                 if ch_name:
                     ch_id = f"chap_{_safe_key(s_id)}__{_safe_key(ch_name)}"
+                    ch_q_count = chapter_question_stats.get(_safe_key(ch_name), chapter_question_stats.get(ch_name.strip().lower(), 0))
+                    ch_display_label = f"{ch_name} ({ch_q_count} Qs)" if ch_q_count > 0 else ch_name
+
                     if ch_id not in nodes_map:
                         nodes_map[ch_id] = {
                             "id": ch_id,
-                            "label": ch_name,
+                            "label": ch_display_label,
                             "group": "chapter",
                             "type": "Chapter",
                             "color": "#10b981",
-                            "size": 13,
-                            "meta": {"name": ch_name, "subject": s_name}
+                            "size": 15,
+                            "meta": {
+                                "name": ch_name,
+                                "subject": s_name,
+                                "class": c_name,
+                                "board": b_name,
+                                "question_count": ch_q_count,
+                                "summary": f"Comprehensive curriculum chapter for {s_name} ({ch_q_count} active questions mapped).",
+                                "core_concepts": [f"Core theoretical foundations of {ch_name}"],
+                                "key_formulas": [],
+                                "common_traps": [],
+                            }
                         }
                         edges_list.append({
                             "id": f"e_{s_id}__{ch_id}",
@@ -812,15 +930,35 @@ def get_knowledge_graph_payload(session, board=None, class_grade=None, subject=N
                     # Topic Node
                     if t_name:
                         t_id = f"top_{_safe_key(ch_id)}__{_safe_key(t_name)}"
+                        t_stat = topic_question_stats.get(_safe_key(t_name), topic_question_stats.get(t_name.strip().lower(), {"total_questions": 0, "easy": 0, "medium": 0, "hard": 0}))
+                        t_q_count = t_stat["total_questions"]
+                        t_display_label = f"{t_name} ({t_q_count} Qs)" if t_q_count > 0 else t_name
+
                         if t_id not in nodes_map:
                             nodes_map[t_id] = {
                                 "id": t_id,
-                                "label": t_name,
+                                "label": t_display_label,
                                 "group": "topic",
                                 "type": "Topic",
                                 "color": "#06b6d4",
-                                "size": 10,
-                                "meta": {"name": t_name, "chapter": ch_name, "subject": s_name}
+                                "size": 12,
+                                "meta": {
+                                    "name": t_name,
+                                    "chapter": ch_name,
+                                    "subject": s_name,
+                                    "class": c_name,
+                                    "board": b_name,
+                                    "question_count": t_q_count,
+                                    "difficulty_breakdown": {
+                                        "easy": t_stat["easy"],
+                                        "medium": t_stat["medium"],
+                                        "hard": t_stat["hard"]
+                                    },
+                                    "core_concepts": [f"Core principles and applications of {t_name}"],
+                                    "key_formulas": [],
+                                    "common_traps": [],
+                                    "summary": f"Target curriculum topic '{t_name}' under chapter '{ch_name}'."
+                                }
                             }
                             edges_list.append({
                                 "id": f"e_{ch_id}__{t_id}",

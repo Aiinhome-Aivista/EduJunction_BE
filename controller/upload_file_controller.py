@@ -331,6 +331,7 @@ def save_generated_questions_api():
                             UPDATE question_master
                             SET options = :options, correct_answer = :correct_answer, explanation = :explanation,
                                 marks = :marks, difficulty_level_id = :diff_id, question_type_id = :type_id,
+                                image_url = COALESCE(:image_url, image_url),
                                 updated_at = NOW()
                             WHERE id = :id
                         """),
@@ -342,6 +343,7 @@ def save_generated_questions_api():
                             "marks": marks,
                             "diff_id": diff_id,
                             "type_id": type_id,
+                            "image_url": q.get("image_url") or q.get("imageUrl") or None
                         }
                     )
                     updated_count += 1
@@ -350,15 +352,16 @@ def save_generated_questions_api():
                 # Insert new question
                 ins_sql = text("""
                     INSERT INTO question_master 
-                    (topic_id, question_type_id, difficulty_level_id, question, options, correct_answer, explanation, marks, is_active, created_at, updated_at)
+                    (topic_id, question_type_id, difficulty_level_id, question, image_url, options, correct_answer, explanation, marks, is_active, created_at, updated_at)
                     VALUES 
-                    (:topic_id, :type_id, :diff_id, :question, :options, :correct_answer, :explanation, :marks, 1, NOW(), NOW())
+                    (:topic_id, :type_id, :diff_id, :question, :image_url, :options, :correct_answer, :explanation, :marks, 1, NOW(), NOW())
                 """)
                 session.execute(ins_sql, {
                     "topic_id": target_q_tid,
                     "type_id": type_id,
                     "diff_id": diff_id,
                     "question": q_text,
+                    "image_url": q.get("image_url") or q.get("imageUrl") or None,
                     "options": options_json,
                     "correct_answer": correct_answer,
                     "explanation": explanation,
@@ -814,6 +817,9 @@ def save_extracted_curriculum_questions_api():
     detected_topics = payload.get("detected_topics") or payload.get("detectedTopics", [])
     title = payload.get("title")
     summary = payload.get("summary")
+    core_concepts = payload.get("core_concepts") or payload.get("coreConcepts", [])
+    key_formulas_or_rules = payload.get("key_formulas_or_rules") or payload.get("keyFormulas", [])
+    common_traps = payload.get("common_traps") or payload.get("commonTraps", [])
 
     files_payload = payload.get("files")
     if isinstance(files_payload, list) and len(files_payload) > 1:
@@ -834,6 +840,9 @@ def save_extracted_curriculum_questions_api():
                 f_title = file_item.get("title", f_name)
                 f_summary = file_item.get("summary", "")
                 f_topics = file_item.get("detected_topics") or file_item.get("detectedTopics", [])
+                f_core_concepts = file_item.get("core_concepts") or core_concepts
+                f_key_formulas = file_item.get("key_formulas_or_rules") or key_formulas_or_rules
+                f_common_traps = file_item.get("common_traps") or common_traps
                 
                 # Questions belonging to this file, or all questions if not partitioned
                 f_questions = file_item.get("questions") or [q for q in questions if q.get("source_file") == f_name]
@@ -854,6 +863,9 @@ def save_extracted_curriculum_questions_api():
                     detected_topics=f_topics,
                     title=f_title,
                     summary=f_summary,
+                    core_concepts=f_core_concepts,
+                    key_formulas_or_rules=f_key_formulas,
+                    common_traps=f_common_traps,
                 )
                 total_ins += res.get("inserted_count", 0)
                 total_upd += res.get("updated_count", 0)
@@ -889,6 +901,9 @@ def save_extracted_curriculum_questions_api():
             detected_topics=detected_topics,
             title=title,
             summary=summary,
+            core_concepts=core_concepts,
+            key_formulas_or_rules=key_formulas_or_rules,
+            common_traps=common_traps,
         )
         return success(result, 201)
 

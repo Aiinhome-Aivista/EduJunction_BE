@@ -3,6 +3,7 @@ Routes dynamic LLM calls according to scenario assignments (e.g., exam_generatio
 Executes direct API calls based on configured provider credentials and Base URLs without code hardcoding.
 """
 import json
+import re
 import time
 import warnings
 import requests
@@ -108,8 +109,21 @@ def is_configured(scenario: str = "exam_generation") -> bool:
 
 
 # ============================================================
-# Individual Provider Callers (Reusable by Router & Live Test)
+# Individual Provider Callers (Pure Database-Driven)
 # ============================================================
+
+def _format_chat_endpoint(url: str) -> str:
+    """Ensures a local provider base_url ends with /api/chat if omitted."""
+    if not url:
+        return ""
+    clean = url.strip().rstrip("/")
+    if not clean.endswith(("/api/chat", "/chat/completions", "/messages")):
+        if ":11434" in clean or ":3041" in clean or "ollama" in clean or "local" in clean:
+            clean += "/api/chat"
+        else:
+            clean += "/chat/completions"
+    return clean
+
 
 def _call_gemini(messages: list, json_mode: bool, temperature: float, api_key: str, model_name: str, timeout: int = 600) -> str:
     genai = _get_genai()
@@ -117,9 +131,9 @@ def _call_gemini(messages: list, json_mode: bool, temperature: float, api_key: s
         raise MistralUnavailableError("google-generativeai package is not installed.")
 
     if not api_key:
-        raise MistralUnavailableError("Gemini API Key is missing in database configuration.")
+        raise MistralUnavailableError("Gemini API Key is missing in database provider configuration.")
     if not model_name:
-        raise MistralUnavailableError("Model Name is missing in database configuration for Gemini.")
+        raise MistralUnavailableError("Gemini Model Name is missing in database provider configuration.")
 
     genai.configure(api_key=api_key)
 
@@ -152,11 +166,11 @@ def _call_gemini(messages: list, json_mode: bool, temperature: float, api_key: s
 
 def _call_mistral_cloud(messages: list, json_mode: bool, temperature: float, api_key: str, model_name: str, base_url: str = None, timeout: int = 600) -> str:
     if not base_url:
-        raise MistralUnavailableError("Endpoint URL (Base URL) is missing in database for Mistral Cloud.")
+        raise MistralUnavailableError("Base URL is missing in database provider configuration for Mistral Cloud.")
     if not model_name:
-        raise MistralUnavailableError("Model Name is missing in database for Mistral Cloud.")
+        raise MistralUnavailableError("Model Name is missing in database provider configuration for Mistral Cloud.")
     if not api_key:
-        raise MistralUnavailableError("API Key is missing in database for Mistral Cloud.")
+        raise MistralUnavailableError("API Key is missing in database provider configuration for Mistral Cloud.")
 
     target_url = base_url.strip()
     headers = {
@@ -181,11 +195,11 @@ def _call_mistral_cloud(messages: list, json_mode: bool, temperature: float, api
 
 def _call_mistral_local(messages: list, json_mode: bool, temperature: float, model_name: str, base_url: str = None, timeout: int = 600) -> str:
     if not base_url:
-        raise MistralUnavailableError("Endpoint URL (Base URL) is missing in database for Local Provider.")
+        raise MistralUnavailableError("Base URL is missing in database provider configuration for Local LLM.")
     if not model_name:
-        raise MistralUnavailableError("Model Name is missing in database for Local Provider.")
+        raise MistralUnavailableError("Model Name is missing in database provider configuration for Local LLM.")
 
-    target_url = base_url.strip()
+    resolved_url = _format_chat_endpoint(base_url)
 
     payload = {
         "model": model_name,
@@ -197,7 +211,7 @@ def _call_mistral_local(messages: list, json_mode: bool, temperature: float, mod
     if json_mode:
         payload["format"] = "json"
 
-    res = requests.post(target_url, json=payload, timeout=timeout)
+    res = requests.post(resolved_url, json=payload, timeout=timeout)
     res.raise_for_status()
     data = res.json()
     return data.get("message", {}).get("content", "").strip()
@@ -205,9 +219,9 @@ def _call_mistral_local(messages: list, json_mode: bool, temperature: float, mod
 
 def _call_openai(messages: list, json_mode: bool, temperature: float, api_key: str, model_name: str, base_url: str = None, timeout: int = 600) -> str:
     if not base_url:
-        raise MistralUnavailableError("Endpoint URL (Base URL) is missing in database for OpenAI/Custom Provider.")
+        raise MistralUnavailableError("Base URL is missing in database provider configuration for OpenAI/Custom Provider.")
     if not model_name:
-        raise MistralUnavailableError("Model Name is missing in database for OpenAI/Custom Provider.")
+        raise MistralUnavailableError("Model Name is missing in database provider configuration for OpenAI/Custom Provider.")
 
     target_url = base_url.strip()
     headers = {
@@ -233,14 +247,13 @@ def _call_openai(messages: list, json_mode: bool, temperature: float, api_key: s
 
 def _call_claude(messages: list, json_mode: bool, temperature: float, api_key: str, model_name: str, base_url: str = None, max_tokens: int = 2048, timeout: int = 600) -> str:
     if not base_url:
-        raise MistralUnavailableError("Endpoint URL (Base URL) is missing in database for Claude Provider.")
+        raise MistralUnavailableError("Base URL is missing in database provider configuration for Claude Provider.")
     if not model_name:
-        raise MistralUnavailableError("Model Name is missing in database for Claude Provider.")
+        raise MistralUnavailableError("Model Name is missing in database provider configuration for Claude Provider.")
     if not api_key:
-        raise MistralUnavailableError("API Key is missing in database for Claude Provider.")
+        raise MistralUnavailableError("API Key is missing in database provider configuration for Claude Provider.")
 
     target_url = base_url.strip()
-
     headers = {
         "x-api-key": api_key,
         "anthropic-version": "2023-06-01",
@@ -269,39 +282,103 @@ def _call_claude(messages: list, json_mode: bool, temperature: float, api_key: s
     return res.json()["content"][0]["text"].strip()
 
 
+def get_all_active_providers() -> list:
+    """Returns all active LLM configurations ordered by database ID index (ascending)."""
+    try:
+        from database.dbConnection import get_session
+        from model.models import LLMConfig
+
+        with get_session() as session:
+            providers = session.query(LLMConfig).filter(LLMConfig.is_active == True).order_by(LLMConfig.id.asc()).all()
+            return [
+                {
+                    "id": p.id,
+                    "name": p.name,
+                    "provider": (p.provider_type or "gemini").lower().strip(),
+                    "base_url": p.base_url,
+                    "api_key": p.api_key,
+                    "model_name": p.model_name,
+                    "timeout": p.timeout_seconds or 600,
+                    "temperature": 0.30,
+                    "max_tokens": 2048,
+                }
+                for p in providers
+            ]
+    except Exception as e:
+        logger.warning(f"Error fetching active providers list: {e}")
+        return []
+
+
+def _execute_provider_call(provider_cfg: dict, messages: list, json_mode: bool, temperature: float) -> str:
+    """Dispatches call strictly using credentials and model from the database provider record."""
+    active_provider = str(provider_cfg.get("provider") or "gemini").lower().strip()
+    effective_temp = temperature if temperature is not None else provider_cfg.get("temperature", 0.30)
+    effective_timeout = provider_cfg.get("timeout", 600)
+    model_name = provider_cfg.get("model_name")
+    base_url = provider_cfg.get("base_url")
+    api_key = provider_cfg.get("api_key")
+    max_tokens = provider_cfg.get("max_tokens", 2048)
+
+    if "gemini" in active_provider:
+        return _call_gemini(messages, json_mode, effective_temp, api_key, model_name, timeout=effective_timeout)
+    elif "mistral_local" in active_provider or "local" in active_provider or active_provider == "ollama":
+        return _call_mistral_local(messages, json_mode, effective_temp, model_name, base_url, timeout=effective_timeout)
+    elif "mistral" in active_provider:
+        return _call_mistral_cloud(messages, json_mode, effective_temp, api_key, model_name, base_url, timeout=effective_timeout)
+    elif "anthropic" in active_provider or "claude" in active_provider:
+        return _call_claude(messages, json_mode, effective_temp, api_key, model_name, base_url, max_tokens, timeout=effective_timeout)
+    else:
+        return _call_openai(messages, json_mode, effective_temp, api_key, model_name, base_url, timeout=effective_timeout)
+
+
 # ============================================================
-# Main Routing Dispatcher
+# Main Routing Dispatcher with Database Index-Wise Fallback
 # ============================================================
 
 def call_llm_chat(messages: list, json_mode: bool = False, temperature: float = None, scenario: str = "doubt_chat") -> str:
-    """Executes a chat completion call routed to the LLM assigned to the given scenario."""
-    db_cfg = get_scenario_llm_config(scenario)
-    if not db_cfg:
-        raise MistralUnavailableError(f"Active LLM Configuration is missing for scenario '{scenario}'")
+    """Executes a chat completion call routed to the LLM assigned to the given scenario from the Database.
+    If the assigned provider fails or is missing, automatically cascades through active providers
+    in database index order (LLMConfig.id ASC) with transparent terminal logging.
+    """
+    primary_cfg = get_scenario_llm_config(scenario)
+    active_providers = get_all_active_providers()
 
-    active_provider = str(db_cfg["provider"]).lower().strip()
-    effective_temp = temperature if temperature is not None else db_cfg.get("temperature")
-    effective_timeout = db_cfg.get("timeout", 600)
-    model_name = db_cfg.get("model_name")
-    base_url = db_cfg.get("base_url")
-    api_key = db_cfg.get("api_key")
+    # Build candidates chain: Primary Assigned Provider first, then remaining active providers by ID index
+    candidates = []
+    if primary_cfg:
+        candidates.append(primary_cfg)
 
-    print(f"[LLM CALL - {scenario.upper()}] Provider: {active_provider} | Model: {model_name} | Timeout: {effective_timeout}s", flush=True)
+    for p in active_providers:
+        if not any(c.get("id") == p.get("id") for c in candidates):
+            candidates.append(p)
 
-    try:
-        if "gemini" in active_provider:
-            return _call_gemini(messages, json_mode, effective_temp, api_key, model_name, timeout=effective_timeout)
-        elif "mistral_local" in active_provider or "local" in active_provider or active_provider == "ollama":
-            return _call_mistral_local(messages, json_mode, effective_temp, model_name, base_url, timeout=effective_timeout)
-        elif "mistral" in active_provider:
-            return _call_mistral_cloud(messages, json_mode, effective_temp, api_key, model_name, base_url, timeout=effective_timeout)
-        elif "anthropic" in active_provider or "claude" in active_provider:
-            return _call_claude(messages, json_mode, effective_temp, api_key, model_name, base_url, db_cfg.get("max_tokens", 2048), timeout=effective_timeout)
+    if not candidates:
+        raise MistralUnavailableError(f"No active LLM configuration available in database for scenario '{scenario}'")
+
+    last_error = None
+    for idx, cfg in enumerate(candidates):
+        p_id = cfg.get("id", "N/A")
+        p_name = cfg.get("name", "Unknown")
+        p_type = cfg.get("provider", "Unknown")
+        m_name = cfg.get("model_name", "Default")
+        b_url = cfg.get("base_url") or "Cloud Native"
+
+        is_fallback = idx > 0
+        if is_fallback:
+            print(f"[LLM FALLBACK] Switching to Provider: '{p_name}' ({p_type}) | Model: '{m_name}' | URL: '{b_url}'", flush=True)
         else:
-            return _call_openai(messages, json_mode, effective_temp, api_key, model_name, base_url, timeout=effective_timeout)
+            print(f"[LLM ROUTING] Scenario: '{scenario}' -> Provider: '{p_name}' ({p_type}) | Model: '{m_name}' | URL: '{b_url}'", flush=True)
 
-    except Exception as e:
-        raise MistralUnavailableError(f"LLM Error ({active_provider} for {scenario}): {str(e)}") from e
+        try:
+            res = _execute_provider_call(cfg, messages, json_mode, temperature)
+            if res and res.strip():
+                print(f"[LLM SUCCESS] Provider: '{p_name}' (Model: '{m_name}') responded successfully.", flush=True)
+                return res
+        except Exception as e:
+            last_error = e
+            print(f"[LLM ERROR] Provider: '{p_name}' (Model: '{m_name}') failed: {e}", flush=True)
+
+    raise MistralUnavailableError(f"All active LLM providers in database failed for scenario '{scenario}'. Last error: {last_error}")
 
 
 def call_llm(prompt: str, scenario: str = "doubt_chat") -> str:
@@ -310,7 +387,7 @@ def call_llm(prompt: str, scenario: str = "doubt_chat") -> str:
 
 
 def _clean_and_parse_json(raw_text: str) -> dict:
-    """Robust JSON extractor with guardrails against markdown wrappers and preamble text."""
+    """Robust JSON extractor with guardrails against markdown wrappers, preamble text, and stream truncation."""
     text = raw_text.strip()
     if text.startswith("```json"):
         text = text[7:]
@@ -320,15 +397,63 @@ def _clean_and_parse_json(raw_text: str) -> dict:
         text = text[:-3]
     text = text.strip()
 
+    # 1. Direct JSON parse
     try:
-        return json.loads(text)
+        res = json.loads(text)
+        if isinstance(res, list):
+            return {"questions": res}
+        return res
     except json.JSONDecodeError:
-        start_idx = text.find("{")
-        end_idx = text.rfind("}")
-        if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
-            sub = text[start_idx : end_idx + 1]
+        pass
+
+    # 2. Extract substring between first '{' and last '}'
+    start_idx = text.find("{")
+    end_idx = text.rfind("}")
+    if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
+        sub = text[start_idx : end_idx + 1]
+        try:
             return json.loads(sub)
-        raise
+        except json.JSONDecodeError:
+            pass
+
+    # 3. Truncation Auto-Repair: Close truncated JSON arrays
+    if '"questions"' in text or "'questions'" in text:
+        q_pos = text.rfind("}")
+        if q_pos != -1:
+            repaired = text[:q_pos + 1].strip()
+            if not repaired.endswith("]"):
+                repaired += "\n  ]"
+            if not repaired.endswith("}"):
+                repaired += "\n}"
+            if not repaired.startswith("{"):
+                repaired = "{\n  \"questions\": [\n" + repaired
+            try:
+                parsed = json.loads(repaired)
+                if isinstance(parsed, dict) and parsed.get("questions"):
+                    return parsed
+            except Exception:
+                pass
+
+    # 4. Regex extraction of individual valid JSON objects matching question structure
+    question_objects = []
+    object_matches = re.finditer(r'\{\s*"question"\s*:\s*.*?(?=\n\s*\{\s*"question"|\Z)', text, re.DOTALL)
+    for m in object_matches:
+        chunk = m.group(0).strip().rstrip(",")
+        last_b = chunk.rfind("}")
+        if last_b != -1:
+            candidate = chunk[:last_b + 1]
+            try:
+                obj = json.loads(candidate)
+                if isinstance(obj, dict) and "question" in obj:
+                    question_objects.append(obj)
+            except Exception:
+                pass
+
+    if question_objects:
+        return {"questions": question_objects}
+
+    return json.loads(text)
+
 
 
 def generate_json(system_prompt: str, user_prompt: str, *, temperature: float = None, scenario: str = "exam_generation") -> dict:
@@ -379,15 +504,16 @@ def embed_texts(texts: list[str], scenario: str = "embeddings") -> list[list[flo
         raise MistralUnavailableError("LLM Configuration is missing for embeddings")
 
     active_provider = str(db_cfg["provider"]).lower().strip()
-    api_key = db_cfg.get("api_key")
-    base_url = db_cfg.get("base_url")
-    model_name = db_cfg.get("model_name")
+    api_key = db_cfg.get("api_key") or getattr(config, "MISTRAL_API_KEY", None)
+    base_url = (db_cfg.get("base_url") or "").strip() or getattr(config, "MISTRAL_EMBED_URL", None)
+    if not base_url and getattr(config, "MISTRAL_LOCAL_URL", None):
+        base_url = getattr(config, "MISTRAL_LOCAL_URL", "").rstrip("/") + "/api/embeddings"
+
+    model_name = db_cfg.get("model_name") or getattr(config, "MISTRAL_EMBED_MODEL", "mistral-embed")
     timeout = db_cfg.get("timeout", 600)
 
-    if not model_name:
-        raise MistralUnavailableError("Embedding Model Name is missing in database configuration.")
     if not base_url:
-        raise MistralUnavailableError("Base URL is missing in database for embeddings.")
+        raise MistralUnavailableError("Base URL for embeddings is missing in database and .env configuration.")
 
     start = time.time()
     target_url = base_url.strip()

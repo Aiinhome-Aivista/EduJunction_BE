@@ -214,8 +214,166 @@ def extract_text(
     raise ValidationError(f"No extractor implemented for '.{ext}'")
 
 
+DISCLAIMER_PATTERNS = [
+    r"no\s+part\s+of\s+this\s+publication\s+may\s+be\s+reproduced",
+    r"stored\s+in\s+a\s+retrieval\s+system",
+    r"transmitted\s+in\s+any\s+form\s+or\s+by\s+any\s+means",
+    r"all\s+rights\s+reserved",
+    r"national\s+council\s+of\s+educational\s+research\s+and\s+training",
+    r"printed\s+in\s+india",
+    r"published\s+at\s+the\s+publication\s+division",
+    r"\bisbn\s*[:\d\-xX]+",
+    r"price\s*:\s*(?:rs|inr|\u20B9)\.?\s*\d+",
+    r"chief\s+advisor\s*:",
+    r"editorial\s+board\s*:",
+    r"\bforeword\b",
+    r"\bpreface\b",
+    r"textbook\s+development\s+committee",
+    r"printed\s+on\s+\d+\s*gsm\s+paper",
+    r"reprinted\s+in\s+\d{4}",
+]
+
+
+def strip_non_academic_preamble(raw_text: str) -> str:
+    """Removes textbook publisher prefaces, copyright disclaimers, ISBNs, and editorial notes."""
+    if not raw_text:
+        return ""
+
+    paragraphs = raw_text.split("\n\n")
+    cleaned_paragraphs = []
+
+    for para in paragraphs:
+        para_clean = para.strip()
+        if not para_clean:
+            continue
+
+        para_lower = para_clean.lower()
+        # Check if entire paragraph is copyright/preface boilerplate
+        is_junk = any(re.search(pat, para_lower) for pat in DISCLAIMER_PATTERNS)
+        if is_junk and len(para_clean) < 800:
+            continue
+
+        # If long paragraph has some disclaimer lines, strip matching lines
+        lines = para_clean.splitlines()
+        valid_lines = []
+        for line in lines:
+            line_l = line.strip().lower()
+            if not any(re.search(pat, line_l) for pat in DISCLAIMER_PATTERNS):
+                valid_lines.append(line.strip())
+
+        if valid_lines:
+            cleaned_paragraphs.append("\n".join(valid_lines))
+
+    return "\n\n".join(cleaned_paragraphs)
+
+
+VALID_IMAGE_EXTS = {"png", "jpg", "jpeg", "webp"}
+
+
+def save_diagram_to_disk(image_bytes: bytes, ext: str = "png", prefix: str = "diag") -> str:
+    """Saves an actively referenced question diagram to uploads/questions/ on disk.
+    
+    Returns the relative URL (/edujunction/uploads/questions/...).
+    """
+    if not image_bytes:
+        return ""
+    try:
+        from utils.config import config
+        from uuid import uuid4
+        questions_dir = os.path.join(config.UPLOAD_DIR, "questions")
+        os.makedirs(questions_dir, exist_ok=True)
+
+        clean_ext = ext.lower().replace(".", "")
+        if clean_ext not in VALID_IMAGE_EXTS:
+            clean_ext = "png"
+
+        img_filename = f"{prefix}_{uuid4().hex[:12]}.{clean_ext}"
+        filepath = os.path.join(questions_dir, img_filename)
+
+        with open(filepath, "wb") as f:
+            f.write(image_bytes)
+
+        logger.info(f"Saved linked question diagram: {filepath} ({len(image_bytes)} bytes)")
+        return f"/edujunction/uploads/questions/{img_filename}"
+    except Exception as e:
+        logger.warning(f"Failed to save linked diagram to disk: {e}")
+        return ""
+
+
+def extract_pdf_diagrams(file_bytes: bytes, max_diagrams: int = 20) -> list[dict]:
+    """Extracts candidate embedded diagrams and figures from PDF in-memory without polluting disk.
+
+    Only valid web formats (.png, .jpg, .jpeg, .webp) with academic diagram dimensions are retained.
+    """
+    extracted_diagrams = []
+    if not file_bytes:
+        return extracted_diagrams
+
+    try:
+        doc = fitz.open(stream=file_bytes, filetype="pdf")
+        saved_count = 0
+
+        for page_idx, page in enumerate(doc):
+            if saved_count >= max_diagrams:
+                break
+
+            page_num = page_idx + 1
+            images = page.get_images(full=True)
+
+            for img_idx, img_info in enumerate(images):
+                if saved_count >= max_diagrams:
+                    break
+
+                xref = img_info[0]
+                base_image = doc.extract_image(xref)
+                if not base_image:
+                    continue
+
+                image_bytes = base_image.get("image")
+                image_ext = (base_image.get("ext") or "png").lower().strip()
+                width = base_image.get("width", 0)
+                height = base_image.get("height", 0)
+
+                # STRICT FILTER 1: Reject JPX (JPEG2000 masks) and non-web formats
+                if image_ext not in VALID_IMAGE_EXTS:
+                    continue
+
+                # STRICT FILTER 2: Filter out tiny icon decorations, badges, or full-page blank scans
+                if width < 180 or height < 160 or width > 2800 or height > 3500:
+                    continue
+
+                # STRICT FILTER 3: Filter out byte size < 6KB (icons, bullets, thin color strips)
+                if not image_bytes or len(image_bytes) < 6144:
+                    continue
+
+                # STRICT FILTER 4: Filter out extreme aspect ratios and NCERT text-box banners (e.g. Find Out, Activity)
+                aspect = width / max(height, 1)
+                if aspect > 3.0 or aspect < 0.30:
+                    continue
+                if aspect > 2.2 and height < 200:
+                    continue
+
+
+                extracted_diagrams.append({
+                    "image_bytes": image_bytes,
+                    "ext": image_ext,
+                    "page": page_num,
+                    "width": width,
+                    "height": height,
+                })
+                saved_count += 1
+
+        doc.close()
+    except Exception as e:
+        logger.warning(f"In-memory diagram extraction notice: {e}")
+
+    return extracted_diagrams
+
+
+
 def clean_text(raw_text: str) -> str:
-    lines = [line.strip() for line in raw_text.splitlines()]
+    cleaned = strip_non_academic_preamble(raw_text)
+    lines = [line.strip() for line in cleaned.splitlines()]
     return "\n".join(line for line in lines if line)
 
 
