@@ -668,42 +668,22 @@ def _normalize_title(text_val: str) -> str:
     return re.sub(r'[^a-zA-Z0-9]', '', cleaned).lower()
 
 
-def resolve_subject_topic_id(
+def resolve_or_create_chapter_and_topics(
     session: Session,
+    *,
     board: str,
     class_grade: str,
     subject: str,
-    target_topic_id: Optional[int] = None,
     title: Optional[str] = None,
     detected_topics: Optional[List[str]] = None,
-) -> int:
-    """Strictly resolves or creates a matching topic_id for the given Board, Class, and Subject,
-    preventing duplicate chapters and topics."""
-    # 1. If target_topic_id is provided, verify it strictly belongs to this (board, class_grade, subject)
-    if target_topic_id:
-        try:
-            is_valid = session.execute(
-                text("""
-                    SELECT t.id 
-                    FROM topic_master t
-                    JOIN chapter_master ch ON t.chapter_id = ch.id
-                    JOIN subject_master s ON ch.subject_id = s.id
-                    JOIN board_master b ON s.board_id = b.id
-                    JOIN class_master c ON s.class_id = c.id
-                    WHERE t.id = :tid
-                      AND LOWER(TRIM(b.board_name)) = LOWER(TRIM(:b))
-                      AND (LOWER(TRIM(c.class_name)) = LOWER(TRIM(:c)) OR LOWER(TRIM(REPLACE(c.class_name, 'Class ', ''))) = LOWER(TRIM(:c)))
-                      AND (LOWER(TRIM(s.subject_name)) = LOWER(TRIM(:s)) OR (LOWER(TRIM(:s)) = 'science' AND LOWER(TRIM(s.subject_name)) IN ('physics', 'chemistry', 'biology', 'science')))
-                    LIMIT 1
-                """),
-                {"tid": target_topic_id, "b": board, "c": class_grade, "s": subject}
-            ).scalar()
-            if is_valid:
-                return int(target_topic_id)
-        except Exception:
-            pass
-
-    # 2. Lookup subject_id in subject_master
+    questions: Optional[List[dict]] = None,
+    target_topic_id: Optional[int] = None,
+) -> tuple[int, dict[str, int], int]:
+    """Dynamically resolves or inserts the Subject, Chapter, and ALL unique Sub-Topics
+    extracted by LLM from the document and questions. (100% dynamic - no fixed limits).
+    Returns (chapter_id, topic_map, default_topic_id).
+    """
+    # 1. Lookup subject_id in subject_master
     sub_id = None
     try:
         sub_id = session.execute(
@@ -723,14 +703,27 @@ def resolve_subject_topic_id(
     except Exception:
         pass
 
+    # If subject not found, create it under matching board & class
+    if not sub_id:
+        try:
+            b_id = session.execute(text("SELECT id FROM board_master WHERE LOWER(TRIM(board_name)) = LOWER(TRIM(:b)) LIMIT 1"), {"b": board}).scalar()
+            c_id = session.execute(text("SELECT id FROM class_master WHERE LOWER(TRIM(class_name)) = LOWER(TRIM(:c)) OR LOWER(TRIM(REPLACE(class_name, 'Class ', ''))) = LOWER(TRIM(:c)) LIMIT 1"), {"c": class_grade}).scalar()
+            if b_id and c_id:
+                session.execute(text("INSERT INTO subject_master (board_id, class_id, subject_name, is_active) VALUES (:bid, :cid, :sn, 1)"), {"bid": b_id, "cid": c_id, "sn": subject})
+                session.commit()
+                sub_id = session.execute(text("SELECT id FROM subject_master WHERE board_id = :bid AND class_id = :cid AND subject_name = :sn ORDER BY id DESC LIMIT 1"), {"bid": b_id, "cid": c_id, "sn": subject}).scalar()
+        except Exception:
+            session.rollback()
+
     if not sub_id:
         first_topic = session.execute(text("SELECT id FROM topic_master LIMIT 1")).scalar()
-        return int(first_topic or 1)
+        fallback_tid = int(first_topic or 1)
+        return (1, {"default": fallback_tid}, fallback_tid)
 
+    # 2. Match or create Chapter under this subject
     norm_title = _normalize_title(title or "")
     matched_chapter_id = None
 
-    # 3. Search existing chapters under this subject_id to avoid duplication
     try:
         existing_chapters = session.execute(
             text("SELECT id, chapter_name FROM chapter_master WHERE subject_id = :sid AND is_active = 1"),
@@ -745,7 +738,6 @@ def resolve_subject_topic_id(
     except Exception:
         pass
 
-    # 4. If no existing chapter matched, create chapter under subject_id
     if not matched_chapter_id:
         try:
             ch_name_to_create = title.strip() if title and len(title.strip()) > 2 else f"General {subject}"
@@ -763,47 +755,162 @@ def resolve_subject_topic_id(
 
     if not matched_chapter_id:
         first_topic = session.execute(text("SELECT id FROM topic_master LIMIT 1")).scalar()
-        return int(first_topic or 1)
+        fallback_tid = int(first_topic or 1)
+        return (1, {"default": fallback_tid}, fallback_tid)
 
-    # 5. Search existing topics under this matched chapter
-    primary_topic_name = (detected_topics[0] if detected_topics and detected_topics[0] else title) or f"{subject} Concepts"
-    norm_topic = _normalize_title(primary_topic_name)
+    # 3. Gather ALL unique topics (from detected_topics list + all questions' topic_suggested)
+    candidate_topics = []
+    if detected_topics:
+        for dt in detected_topics:
+            if dt and str(dt).strip():
+                candidate_topics.append(str(dt).strip())
 
+    if questions:
+        for q in questions:
+            ts = q.get("topic_suggested") or q.get("topic") or q.get("topicName") or q.get("topic_name")
+            if ts and str(ts).strip():
+                candidate_topics.append(str(ts).strip())
+
+    # De-duplicate preserving order
+    seen_cand = set()
+    unique_topics_to_check = []
+    for t_str in candidate_topics:
+        norm_t = _normalize_title(t_str)
+        if norm_t and norm_t not in seen_cand:
+            seen_cand.add(norm_t)
+            unique_topics_to_check.append(t_str)
+
+    if not unique_topics_to_check:
+        unique_topics_to_check = [title or f"{subject} Core Concepts"]
+
+    # 4. Fetch existing topics under this chapter
+    topic_map: dict[str, int] = {}
+    raw_topic_list = []
     try:
-        existing_topics = session.execute(
+        existing_topic_rows = session.execute(
             text("SELECT id, topic_name FROM topic_master WHERE chapter_id = :chid AND is_active = 1"),
             {"chid": matched_chapter_id}
         ).fetchall()
 
-        for t_id, t_name in existing_topics:
-            norm_t = _normalize_title(t_name)
-            if norm_topic and (norm_topic == norm_t or norm_topic in norm_t or norm_t in norm_topic):
-                return int(t_id)
-
-        # If chapter already has topics, reuse the first one
-        if existing_topics:
-            return int(existing_topics[0][0])
+        for tid, tname in existing_topic_rows:
+            norm_k = _normalize_title(tname)
+            if norm_k:
+                topic_map[norm_k] = int(tid)
+            raw_topic_list.append((int(tid), tname))
     except Exception:
         pass
 
-    # 6. If no topic under chapter, create it
-    try:
-        session.execute(
-            text("INSERT INTO topic_master (chapter_id, topic_name, is_active) VALUES (:chid, :tn, 1)"),
-            {"chid": matched_chapter_id, "tn": primary_topic_name.strip()[:150]}
-        )
-        session.commit()
-        new_tid = session.execute(
-            text("SELECT id FROM topic_master WHERE chapter_id = :chid ORDER BY id DESC LIMIT 1"),
-            {"chid": matched_chapter_id}
-        ).scalar()
-        if new_tid:
-            return int(new_tid)
-    except Exception:
-        session.rollback()
+    # 5. Insert any missing topics dynamically into topic_master (No fixed limit!)
+    for t_name in unique_topics_to_check:
+        norm_k = _normalize_title(t_name)
+        # Check if already present or closely matching
+        matched_existing_tid = None
+        for ex_norm, ex_tid in topic_map.items():
+            if norm_k == ex_norm or (len(norm_k) > 4 and (norm_k in ex_norm or ex_norm in norm_k)):
+                matched_existing_tid = ex_tid
+                break
 
-    first_topic = session.execute(text("SELECT id FROM topic_master LIMIT 1")).scalar()
-    return int(first_topic or 1)
+        if matched_existing_tid:
+            topic_map[norm_k] = matched_existing_tid
+        else:
+            try:
+                session.execute(
+                    text("INSERT INTO topic_master (chapter_id, topic_name, is_active) VALUES (:chid, :tn, 1)"),
+                    {"chid": matched_chapter_id, "tn": t_name.strip()[:150]}
+                )
+                session.commit()
+                new_tid = session.execute(
+                    text("SELECT id FROM topic_master WHERE chapter_id = :chid AND topic_name = :tn ORDER BY id DESC LIMIT 1"),
+                    {"chid": matched_chapter_id, "tn": t_name.strip()[:150]}
+                ).scalar()
+                if new_tid:
+                    topic_map[norm_k] = int(new_tid)
+                    raw_topic_list.append((int(new_tid), t_name))
+            except Exception:
+                session.rollback()
+
+    # Determine default topic_id
+    default_topic_id = None
+    if target_topic_id and target_topic_id in topic_map.values():
+        default_topic_id = int(target_topic_id)
+    elif raw_topic_list:
+        default_topic_id = raw_topic_list[0][0]
+    elif topic_map:
+        default_topic_id = next(iter(topic_map.values()))
+    else:
+        first_topic = session.execute(text("SELECT id FROM topic_master LIMIT 1")).scalar()
+        default_topic_id = int(first_topic or 1)
+
+    return (matched_chapter_id, topic_map, default_topic_id)
+
+
+def match_question_to_topic_id(
+    topic_map: dict[str, int],
+    question_dict: dict,
+    default_topic_id: int
+) -> int:
+    """Matches an individual question to its exact topic_id based on topic_suggested, topic, or question keywords."""
+    if not topic_map:
+        return default_topic_id
+
+    # 1. Direct explicit topic_id if valid
+    explicit_tid = question_dict.get("topic_id") or question_dict.get("topicId")
+    if explicit_tid:
+        try:
+            tid_int = int(explicit_tid)
+            if tid_int in topic_map.values():
+                return tid_int
+        except Exception:
+            pass
+
+    # 2. Match question's topic_suggested
+    q_topic = (
+        question_dict.get("topic_suggested")
+        or question_dict.get("topic")
+        or question_dict.get("topicName")
+        or question_dict.get("topic_name")
+        or ""
+    )
+    if q_topic:
+        norm_qt = _normalize_title(str(q_topic))
+        if norm_qt in topic_map:
+            return topic_map[norm_qt]
+
+        # Partial substring match
+        for k, tid in topic_map.items():
+            if k and (k in norm_qt or norm_qt in k):
+                return tid
+
+    # 3. Match against question text keywords
+    q_text = _normalize_title(str(question_dict.get("question") or ""))
+    if q_text:
+        for k, tid in topic_map.items():
+            if len(k) >= 5 and k in q_text:
+                return tid
+
+    return default_topic_id
+
+
+def resolve_subject_topic_id(
+    session: Session,
+    board: str,
+    class_grade: str,
+    subject: str,
+    target_topic_id: Optional[int] = None,
+    title: Optional[str] = None,
+    detected_topics: Optional[List[str]] = None,
+) -> int:
+    """Backward-compatible helper: resolves a default topic_id."""
+    _, _, default_tid = resolve_or_create_chapter_and_topics(
+        session,
+        board=board,
+        class_grade=class_grade,
+        subject=subject,
+        title=title,
+        detected_topics=detected_topics,
+        target_topic_id=target_topic_id,
+    )
+    return default_tid
 
 
 def process_curriculum_document_pipeline(
@@ -942,15 +1049,16 @@ def process_curriculum_document_pipeline(
 
     _ensure_curriculum_tables(session)
 
-    # 5.1 Resolve or Lookup topic_id in topic_master
-    resolved_topic_id = resolve_subject_topic_id(
+    # 5.1 Resolve or dynamically create Chapter & ALL Sub-Topics in topic_master
+    matched_chapter_id, topic_map, default_topic_id = resolve_or_create_chapter_and_topics(
         session=session,
         board=board,
         class_grade=class_grade,
         subject=subject,
-        target_topic_id=target_topic_id,
         title=title,
         detected_topics=detected_topics,
+        questions=final_questions,
+        target_topic_id=target_topic_id,
     )
 
     # Preload types and diff lookup dicts
@@ -963,11 +1071,13 @@ def process_curriculum_document_pipeline(
         for r in session.execute(text("SELECT difficulty_level_name, id FROM difficulty_level_master")).fetchall()
     }
 
-    # 5.2 Insert Questions into question_master
+    # 5.2 Insert Questions into question_master with per-question dynamic topic_id
     inserted_questions_count = 0
     updated_questions_count = 0
 
     for q in final_questions:
+        q_topic_id = match_question_to_topic_id(topic_map, q, default_topic_id)
+
         q_type_upper = str(q.get("type", "MCQ")).upper()
         q_type_id = types_map.get(q_type_upper)
         if not q_type_id:
@@ -995,14 +1105,14 @@ def process_curriculum_document_pipeline(
 
         options_json = json.dumps(q["options"]) if q["options"] else None
 
-        # Check existing for deduplication
+        # Check existing for deduplication within exact topic
         existing_id = session.execute(
             text("""
                 SELECT id FROM question_master
                 WHERE topic_id = :t_id AND LOWER(TRIM(question)) = LOWER(TRIM(:q_text))
                 LIMIT 1
             """),
-            {"t_id": resolved_topic_id, "q_text": q["question"]}
+            {"t_id": q_topic_id, "q_text": q["question"]}
         ).scalar()
 
         if existing_id:
@@ -1034,7 +1144,7 @@ def process_curriculum_document_pipeline(
                     (:topic_id, :type_id, :diff_id, :question, :options, :correct_answer, :explanation, :marks, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                 """),
                 {
-                    "topic_id": resolved_topic_id,
+                    "topic_id": q_topic_id,
                     "type_id": q_type_id,
                     "diff_id": diff_id,
                     "question": q["question"],
@@ -1118,7 +1228,7 @@ def process_curriculum_document_pipeline(
     print(f"  • Questions Saved : {TermColors.BOLD}{inserted_questions_count} inserted{TermColors.END}, {updated_questions_count} updated in `question_master`")
     print(f"  • Document ID     : {doc_id} (`documents` table)")
     print(f"  • Chunks Created  : {len(chunks)} (`document_chunks` table)")
-    print(f"  • Linked Topic ID : {resolved_topic_id}")
+    print(f"  • Default Topic ID: {default_topic_id}")
 
     _print_separator(f"PIPELINE COMPLETED: {filename} [SUCCESS]", TermColors.GREEN)
 
@@ -1133,7 +1243,7 @@ def process_curriculum_document_pipeline(
         "total_extracted": len(final_questions),
         "questions_inserted": inserted_questions_count,
         "questions_updated": updated_questions_count,
-        "topic_id": resolved_topic_id,
+        "topic_id": default_topic_id,
         "chunk_count": len(chunks),
         "questions": final_questions,
     }
@@ -1317,15 +1427,16 @@ def save_curriculum_extracted_questions_pipeline(
     _print_separator(f"PERSISTING APPROVED QUESTIONS: {filename}", TermColors.GREEN)
     _ensure_curriculum_tables(session)
 
-    # 1. Resolve topic_id
-    resolved_topic_id = resolve_subject_topic_id(
+    # 1. Resolve or dynamically create Chapter & ALL Sub-Topics in topic_master
+    matched_chapter_id, topic_map, default_topic_id = resolve_or_create_chapter_and_topics(
         session=session,
         board=board,
         class_grade=class_grade,
         subject=subject,
-        target_topic_id=target_topic_id,
         title=title,
         detected_topics=detected_topics,
+        questions=questions,
+        target_topic_id=target_topic_id,
     )
 
     # 2. Lookup Dicts for Question Types and Difficulties
@@ -1343,6 +1454,8 @@ def save_curriculum_extracted_questions_pipeline(
     duplicate_skipped = 0
 
     for q in questions:
+        q_topic_id = match_question_to_topic_id(topic_map, q, default_topic_id)
+
         q_type_upper = str(q.get("type", "MCQ")).upper()
         q_type_id = types_map.get(q_type_upper)
         if not q_type_id:
@@ -1371,14 +1484,14 @@ def save_curriculum_extracted_questions_pipeline(
         options_json = json.dumps(q.get("options", [])) if q.get("options") else None
         q_text = q.get("question", "").strip()
 
-        # Check existing for deduplication
+        # Check existing for deduplication within exact topic
         existing_id = session.execute(
             text("""
                 SELECT id FROM question_master
                 WHERE topic_id = :t_id AND LOWER(TRIM(question)) = LOWER(TRIM(:q_text))
                 LIMIT 1
             """),
-            {"t_id": resolved_topic_id, "q_text": q_text}
+            {"t_id": q_topic_id, "q_text": q_text}
         ).scalar()
 
         if existing_id:
@@ -1412,7 +1525,7 @@ def save_curriculum_extracted_questions_pipeline(
                     (:topic_id, :type_id, :diff_id, :question, :options, :correct_answer, :explanation, :marks, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                 """),
                 {
-                    "topic_id": resolved_topic_id,
+                    "topic_id": q_topic_id,
                     "type_id": q_type_id,
                     "diff_id": diff_id,
                     "question": q_text,
@@ -1512,6 +1625,6 @@ def save_curriculum_extracted_questions_pipeline(
         "updated_count": updated_count,
         "duplicate_skipped_count": duplicate_skipped,
         "chunk_count": len(chunks),
-        "topic_id": resolved_topic_id,
+        "topic_id": default_topic_id,
     }
 
