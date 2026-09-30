@@ -309,11 +309,11 @@ def get_all_active_providers() -> list:
         return []
 
 
-def _execute_provider_call(provider_cfg: dict, messages: list, json_mode: bool, temperature: float) -> str:
+def _execute_provider_call(provider_cfg: dict, messages: list, json_mode: bool, temperature: float, timeout: int = None) -> str:
     """Dispatches call strictly using credentials and model from the database provider record."""
     active_provider = str(provider_cfg.get("provider") or "gemini").lower().strip()
     effective_temp = temperature if temperature is not None else provider_cfg.get("temperature", 0.30)
-    effective_timeout = provider_cfg.get("timeout", 600)
+    effective_timeout = timeout if timeout is not None else provider_cfg.get("timeout", 600)
     model_name = provider_cfg.get("model_name")
     base_url = provider_cfg.get("base_url")
     api_key = provider_cfg.get("api_key")
@@ -335,7 +335,7 @@ def _execute_provider_call(provider_cfg: dict, messages: list, json_mode: bool, 
 # Main Routing Dispatcher with Database Index-Wise Fallback
 # ============================================================
 
-def call_llm_chat(messages: list, json_mode: bool = False, temperature: float = None, scenario: str = "doubt_chat") -> str:
+def call_llm_chat(messages: list, json_mode: bool = False, temperature: float = None, scenario: str = "doubt_chat", timeout: int = None) -> str:
     """Executes a chat completion call routed to the LLM assigned to the given scenario from the Database.
     If the assigned provider fails or is missing, automatically cascades through active providers
     in database index order (LLMConfig.id ASC) with transparent terminal logging.
@@ -370,7 +370,7 @@ def call_llm_chat(messages: list, json_mode: bool = False, temperature: float = 
             print(f"[LLM ROUTING] Scenario: '{scenario}' -> Provider: '{p_name}' ({p_type}) | Model: '{m_name}' | URL: '{b_url}'", flush=True)
 
         try:
-            res = _execute_provider_call(cfg, messages, json_mode, temperature)
+            res = _execute_provider_call(cfg, messages, json_mode, temperature, timeout=timeout)
             if res and res.strip():
                 print(f"[LLM SUCCESS] Provider: '{p_name}' (Model: '{m_name}') responded successfully.", flush=True)
                 return res

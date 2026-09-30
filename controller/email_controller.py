@@ -551,21 +551,134 @@ def send_student_exam_report_email(
     total_marks: float,
     accuracy_percentage: float,
     pdf_bytes: bytes,
+    wellbeing_data: dict = None,
+    evaluations: list = None,
 ) -> bool:
-    """Dispatches a detailed Exam Result Performance Report PDF attached to the parent/student email."""
+    """Dispatches a detailed Exam Result Performance Report PDF attached to the parent/student email,
+    including pre-exam mental health wellbeing insights and question-by-question marks breakdown."""
     if not to_email or not to_email.strip():
         return False
 
     display_name = student_name.strip() if student_name else "Student"
     subject = f"📊 Performance Report: {display_name}'s {subject_name} Exam Result ({marks_obtained}/{total_marks})"
 
+    # Generate Mental Health & Wellbeing Section HTML & Plain Text
+    wellbeing_html = ""
+    wellbeing_plain = ""
+    if wellbeing_data and isinstance(wellbeing_data, dict):
+        wb_mood = wellbeing_data.get("mood") or "Steady & Prepared"
+        wb_hobby = wellbeing_data.get("hobby") or "Music / Creative Arts"
+        wb_detail = wellbeing_data.get("hobbyDetail") or wellbeing_data.get("hobby_detail") or ""
+        wb_anchor = wellbeing_data.get("supportPerson") or wellbeing_data.get("support_person") or "Family"
+        wb_mindset = wellbeing_data.get("examMindset") or wellbeing_data.get("exam_mindset") or "Give 100% effort calmly"
+
+        hobby_display = f"{wb_hobby} ({wb_detail})" if wb_detail else wb_hobby
+
+        # Tailored parent tip
+        tip_text = f"{display_name} approached this assessment with a constructive attitude."
+        if any(w in str(wb_mood).lower() for w in ["anxious", "nervous", "stressed"]):
+            tip_text = f"Notice: {display_name} mentioned feeling slightly nervous before starting. A gentle word of appreciation for their effort and practice will boost their emotional resilience!"
+        elif any(w in str(wb_mood).lower() for w in ["energized", "confident", "ready"]):
+            tip_text = f"Notice: {display_name} started this exam with positive, confident energy! Celebrating this proactive attitude will reinforce positive learning habits."
+        elif any(w in str(wb_mood).lower() for w in ["tired", "low energy"]):
+            tip_text = f"Notice: {display_name} mentioned feeling a little tired. Ensuring adequate hydration and restful breaks between study sessions will help them recharge."
+
+        wellbeing_html = f"""
+        <div style="border-left: 4px solid #10b981; background: #f0fdf4; border: 1px solid #d1fae5; border-radius: 8px; padding: 16px 20px; margin: 18px 0;">
+            <h3 style="margin-top: 0; color: #065f46; font-size: 15px; margin-bottom: 8px;">
+                🧠 Pre-Exam Mental Health & Mindset Insight
+            </h3>
+            <p style="margin: 0 0 10px 0; font-size: 13px; color: #1f2937;">
+                Before beginning this assessment, <strong>{display_name}</strong> completed an interactive emotional wellness check-in:
+            </p>
+            <table style="width: 100%; font-size: 13px; color: #374151; border-collapse: collapse;">
+                <tr>
+                    <td style="padding: 4px 0; width: 38%; font-weight: bold; color: #4b5563;">Pre-Exam Emotional State:</td>
+                    <td style="padding: 4px 0; font-weight: bold; color: #065f46;">{wb_mood}</td>
+                </tr>
+                <tr>
+                    <td style="padding: 4px 0; font-weight: bold; color: #4b5563;">De-Stress Hobby / Passion:</td>
+                    <td style="padding: 4px 0; color: #111827;">{hobby_display}</td>
+                </tr>
+                <tr>
+                    <td style="padding: 4px 0; font-weight: bold; color: #4b5563;">Greatest Support Anchor:</td>
+                    <td style="padding: 4px 0; color: #111827;">{wb_anchor}</td>
+                </tr>
+                <tr>
+                    <td style="padding: 4px 0; font-weight: bold; color: #4b5563;">Target Mindset Goal:</td>
+                    <td style="padding: 4px 0; color: #111827;">{wb_mindset}</td>
+                </tr>
+            </table>
+            <div style="margin-top: 12px; padding: 10px 14px; background: #ffffff; border: 1px solid #a7f3d0; border-radius: 6px; font-size: 12px; color: #047857; line-height: 1.5;">
+                💡 <strong>Parent Guidance Tip:</strong> {tip_text}
+            </div>
+        </div>
+        """
+
+        wellbeing_plain = (
+            f"\n--- PRE-EXAM MENTAL HEALTH & WELLBEING REPORT ---\n"
+            f"Pre-Exam Mood: {wb_mood}\n"
+            f"De-Stress Hobby: {hobby_display}\n"
+            f"Support Anchor: {wb_anchor}\n"
+            f"Exam Mindset Goal: {wb_mindset}\n"
+            f"Parent Guidance Tip: {tip_text}\n"
+        )
+
+    # Generate Question-by-Question Marks Breakdown HTML & Plain Text
+    questions_html = ""
+    questions_plain = ""
+    if evaluations and isinstance(evaluations, list) and len(evaluations) > 0:
+        rows_html = ""
+        plain_lines = []
+        for idx, ev in enumerate(evaluations, 1):
+            q_num = ev.get("questionNumber") or idx
+            topic = ev.get("topic") or "General Concept"
+            is_corr = ev.get("isCorrect", False)
+            marks_aw = ev.get("marksAwarded", 0)
+            max_m = ev.get("questionMarks", 1)
+
+            status_color = "#15803d" if is_corr else "#b91c1c"
+            status_text = "Correct ✓" if is_corr else "Incorrect ✗"
+
+            rows_html += f"""
+            <tr style="border-bottom: 1px solid #e2e8f0;">
+                <td style="padding: 8px 10px; font-weight: bold; color: #334155;">Q{q_num}</td>
+                <td style="padding: 8px 10px; color: #1e293b;">{topic}</td>
+                <td style="padding: 8px 10px; color: {status_color}; font-weight: 600;">{status_text}</td>
+                <td style="padding: 8px 10px; font-weight: bold; color: #0f172a;">{marks_aw} / {max_m}</td>
+            </tr>
+            """
+            plain_lines.append(f"  Q{q_num} ({topic}): {status_text} — {marks_aw}/{max_m} Marks")
+
+        questions_html = f"""
+        <div style="margin: 18px 0;">
+            <h3 style="margin-top: 0; color: #1e293b; font-size: 15px; margin-bottom: 8px;">
+                📝 Question-by-Question Marks Breakdown:
+            </h3>
+            <table style="width: 100%; border-collapse: collapse; font-size: 13px; text-align: left; background: #ffffff; border: 1px solid #e2e8f0; border-radius: 8px; overflow: hidden;">
+                <thead>
+                    <tr style="background: #f8fafc; border-bottom: 2px solid #cbd5e1; color: #475569; font-size: 12px; text-transform: uppercase;">
+                        <th style="padding: 8px 10px;">Q#</th>
+                        <th style="padding: 8px 10px;">Topic</th>
+                        <th style="padding: 8px 10px;">Result</th>
+                        <th style="padding: 8px 10px;">Marks</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {rows_html}
+                </tbody>
+            </table>
+        </div>
+        """
+        questions_plain = "\n--- QUESTION-BY-QUESTION MARKS ---\n" + "\n".join(plain_lines) + "\n"
+
     content_html = f"""
-        <h2 style="color: #1e293b; margin-top: 0;">Exam Result & Assessment Report</h2>
+        <h2 style="color: #1e293b; margin-top: 0;">Exam Result & Wellbeing Assessment Report</h2>
         <p>Dear Parent / Guardian,</p>
         <p><strong>{display_name}</strong> has just completed an assessment on <strong>EduJunction</strong>.</p>
         
-        <div class="card" style="border-left: 4px solid #0284c7; background: #f0f9ff;">
-            <h3 style="margin-top: 0; color: #0369a1;">📝 Exam Score Overview:</h3>
+        <div class="card" style="border-left: 4px solid #0284c7; background: #f0f9ff; padding: 14px 18px; border-radius: 8px; margin: 16px 0;">
+            <h3 style="margin-top: 0; color: #0369a1; font-size: 15px;">📝 Exam Score Overview:</h3>
             <p style="margin: 4px 0;"><strong>Student Name:</strong> {display_name}</p>
             <p style="margin: 4px 0;"><strong>Curriculum:</strong> {board} - {class_grade}</p>
             <p style="margin: 4px 0;"><strong>Subject:</strong> {subject_name}</p>
@@ -573,9 +686,13 @@ def send_student_exam_report_email(
             <p style="margin: 4px 0;"><strong>Date:</strong> {exam_date}</p>
         </div>
 
+        {wellbeing_html}
+
+        {questions_html}
+
         <div style="background-color: #f8fafc; border: 1px solid #e2e8f0; padding: 14px 18px; border-radius: 8px; margin: 16px 0;">
             <p style="margin: 0; font-size: 13px; color: #475569;">
-                📎 <strong>Attached PDF Report:</strong> We have attached the full student diagnostic performance report PDF with question-by-question breakdown, conceptual strengths, and recommended action steps.
+                📎 <strong>Attached PDF Report:</strong> We have attached the full student diagnostic performance report PDF with detailed analysis, conceptual strengths, and recommended action steps.
             </p>
         </div>
 
@@ -588,7 +705,9 @@ def send_student_exam_report_email(
         f"{display_name} has completed the {subject_name} exam on EduJunction.\n"
         f"Score: {marks_obtained}/{total_marks} ({accuracy_percentage}%)\n"
         f"Curriculum: {board} - {class_grade}\n"
-        f"Date: {exam_date}\n\n"
+        f"Date: {exam_date}\n"
+        f"{wellbeing_plain}"
+        f"{questions_plain}\n"
         f"Please find the detailed PDF Diagnostic Report attached to this email.\n\n"
         f"Best regards,\nThe EduJunction Academic Assessment Team"
     )

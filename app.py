@@ -250,6 +250,19 @@ def create_app() -> Flask:
     def api_student_learning_path():
         return student_controller.my_learning_path()
 
+    @app.route("/api/v1/students/wellbeing-checkin", methods=["POST"])
+    def api_student_submit_wellbeing_checkin():
+        return student_controller.submit_wellbeing_checkin()
+
+    @app.route("/api/v1/students/wellbeing-checkin", methods=["GET"])
+    def api_student_get_wellbeing_checkin():
+        return student_controller.get_wellbeing_checkin()
+
+    @app.route("/api/v1/students/counselor-dialogue", methods=["POST"])
+    def api_student_counselor_dialogue():
+        return student_controller.counselor_dialogue()
+
+
     # ============================================================
     # 5. Teacher Endpoints
     # ============================================================

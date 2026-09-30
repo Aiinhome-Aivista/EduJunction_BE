@@ -796,6 +796,28 @@ class SeoMetadata(Base):
     updated_at = Column(DateTime, default=get_ist_now, onupdate=get_ist_now)
 
 
+# ------------------------------------------------------------
+# 19. Student Mental Health & Personality Check-in
+# ------------------------------------------------------------
+class StudentWellbeingCheckin(Base):
+    __tablename__ = "student_wellbeing_checkins"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    student_id = Column(Integer, ForeignKey("students.id", ondelete="CASCADE"), nullable=False, index=True)
+    mood = Column(String(100), nullable=True)
+    hobby = Column(String(150), nullable=True)
+    hobby_detail = Column(String(255), nullable=True)
+    support_person = Column(String(150), nullable=True)
+    exam_mindset = Column(String(150), nullable=True)
+    conversation_summary = Column(Text, nullable=True)
+    raw_responses = Column(JSON, nullable=True)
+    exam_index = Column(Integer, default=0)
+    created_at = Column(DateTime, default=get_ist_now)
+
+    student = relationship("Student", foreign_keys=[student_id])
+
+
+
 
 
 

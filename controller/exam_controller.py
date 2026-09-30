@@ -590,6 +590,29 @@ def submit_exam(exam_id):
                     analysis=analysis,
                 )
 
+                # Retrieve student's latest wellbeing checkin for parent email report
+                wellbeing_data = payload.get("wellbeingData")
+                if not wellbeing_data:
+                    try:
+                        from model.models import StudentWellbeingCheckin
+                        latest_wb = (
+                            session.query(StudentWellbeingCheckin)
+                            .filter(StudentWellbeingCheckin.student_id == student.id)
+                            .order_by(StudentWellbeingCheckin.created_at.desc())
+                            .first()
+                        )
+                        if latest_wb:
+                            wellbeing_data = {
+                                "mood": latest_wb.mood,
+                                "hobby": latest_wb.hobby,
+                                "hobbyDetail": latest_wb.hobby_detail,
+                                "supportPerson": latest_wb.support_person,
+                                "examMindset": latest_wb.exam_mindset,
+                                "conversationSummary": latest_wb.conversation_summary,
+                            }
+                    except Exception as wb_fetch_err:
+                        logger.debug(f"Wellbeing data lookup skipped: {wb_fetch_err}")
+
                 send_student_exam_report_email(
                     to_email=parent_email,
                     student_name=student_name,
@@ -602,6 +625,8 @@ def submit_exam(exam_id):
                     total_marks=exam.total_marks,
                     accuracy_percentage=accuracy_percentage,
                     pdf_bytes=pdf_bytes,
+                    wellbeing_data=wellbeing_data,
+                    evaluations=evaluations,
                 )
             except Exception as email_err:
                 logger.warning(f"Failed to generate/email exam report PDF: {email_err}")
