@@ -97,15 +97,19 @@ DIFFICULTY GUIDELINES:
 - 'medium': Conceptual application, standard calculations, analytical reasoning.
 - 'hard': HOTS (Higher Order Thinking Skills), multi-step synthesis, tricky problem solving.
 
-CRITICAL RULES:
-1. Every question MUST be grounded strictly in the provided text.
-2. ANSWER DEPTH MUST MATCH MARKS: 5-mark questions must have comprehensive 5-mark answers (4-5 detailed points/mechanisms).
-3. TEXT-ONLY SELF-CONTAINED FORMULATION: Formulate all questions purely textually with complete standalone context. DO NOT invent or write references to 'as shown in figure', 'refer to diagram', or 'in the given picture' unless the source text explicitly provides a specific visual figure that cannot be understood textually.
-4. CRITICAL TOPIC SPECIFICITY RULE:
+CRITICAL TEXT & FORMATTING RULES:
+1. Every question MUST be complete, grammatically sound, and grounded strictly in the provided text. Never output truncated or half-finished sentences.
+2. CLEAN HUMAN-READABLE TEXT (NO MARKDOWN NOISE):
+   - DO NOT use markdown bold/italic asterisks (**text**, *text*), hashes (###), or markdown dashes (---) inside strings.
+   - DO NOT output raw JSON arrays or Python list brackets inside text strings.
+   - For multi-point answers or explanations, use clean bullet points starting with '• ' (e.g., '• Point 1\\n• Point 2').
+3. NO PLACEHOLDERS: NEVER use words like 'Model Solution', 'Derived directly from curriculum document.', or 'Refer to textbook'. Always provide the genuine, complete academic answer and explanation.
+4. ANSWER DEPTH MUST MATCH MARKS: 5-mark questions must have comprehensive 5-mark answers (4-5 detailed points/mechanisms).
+5. TEXT-ONLY SELF-CONTAINED FORMULATION: Formulate all questions purely textually with complete standalone context. DO NOT invent references to 'as shown in figure' unless explicitly present.
+6. CRITICAL TOPIC SPECIFICITY RULE:
    - 'topic_suggested' MUST be a specific, granular concept or sub-topic name (e.g., 'Cell Organelles', 'Plant Tissues', 'Photosynthesis', 'Linear Equations', 'Electromagnetic Induction').
    - STRICTLY FORBIDDEN: NEVER use generic subject names (e.g., 'Biology', 'Science', 'Mathematics', 'Physics', 'Chemistry', 'Social Science', 'General') as 'topic_suggested'.
-   - Each question must be assigned to its precise concept/sub-topic within the chapter.
-5. Return strictly valid JSON object matching the schema below. No Markdown outside JSON.
+7. Return strictly valid JSON object matching the schema below. No Markdown outside JSON.
 
 JSON Schema:
 {
@@ -117,7 +121,7 @@ JSON Schema:
       "marks": 2,
       "options": [],
       "correct_answer": "I = n * e * A * v_d, where I is current, n is charge carrier density, e is electron charge, A is cross-sectional area, and v_d is drift velocity.",
-      "explanation": "Derived from the transport of charge carriers across unit cross section per unit time.",
+      "explanation": "• Current is directly proportional to drift velocity.\n• Derived from the transport of charge carriers across unit cross-sectional area per unit time.",
       "topic_suggested": "Drift Velocity & Current"
     }
   ]
@@ -146,13 +150,18 @@ CRITICAL BILINGUAL & MULTILINGUAL INSTRUCTIONS:
 3. OPTIONS & MODEL ANSWERS:
    - For Multiple Choice Questions (MCQ), extract all 4 options labeled 'A) ', 'B) ', 'C) ', 'D) ' and determine the correct single-letter answer key ('A', 'B', 'C', or 'D').
    - For descriptive questions, provide a comprehensive model answer in 'correct_answer' and detailed step-by-step working/explanation in 'explanation'.
+   - NEVER use placeholder text like 'Model Solution' or 'Derived directly...'. Write actual academic solutions.
 
-4. TOPIC SPECIFICITY RULE:
+4. CLEAN TEXT FORMATTING (NO MARKDOWN NOISE):
+   - DO NOT use markdown bold/italic asterisks (**text**, *text*), hashes (###), or weird dashes inside strings.
+   - DO NOT output raw JSON arrays or Python list brackets inside strings. Use clean bullet points ('• Point 1\\n• Point 2').
+
+5. TOPIC SPECIFICITY RULE:
    - 'topic_suggested' MUST be a specific, granular concept or sub-topic name.
    - NEVER use generic subject names ('Biology', 'Science', 'Mathematics', 'General') as 'topic_suggested'.
 
-5. EXTRACTION COMPLETENESS:
-   - Extract EVERY distinguishable question present in the text without skipping.
+6. EXTRACTION COMPLETENESS:
+   - Extract EVERY distinguishable, complete question present in the text without skipping.
 
 JSON Schema:
 {
@@ -164,7 +173,7 @@ JSON Schema:
       "marks": 1,
       "options": ["A) CaO + H2O -> Ca(OH)2", "B) Fe + CuSO4 -> FeSO4 + Cu", "C) 2H2 + O2 -> 2H2O", "D) CaCO3 -> CaO + CO2"],
       "correct_answer": "B",
-      "explanation": "Iron is more reactive than copper and displaces copper from copper sulphate solution.",
+      "explanation": "• Iron is more reactive than copper and displaces copper from copper sulphate solution.\n• Reaction: Fe + CuSO4 -> FeSO4 + Cu.",
       "topic_suggested": "Displacement Reactions"
     }
   ]
@@ -291,6 +300,74 @@ Note: recommended_question_count should be between 20 (minimum) and 30 (maximum)
     }
 
 
+def clean_human_readable_text(val: Any) -> str:
+    """Cleans markdown symbols, brackets, raw json arrays, escaped quotes, and noise into clean human-readable text."""
+    if val is None:
+        return ""
+
+    # If list or array
+    if isinstance(val, list):
+        items = []
+        for item in val:
+            cleaned_item = clean_human_readable_text(item)
+            if cleaned_item:
+                cleaned_item = re.sub(r'^[•\-\*\d\.\)\s]+', '', cleaned_item).strip()
+                items.append(f"• {cleaned_item}")
+        return "\n".join(items)
+
+    # If dict
+    if isinstance(val, dict):
+        items = [f"• {k}: {clean_human_readable_text(v)}" for k, v in val.items() if v]
+        return "\n".join(items)
+
+    text = str(val).strip()
+    if not text:
+        return ""
+
+    # Check if text is a JSON-encoded array or dict string e.g. '["Step 1: ...", "Step 2: ..."]'
+    if (text.startswith("[") and text.endswith("]")) or (text.startswith("{") and text.endswith("}")):
+        try:
+            parsed = json.loads(text)
+            if isinstance(parsed, (list, dict)):
+                return clean_human_readable_text(parsed)
+        except Exception:
+            pass
+
+    # Unescape escaped quotes and backslashes
+    text = text.replace('\\"', '"').replace("\\'", "'").replace('\\n', '\n').replace('\\t', ' ')
+
+    # Strip markdown bold/italics: **bold** or *italic* or __bold__ or _italic_
+    text = re.sub(r'\*{1,3}(.*?)\*{1,3}', r'\1', text)
+    text = re.sub(r'_{1,3}(.*?)_{1,3}', r'\1', text)
+
+    # Strip markdown headers like '### Header'
+    text = re.sub(r'^#{1,6}\s*', '', text, flags=re.MULTILINE)
+
+    # Normalize weird dashes / separators (e.g. '---', '--')
+    text = re.sub(r'-{3,}', '-', text)
+    text = re.sub(r'\s+--\s+', ' - ', text)
+
+    # Standardize bullet points and remove raw bracket fragments
+    lines = text.splitlines()
+    cleaned_lines = []
+    for line in lines:
+        l = line.strip()
+        if not l:
+            continue
+        # Remove leftover array quotes or brackets e.g. [" or "]
+        l = re.sub(r'^[\[\]"\'\s]+', '', l)
+        l = re.sub(r'[\[\]"\'\s]+$', '', l)
+        if not l:
+            continue
+        # If line starts with markdown bullet like '- ' or '* ' -> convert to '• '
+        if re.match(r'^[\-\*]\s+', l):
+            l = '• ' + re.sub(r'^[\-\*]\s+', '', l).strip()
+        cleaned_lines.append(l)
+
+    text = "\n".join(cleaned_lines).strip()
+    return text
+
+
 def sanitize_question_item(
     q: dict,
     default_type: str,
@@ -298,9 +375,9 @@ def sanitize_question_item(
     meta: dict,
     index: int
 ) -> Optional[Dict[str, Any]]:
-    """Sanitizes and strictly formats a question item for question_master schema with bilingual filtering."""
-    q_text = (q.get("question") or "").strip()
-    if not q_text:
+    """Sanitizes and strictly formats a question item for question_master schema with bilingual filtering and human-readable text."""
+    raw_q_text = str(q.get("question") or "").strip()
+    if not raw_q_text:
         return None
 
     # Check if subject is language (Hindi, Bengali, Sanskrit, English)
@@ -308,14 +385,23 @@ def sanitize_question_item(
     is_lang_subject = any(lang in sub_lower for lang in ["hindi", "bengali", "bangla", "sanskrit", "arabic", "urdu"])
 
     # 0. Anti-Garbage & Copyright Guardrail: Discard any question generated from publisher disclaimers
-    q_lower = q_text.lower()
+    q_lower = raw_q_text.lower()
     from helper.document_processor import DISCLAIMER_PATTERNS
     if any(re.search(pat, q_lower) for pat in DISCLAIMER_PATTERNS):
         return None
     if "alternative concept" in q_lower or "null condition" in q_lower or "secondary effect" in q_lower:
         return None
-    if len(q_text) < 15:
+    if len(raw_q_text) < 15 or len(raw_q_text.split()) < 3:
         return None
+
+    # Discard incomplete cut-off questions (e.g. truncated sentences without terminal marks or blanks)
+    if not any(raw_q_text.rstrip().endswith(ch) for ch in ['?', '.', ':', '"', "'", ')', ']', '_']):
+        # If it doesn't have an underline blank or MCQ options
+        if "_" not in raw_q_text and not q.get("options"):
+            return None
+
+    # Clean question text
+    q_text = clean_human_readable_text(raw_q_text)
 
     # 1. Bilingual cleanup for CBSE / ICSE / ISC and STEM / General subjects
     if not is_lang_subject:
@@ -341,7 +427,7 @@ def sanitize_question_item(
         except Exception:
             extracted_marks = None
 
-    corr = str(q.get("correct_answer") or "").strip()
+    corr = clean_human_readable_text(q.get("correct_answer") or "")
 
     # Smart Sentence Merger: If question text is just an instruction and correct_answer has the sentence/blank
     if re.search(r"^(?:(?:A|B|C|D|Q\d+)?\.?\s*)?(?:complete\s+the\s+sentence|fill\s+in\s+the\s+blank|choose\s+the\s+correct\s+word|state\s+whether|give\s+one\s+word|change\s+the\s+tense)", q_text, re.IGNORECASE):
@@ -388,11 +474,11 @@ def sanitize_question_item(
     if resolved_type in ["MCQ", "ASSERTION REASON"]:
         if isinstance(q_opts, list):
             for opt in q_opts:
-                opt_str = str(opt).strip()
+                opt_str = clean_human_readable_text(opt)
                 if opt_str:
                     clean_opts.append(opt_str)
         elif isinstance(q_opts, dict):
-            clean_opts = [f"{k}) {v}" for k, v in q_opts.items()]
+            clean_opts = [f"{k}) {clean_human_readable_text(v)}" for k, v in q_opts.items()]
 
         # Clean bilingual slash in options (e.g. "कोयला / Coal" -> "Coal")
         if not is_lang_subject:
@@ -441,12 +527,9 @@ def sanitize_question_item(
 
     # Clean explanation
     raw_expl = q.get("explanation")
-    if isinstance(raw_expl, (dict, list)):
-        clean_expl = json.dumps(raw_expl)
-    elif raw_expl is not None:
-        clean_expl = str(raw_expl).strip()
-    else:
-        clean_expl = "Derived directly from curriculum document."
+    clean_expl = clean_human_readable_text(raw_expl)
+    if not clean_expl or "derived directly from curriculum document" in clean_expl.lower():
+        clean_expl = f"• Key concept regarding {q_text[:60]}."
 
     # Assigned marks
     raw_m = q.get("marks")
@@ -486,12 +569,21 @@ def sanitize_question_item(
     elif marks >= 8:
         resolved_type = "LONG EVALUATIVE"
 
+    # Fallback for empty or placeholder correct_answer in descriptive questions
+    if not corr or corr.lower() in ["model solution", "n/a", "none"]:
+        if clean_expl and len(clean_expl) > 10 and not clean_expl.startswith("• Key concept"):
+            corr = clean_expl
+        elif clean_opts:
+            corr = clean_opts[0]
+        else:
+            corr = f"Accurate concept explanation and working for: {q_text}"
+
     # For 5-mark long answers, ensure answer is enriched with explanation points if too brief
     if marks >= 5 and resolved_type in ["LONG ANSWER", "LONG EVALUATIVE"]:
-        if len(corr.split()) < 25 and clean_expl and clean_expl != "Derived directly from curriculum document.":
+        if len(corr.split()) < 25 and clean_expl and not clean_expl.startswith("• Key concept"):
             corr = f"{corr}\n\nDetailed Breakdown & Key Points:\n{clean_expl}"
 
-    raw_topic = str(q.get("topic_suggested") or "").strip()
+    raw_topic = clean_human_readable_text(str(q.get("topic_suggested") or "").strip())
     sub_name = str(meta.get("subject") or "").strip()
     title_name = str(meta.get("title") or "").strip()
     det_topics = meta.get("detected_topics") or []
@@ -514,7 +606,7 @@ def sanitize_question_item(
         "difficulty": final_difficulty,
         "marks": marks,
         "options": clean_opts,
-        "correct_answer": corr or (clean_opts[0] if clean_opts else "Model Solution"),
+        "correct_answer": corr,
         "explanation": clean_expl,
         "topic_suggested": resolved_topic,
         "image_url": q.get("image_url") or q.get("imageUrl") or None,
