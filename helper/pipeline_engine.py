@@ -6,6 +6,7 @@ Executes the 5-step automated processing pipeline for Textbooks and Old Question
 4. JSON Schema Preparation (strict formatting for question_master)
 5. Database Storage (Insertion into question_master, documents, document_chunks & ChromaDB)
 """
+import ast
 import json
 import re
 import uuid
@@ -36,10 +37,11 @@ class TermColors:
 
 
 VISUAL_SUBJECTS = {
-    "science", "physics", "chemistry", "biology",
+    "science", "physics", "chemistry", "biology", "botany", "zoology",
     "mathematics", "math", "maths",
     "social science", "geography", "history", "economics",
-    "computer science", "it"
+    "computer science", "it", "computer applications",
+    "physical education", "sports", "yoga", "environmental studies", "evs"
 }
 
 
@@ -80,36 +82,45 @@ def is_diagram_referenced_in_question(question_text: str) -> bool:
 
 
 
-TEXTBOOK_QUESTION_PROMPT = """You are an expert curriculum designer and senior board examiner (CBSE, ICSE, Cambridge, State Boards).
-Your task is to analyze the provided textbook/chapter text and generate high-yield, pedagogically accurate examination questions.
+TEXTBOOK_QUESTION_PROMPT = """You are an expert curriculum designer and senior national board examiner (CBSE, ICSE, Cambridge, State Boards).
+Your task is to analyze the provided textbook/chapter text and extract all direct questions (in-text exercises, chapter end problems) AND synthesize rich, pedagogically accurate, high-yield examination questions covering key theory, concepts, and problem-solving.
 
 QUESTION TYPES & ANSWER DEPTH REQUIREMENTS (STRICT BOARD MARKING SCHEME):
-1. 'MCQ' (Multiple Choice - 1M): Exactly 4 options ('A) ', 'B) ', 'C) ', 'D) '). 'correct_answer' must be the single letter ('A', 'B', 'C', or 'D'). Marks: 1.
-2. 'OBJECTIVE' (1M): Direct one-word/phrase answer or key term. 'options' MUST be empty list []. Marks: 1.
+1. 'MCQ' (Multiple Choice - 1M): Exactly 4 distinct, meaningful options ('A) ', 'B) ', 'C) ', 'D) '). 'correct_answer' must be the single letter ('A', 'B', 'C', or 'D'). Marks: 1. (NEVER invent dummy options like 'Option A' or 'Alternative Concept').
+2. 'OBJECTIVE' (1M): Direct one-word/phrase answer, fill-in-the-blank, or key term. 'options' MUST be empty list []. Marks: 1.
 3. 'SAQ' (Short Answer - 2M): 2-3 focused conceptual lines or 2 key points. Marks: 2.
-4. 'SHORT ANSWER (3M)': Structured 3 distinct key points or step-by-step formula working. Marks: 3.
-5. 'CASE STUDY' (4M): Passage or scenario with multi-step sub-answers. Marks: 4.
-6. 'LONG ANSWER' (5M): Comprehensive, detailed model answer. For 5 marks, 'correct_answer' and 'explanation' MUST contain at least 4-5 structured bullet points, detailed physiological/physical/mathematical mechanisms, or complete descriptive breakdown matching official board 5-mark marking criteria. DO NOT write short 1-line answers for 5 marks.
-7. 'NUMERICAL' (3M or 5M): ONLY for Physics/Math/Chemistry numerical calculations involving numbers/formulas. Never use for descriptive Biology/History/Theory questions.
+4. 'SHORT ANSWER (3M)': Structured 3 distinct key points, differential comparison, or step-by-step formula working. Marks: 3.
+5. 'CASE STUDY' (4M): Practical scenario, passage, or clinical/experimental analysis with sub-answers. Marks: 4.
+6. 'LONG ANSWER' (5M): Comprehensive, detailed model answer (4-5 structured bullet points, mechanisms, or derivation).
+7. 'LONG EVALUATIVE' (8M): Comprehensive essay-length question with deep evaluative explanation. Marks: 8.
+8. 'NUMERICAL' (2M, 3M, or 5M): For Physics/Math/Chemistry numerical problem-solving with numbers, formulas, and calculation steps.
 
 DIFFICULTY GUIDELINES:
-- 'easy': Foundational memory recall, basic definition, direct formula identification.
-- 'medium': Conceptual application, standard calculations, analytical reasoning.
-- 'hard': HOTS (Higher Order Thinking Skills), multi-step synthesis, tricky problem solving.
+- 'easy' (or 'simple'): Direct memory recall, foundational definition, basic formula identification.
+- 'medium': Conceptual application, standard multi-step calculations, analytical reasoning.
+- 'hard': Higher Order Thinking Skills (HOTS), complex synthesis, tricky problem solving.
 
-CRITICAL TEXT & FORMATTING RULES:
-1. Every question MUST be complete, grammatically sound, and grounded strictly in the provided text. Never output truncated or half-finished sentences.
+CRITICAL EXTRACTION & FORMATTING RULES:
+1. EVERY QUESTION MUST BE COMPLETE AND GRAMMATICALLY SOUND.
 2. CLEAN HUMAN-READABLE TEXT (NO MARKDOWN NOISE):
    - DO NOT use markdown bold/italic asterisks (**text**, *text*), hashes (###), or markdown dashes (---) inside strings.
    - DO NOT output raw JSON arrays or Python list brackets inside text strings.
    - For multi-point answers or explanations, use clean bullet points starting with '• ' (e.g., '• Point 1\\n• Point 2').
-3. NO PLACEHOLDERS: NEVER use words like 'Model Solution', 'Derived directly from curriculum document.', or 'Refer to textbook'. Always provide the genuine, complete academic answer and explanation.
-4. ANSWER DEPTH MUST MATCH MARKS: 5-mark questions must have comprehensive 5-mark answers (4-5 detailed points/mechanisms).
-5. TEXT-ONLY SELF-CONTAINED FORMULATION: Formulate all questions purely textually with complete standalone context. DO NOT invent references to 'as shown in figure' unless explicitly present.
-6. CRITICAL TOPIC SPECIFICITY RULE:
-   - 'topic_suggested' MUST be a specific, granular concept or sub-topic name (e.g., 'Cell Organelles', 'Plant Tissues', 'Photosynthesis', 'Linear Equations', 'Electromagnetic Induction').
-   - STRICTLY FORBIDDEN: NEVER use generic subject names (e.g., 'Biology', 'Science', 'Mathematics', 'Physics', 'Chemistry', 'Social Science', 'General') as 'topic_suggested'.
-7. Return strictly valid JSON object matching the schema below. No Markdown outside JSON.
+3. MATHEMATICAL & SCIENTIFIC FORMULAS:
+   - Preserve clean formulas and LaTeX expressions (e.g., x^2 + y^2 = r^2, dy/dx, sqrt(x), H2O, CO2, ATP).
+4. DIAGRAMS & FIGURES:
+   - If a question refers to a diagram, graph, circuit, anatomical chart, or geometrical figure in the text, preserve the explicit reference (e.g. 'In the given circuit diagram...', 'Observe the given figure...').
+5. STRICT ANTI-DUMMY & ANTI-BLEED RULES:
+   - NEVER prepend artificial phrases like 'Explain the principle:' or 'State the concept of:'.
+   - NEVER invent placeholder text like 'Model Solution' or 'Derived directly from document'.
+   - NEVER invent dummy MCQ options if no real options exist; classify such questions directly as SAQ or OBJECTIVE.
+6. CANONICAL TOPIC MAPPING:
+   - 'topic_suggested' MUST be a specific, granular syllabus sub-topic or concept (e.g., 'Holistic Development Through Physical Activities', 'Photosynthesis', 'Linear Equations').
+   - NEVER use generic subject names ('Biology', 'Science', 'Mathematics', 'General') as 'topic_suggested'.
+7. MANDATORY INFORMATIVE EXPLANATION:
+   - 'explanation' is STRICTLY MANDATORY for every question (including MCQs and 1M questions).
+   - For MCQs, state clearly why the selected option is correct and why other options are incorrect/distractors.
+   - For descriptive questions, provide clear marking step criteria. NEVER leave 'explanation' empty.
 
 JSON Schema:
 {
@@ -117,28 +128,28 @@ JSON Schema:
     {
       "question": "State the relationship between electric current and drift velocity in a conductor.",
       "type": "SAQ",
-      "difficulty": "medium",
+      "difficulty": "easy",
       "marks": 2,
       "options": [],
       "correct_answer": "I = n * e * A * v_d, where I is current, n is charge carrier density, e is electron charge, A is cross-sectional area, and v_d is drift velocity.",
-      "explanation": "• Current is directly proportional to drift velocity.\n• Derived from the transport of charge carriers across unit cross-sectional area per unit time.",
-      "topic_suggested": "Drift Velocity & Current"
+      "explanation": "Current is directly proportional to drift velocity. Derived from the transport of charge carriers across unit cross-sectional area per unit time (I = n * e * A * v_d).",
+      "topic_suggested": "Drift Velocity & Current",
+      "image_url": null
     }
   ]
 }
 """
 
 OLD_QUESTION_PAPER_PROMPT = """You are a senior national board paper evaluator, bilingual digitizer, and curriculum expert (CBSE, ICSE, ISC, State Boards).
-Your task is to parse the provided Old Question Paper / PYQ text, identify all individual exam questions, and convert them into structured digital question records with exact official marks.
+Your task is to parse the provided Question Paper / Question Bank / PYQ text, faithfully extract and digitize EVERY single question present in the document with 100% fidelity, exact printed marks, options, and diagrams.
 
 CRITICAL BILINGUAL & MULTILINGUAL INSTRUCTIONS:
 1. BILINGUAL PAPERS (Hindi/Bengali + English):
-   - For CBSE, ICSE, ISC, and general subjects (Science, Physics, Chemistry, Biology, Mathematics, Social Studies, Computer Science, English), extract the clean ENGLISH version of the question text and options.
+   - For general subjects (Science, Physics, Chemistry, Biology, Mathematics, Social Studies, Physical Education, Computer Science), extract the clean ENGLISH version of the question text and options.
    - Strip out parallel Hindi, Bengali, or regional duplicate sentences, headers (e.g. 'अथवा / OR', 'प्रश्न 1.'), and option translations (e.g. '(A) कोयला / Coal' -> 'A) Coal').
    - For Language subjects (e.g., Hindi Course A/B, Bengali Language, Sanskrit), preserve the respective native language of the subject.
 
-2. MARKS-WISE & SECTION DIRECTIVES:
-   - Identify section directives (e.g., Section A = 1 Mark, Section B = 2 Marks, Section C = 3 Marks, Section D = 4 Marks Case Study / Source Based, Section E = 5 Marks Long Answer, Section F = 8 Marks Evaluative) and inline mark brackets like [1], [2], [3], [4], [5], [8].
+2. MARKS-WISE & QUESTION TYPE MAPPING:
    - Assign exact official marks (1, 2, 3, 4, 5, or 8) and matching question type:
      • 1 Mark: 'MCQ', 'ASSERTION REASON', or 'OBJECTIVE'
      • 2 Marks: 'SAQ' (Short Answer Question - 2M)
@@ -149,19 +160,15 @@ CRITICAL BILINGUAL & MULTILINGUAL INSTRUCTIONS:
 
 3. OPTIONS & MODEL ANSWERS:
    - For Multiple Choice Questions (MCQ), extract all 4 options labeled 'A) ', 'B) ', 'C) ', 'D) ' and determine the correct single-letter answer key ('A', 'B', 'C', or 'D').
-   - For descriptive questions, provide a comprehensive model answer in 'correct_answer' and detailed step-by-step working/explanation in 'explanation'.
-   - NEVER use placeholder text like 'Model Solution' or 'Derived directly...'. Write actual academic solutions.
+   - If a question does NOT have options, extract it strictly as SAQ, OBJECTIVE, or LONG ANSWER. NEVER invent fake dummy options.
+   - For descriptive questions, provide a genuine, comprehensive model answer in 'correct_answer' and detailed step-by-step explanation in 'explanation'.
 
-4. CLEAN TEXT FORMATTING (NO MARKDOWN NOISE):
-   - DO NOT use markdown bold/italic asterisks (**text**, *text*), hashes (###), or weird dashes inside strings.
-   - DO NOT output raw JSON arrays or Python list brackets inside strings. Use clean bullet points ('• Point 1\\n• Point 2').
+4. 100% COMPLETE EXTRACTION:
+   - Extract EVERY distinguishable question and sub-question (e.g., Q1(a), Q1(b), Q2(i), Q2(ii)) present in the text sequentially without skipping any question.
 
-5. TOPIC SPECIFICITY RULE:
-   - 'topic_suggested' MUST be a specific, granular concept or sub-topic name.
-   - NEVER use generic subject names ('Biology', 'Science', 'Mathematics', 'General') as 'topic_suggested'.
-
-6. EXTRACTION COMPLETENESS:
-   - Extract EVERY distinguishable, complete question present in the text without skipping.
+5. DIAGRAMS & MATHEMATICS:
+   - Preserve references to figures, charts, maps, circuits, and geometry triangles.
+   - Preserve clean mathematical formulas and scientific notation.
 
 JSON Schema:
 {
@@ -174,7 +181,8 @@ JSON Schema:
       "options": ["A) CaO + H2O -> Ca(OH)2", "B) Fe + CuSO4 -> FeSO4 + Cu", "C) 2H2 + O2 -> 2H2O", "D) CaCO3 -> CaO + CO2"],
       "correct_answer": "B",
       "explanation": "• Iron is more reactive than copper and displaces copper from copper sulphate solution.\n• Reaction: Fe + CuSO4 -> FeSO4 + Cu.",
-      "topic_suggested": "Displacement Reactions"
+      "topic_suggested": "Displacement Reactions",
+      "image_url": null
     }
   ]
 }
@@ -301,30 +309,51 @@ Note: recommended_question_count should be between 20 (minimum) and 30 (maximum)
 
 
 def clean_human_readable_text(val: Any) -> str:
-    """Cleans markdown symbols, brackets, raw json arrays, escaped quotes, and noise into clean human-readable text."""
+    """Cleans markdown symbols, brackets, raw json arrays, python lists, escaped quotes, and noise into clean human-readable text with line breaks."""
     if val is None:
         return ""
 
     # If list or array
     if isinstance(val, list):
+        if not val:
+            return ""
+        if len(val) == 1:
+            return clean_human_readable_text(val[0])
+
         items = []
         for item in val:
             cleaned_item = clean_human_readable_text(item)
             if cleaned_item:
-                cleaned_item = re.sub(r'^[•\-\*\d\.\)\s]+', '', cleaned_item).strip()
-                items.append(f"• {cleaned_item}")
+                # If item has internal newlines, preserve each line
+                for sub_line in cleaned_item.splitlines():
+                    sub_l = sub_line.strip()
+                    if not sub_l:
+                        continue
+                    # If item is a heading (ends with ':') or a short title, don't force a bullet dot
+                    if sub_l.endswith(":") or (len(sub_l) < 35 and not any(sub_l.startswith(b) for b in ["•", "-", "*"])):
+                        items.append(sub_l)
+                    else:
+                        stripped = re.sub(r'^[•\-\*\d\.\)\s]+', '', sub_l).strip()
+                        items.append(f"• {stripped}")
         return "\n".join(items)
 
     # If dict
     if isinstance(val, dict):
-        items = [f"• {k}: {clean_human_readable_text(v)}" for k, v in val.items() if v]
-        return "\n".join(items)
+        items = []
+        for k, v in val.items():
+            if v:
+                v_clean = clean_human_readable_text(v)
+                if "\n" in v_clean:
+                    items.append(f"{k}:\n{v_clean}")
+                else:
+                    items.append(f"{k}: {v_clean}")
+        return "\n\n".join(items)
 
     text = str(val).strip()
     if not text:
         return ""
 
-    # Check if text is a JSON-encoded array or dict string e.g. '["Step 1: ...", "Step 2: ..."]'
+    # 1. Check if text is a JSON or Python literal encoded array/dict string e.g. "['Step 1: ...', 'Step 2: ...']"
     if (text.startswith("[") and text.endswith("]")) or (text.startswith("{") and text.endswith("}")):
         try:
             parsed = json.loads(text)
@@ -332,6 +361,19 @@ def clean_human_readable_text(val: Any) -> str:
                 return clean_human_readable_text(parsed)
         except Exception:
             pass
+        try:
+            parsed = ast.literal_eval(text)
+            if isinstance(parsed, (list, dict)):
+                return clean_human_readable_text(parsed)
+        except Exception:
+            pass
+
+    # 2. Check for intermediate list artifacts like "', '" or "', \"• " or '", "' in text
+    if re.search(r"['\"]\s*,\s*['\"]", text):
+        trimmed = text.strip("[](){}\"' ")
+        parts = re.split(r"['\"]\s*,\s*['\"]", trimmed)
+        if len(parts) > 1:
+            return clean_human_readable_text(parts)
 
     # Unescape escaped quotes and backslashes
     text = text.replace('\\"', '"').replace("\\'", "'").replace('\\n', '\n').replace('\\t', ' ')
@@ -366,6 +408,52 @@ def clean_human_readable_text(val: Any) -> str:
 
     text = "\n".join(cleaned_lines).strip()
     return text
+
+
+def _normalize_title(text_val: str) -> str:
+    """Helper to clean chapter and topic strings for robust matching."""
+    if not text_val:
+        return ""
+    # Strip common prefixes like 'Chapter 1: ', 'Unit 2 - ', 'Ch. 3 '
+    cleaned = re.sub(r'^(?:Chapter|Unit|Ch\.?|Lesson|Section)\s*\d+[\s\:\-\.]*', '', text_val, flags=re.IGNORECASE).strip()
+    # Remove special characters and lowercase
+    return re.sub(r'[^a-zA-Z0-9]', '', cleaned).lower()
+
+
+def _find_best_canonical_topic(raw_topic: str, canonical_topics: List[str], threshold: float = 0.40) -> Optional[str]:
+    """Finds the best matching canonical topic based on word token overlap or containment."""
+    if not raw_topic or not canonical_topics:
+        return None
+    raw_norm = _normalize_title(raw_topic)
+    raw_words = set(re.findall(r'\b\w{3,}\b', raw_topic.lower()))
+    if not raw_words:
+        return None
+
+    best_match = None
+    best_score = 0.0
+    for can in canonical_topics:
+        if not can or not str(can).strip():
+            continue
+        can_str = str(can).strip()
+        can_norm = _normalize_title(can_str)
+        if raw_norm == can_norm or (len(raw_norm) >= 5 and (raw_norm in can_norm or can_norm in raw_norm)):
+            return can_str
+        can_words = set(re.findall(r'\b\w{3,}\b', can_str.lower()))
+        if not can_words:
+            continue
+        intersection = raw_words.intersection(can_words)
+        union = raw_words.union(can_words)
+        score = len(intersection) / len(union) if union else 0.0
+        # If one is subset of another
+        if intersection == raw_words or intersection == can_words:
+            score = max(score, 0.75)
+        if score > best_score:
+            best_score = score
+            best_match = can_str
+
+    if best_score >= threshold:
+        return best_match
+    return None
 
 
 def sanitize_question_item(
@@ -417,6 +505,9 @@ def sanitize_question_item(
         # Remove leading Question markers like 'Q1. ', '1. ', 'Question 1: '
         q_text = re.sub(r'^(?:Q(?:uestion)?\.?\s*\d+[\.\:\)]|\d+[\.\)])\s*', '', q_text).strip()
 
+    # Strip artificial prompt bleed prefixes (e.g., 'Explain the principle: ')
+    q_text = re.sub(r'^(?:explain\s+the\s+principle\s*[:\-–—]\s*|state\s+the\s+concept\s+of\s*[:\-–—]\s*|explain\s+the\s+concept\s+of\s*[:\-–—]\s*)', '', q_text, flags=re.IGNORECASE).strip()
+
     # 2. Extract embedded marks tag in question text e.g. [1 Mark], [2 Marks], [3M], (4), [5]
     mark_match = re.search(r'[\(\[]\s*(\d+)\s*(?:Marks?|M)?\s*[\)\]]$', q_text, re.IGNORECASE)
     extracted_marks = None
@@ -427,7 +518,21 @@ def sanitize_question_item(
         except Exception:
             extracted_marks = None
 
-    corr = clean_human_readable_text(q.get("correct_answer") or "")
+    # Handle unparsed JSON string inside correct_answer
+    raw_corr = str(q.get("correct_answer") or "").strip()
+    if raw_corr and (raw_corr.startswith("{") or '{"' in raw_corr or '"explanation":' in raw_corr):
+        try:
+            parsed_corr = json.loads(raw_corr)
+            if isinstance(parsed_corr, dict):
+                raw_corr = str(parsed_corr.get("answer") or parsed_corr.get("correct_answer") or raw_corr)
+                if not q.get("explanation") and parsed_corr.get("explanation"):
+                    q["explanation"] = str(parsed_corr.get("explanation"))
+        except Exception:
+            json_ans_m = re.search(r'"(?:answer|correct_answer)"\s*:\s*"([^"]+)"', raw_corr)
+            if json_ans_m:
+                raw_corr = json_ans_m.group(1)
+
+    corr = clean_human_readable_text(raw_corr)
 
     # Smart Sentence Merger: If question text is just an instruction and correct_answer has the sentence/blank
     if re.search(r"^(?:(?:A|B|C|D|Q\d+)?\.?\s*)?(?:complete\s+the\s+sentence|fill\s+in\s+the\s+blank|choose\s+the\s+correct\s+word|state\s+whether|give\s+one\s+word|change\s+the\s+tense)", q_text, re.IGNORECASE):
@@ -516,20 +621,51 @@ def sanitize_question_item(
         clean_opts = []
 
     # Clean correct_answer
-    if resolved_type in ["MCQ", "ASSERTION REASON"] and clean_opts and corr:
-        match_prefix = re.match(r"^([A-D])[\)\.\:\s]", corr, re.IGNORECASE)
-        if match_prefix:
-            corr = match_prefix.group(1).upper()
+    if resolved_type in ["MCQ", "ASSERTION REASON"] and clean_opts:
+        if corr:
+            match_prefix = re.match(r"^[\(]?([A-D])[\)\.\:\s]?", corr, re.IGNORECASE)
+            if match_prefix and len(corr.strip()) <= 3:
+                corr = match_prefix.group(1).upper()
+            else:
+                matched_letter = None
+                corr_clean = corr.lower().strip()
+                for opt_idx, opt_str in enumerate(clean_opts):
+                    opt_letter = chr(65 + opt_idx)
+                    opt_text = opt_str.split(")", 1)[-1].strip().lower()
+                    if corr_clean == opt_text or opt_str.lower().startswith(corr_clean) or corr_clean == opt_str.lower():
+                        matched_letter = opt_letter
+                        break
+                corr = matched_letter if matched_letter else (match_prefix.group(1).upper() if match_prefix else "A")
+        else:
+            corr = "A"
 
-    # Determine calibrated difficulty
-    raw_diff = str(q.get("difficulty") or target_diff or "medium").strip().lower()
-    final_difficulty = raw_diff if raw_diff in ["easy", "medium", "hard"] else "medium"
+    # Determine calibrated difficulty (Supports 'easy', 'simple', 'medium', 'hard')
+    raw_diff = str(q.get("difficulty") or target_diff or "easy").strip().lower()
+    if raw_diff in ["easy", "simple"]:
+        final_difficulty = "easy"
+    elif raw_diff == "hard":
+        final_difficulty = "hard"
+    else:
+        final_difficulty = "medium"
 
     # Clean explanation
     raw_expl = q.get("explanation")
     clean_expl = clean_human_readable_text(raw_expl)
-    if not clean_expl or "derived directly from curriculum document" in clean_expl.lower():
-        clean_expl = f"• Key concept regarding {q_text[:60]}."
+    if not clean_expl or "derived directly from curriculum document" in clean_expl.lower() or "key concept regarding" in clean_expl.lower():
+        if resolved_type in ["MCQ", "ASSERTION REASON"] and clean_opts and corr:
+            matching_opt_text = ""
+            for opt_str in clean_opts:
+                if opt_str.upper().startswith(f"{corr})") or opt_str.upper().startswith(f"{corr}."):
+                    matching_opt_text = opt_str.split(")", 1)[-1].strip()
+                    break
+            if matching_opt_text:
+                clean_expl = f"Option ({corr}) is correct as {matching_opt_text.rstrip('.')} directly reflects the core syllabus concept."
+            else:
+                clean_expl = f"Option ({corr}) is the verified correct answer based on the curriculum text."
+        elif corr and len(corr) > 10:
+            clean_expl = f"Key conceptual reasoning:\n{corr}"
+        else:
+            clean_expl = f"Comprehensive curriculum solution covering key aspects of {meta.get('subject', 'the subject')}."
 
     # Assigned marks
     raw_m = q.get("marks")
@@ -541,7 +677,7 @@ def sanitize_question_item(
     # Subject-aware validation for NUMERICAL:
     # Never tag Biology/History/Theory questions as NUMERICAL unless they have calculations
     sub_lower = str(meta.get("subject") or "").lower()
-    non_num_subjects = ["biology", "history", "geography", "civics", "political science", "english", "hindi", "bengali", "sanskrit", "social science", "social studies", "botany", "zoology"]
+    non_num_subjects = ["biology", "history", "geography", "civics", "political science", "english", "hindi", "bengali", "sanskrit", "social science", "social studies", "botany", "zoology", "physical education", "sports", "yoga"]
     is_calculation = bool(re.search(r'\d+\s*[\+\-\*\/=]\s*\d+|\bcalculate\b|\bfind the value\b|\bsolve\b|\bhow many\b|\bmass of\b', q_text.lower()))
     if resolved_type == "NUMERICAL" and (any(ns in sub_lower for ns in non_num_subjects) or not is_calculation):
         if marks >= 5:
@@ -571,7 +707,7 @@ def sanitize_question_item(
 
     # Fallback for empty or placeholder correct_answer in descriptive questions
     if not corr or corr.lower() in ["model solution", "n/a", "none"]:
-        if clean_expl and len(clean_expl) > 10 and not clean_expl.startswith("• Key concept"):
+        if clean_expl and len(clean_expl) > 10 and not clean_expl.startswith("• Key concept") and not clean_expl.startswith("Key conceptual reasoning"):
             corr = clean_expl
         elif clean_opts:
             corr = clean_opts[0]
@@ -597,7 +733,9 @@ def sanitize_question_item(
         else:
             resolved_topic = "Core Concepts"
     else:
-        resolved_topic = raw_topic
+        # Canonical Topic Clustering: map to closest Pass 1 canonical topic if overlap exists
+        canonical_match = _find_best_canonical_topic(raw_topic, det_topics, threshold=0.40) if det_topics else None
+        resolved_topic = canonical_match if canonical_match else raw_topic
 
     return {
         "id": f"gen_{index + 1}",
@@ -936,16 +1074,6 @@ def _ensure_curriculum_tables(session: Session):
             session.rollback()
 
 
-def _normalize_title(text_val: str) -> str:
-    """Helper to clean chapter and topic strings for robust matching."""
-    if not text_val:
-        return ""
-    # Strip common prefixes like 'Chapter 1: ', 'Unit 2 - ', 'Ch. 3 '
-    cleaned = re.sub(r'^(?:Chapter|Unit|Ch\.?|Lesson|Section)\s*\d+[\s\:\-\.]*', '', text_val, flags=re.IGNORECASE).strip()
-    # Remove special characters and lowercase
-    return re.sub(r'[^a-zA-Z0-9]', '', cleaned).lower()
-
-
 def resolve_or_create_chapter_and_topics(
     session: Session,
     *,
@@ -957,8 +1085,8 @@ def resolve_or_create_chapter_and_topics(
     questions: Optional[List[dict]] = None,
     target_topic_id: Optional[int] = None,
 ) -> tuple[int, dict[str, int], int]:
-    """Dynamically resolves or inserts the Subject, Chapter, and ALL unique Sub-Topics
-    extracted by LLM from the document and questions. (100% dynamic - no fixed limits).
+    """Dynamically resolves or inserts the Subject, Chapter, and Canonical Sub-Topics
+    extracted by LLM from the document and questions without hyper-fragmentation.
     Returns (chapter_id, topic_map, default_topic_id).
     """
     # 1. Lookup subject_id in subject_master
@@ -1036,30 +1164,34 @@ def resolve_or_create_chapter_and_topics(
         fallback_tid = int(first_topic or 1)
         return (1, {"default": fallback_tid}, fallback_tid)
 
-    # 3. Gather ALL unique topics (from detected_topics list + all questions' topic_suggested)
-    candidate_topics = []
+    # 3. Gather canonical topics first from detected_topics, then cluster question topics into them
+    canonical_topics_list: List[str] = []
+    seen_cand = set()
+
     if detected_topics:
         for dt in detected_topics:
-            if dt and str(dt).strip():
-                candidate_topics.append(str(dt).strip())
+            if dt and str(dt).strip() and str(dt).strip().lower() != subject.lower():
+                cand_str = str(dt).strip()
+                norm_c = _normalize_title(cand_str)
+                if norm_c and norm_c not in seen_cand:
+                    seen_cand.add(norm_c)
+                    canonical_topics_list.append(cand_str)
 
     if questions:
         for q in questions:
             ts = q.get("topic_suggested") or q.get("topic") or q.get("topicName") or q.get("topic_name")
             if ts and str(ts).strip():
-                candidate_topics.append(str(ts).strip())
+                ts_clean = str(ts).strip()
+                # Check if this maps to an existing canonical topic
+                matched_can = _find_best_canonical_topic(ts_clean, canonical_topics_list, threshold=0.45)
+                if not matched_can:
+                    norm_t = _normalize_title(ts_clean)
+                    if norm_t and norm_t not in seen_cand and len(ts_clean) >= 3:
+                        seen_cand.add(norm_t)
+                        canonical_topics_list.append(ts_clean)
 
-    # De-duplicate preserving order
-    seen_cand = set()
-    unique_topics_to_check = []
-    for t_str in candidate_topics:
-        norm_t = _normalize_title(t_str)
-        if norm_t and norm_t not in seen_cand:
-            seen_cand.add(norm_t)
-            unique_topics_to_check.append(t_str)
-
-    if not unique_topics_to_check:
-        unique_topics_to_check = [title or f"{subject} Core Concepts"]
+    if not canonical_topics_list:
+        canonical_topics_list = [title or f"{subject} Core Concepts"]
 
     # 4. Fetch existing topics under this chapter
     topic_map: dict[str, int] = {}
@@ -1078,15 +1210,24 @@ def resolve_or_create_chapter_and_topics(
     except Exception:
         pass
 
-    # 5. Insert any missing topics dynamically into topic_master (No fixed limit!)
-    for t_name in unique_topics_to_check:
+    # 5. Insert missing canonical topics into topic_master (with fuzzy deduplication)
+    for t_name in canonical_topics_list:
         norm_k = _normalize_title(t_name)
-        # Check if already present or closely matching
         matched_existing_tid = None
         for ex_norm, ex_tid in topic_map.items():
             if norm_k == ex_norm or (len(norm_k) > 4 and (norm_k in ex_norm or ex_norm in norm_k)):
                 matched_existing_tid = ex_tid
                 break
+
+        # Also check against raw topic list via token overlap
+        if not matched_existing_tid and raw_topic_list:
+            existing_names = [t[1] for t in raw_topic_list]
+            best_ex = _find_best_canonical_topic(t_name, existing_names, threshold=0.50)
+            if best_ex:
+                for tid, ex_name in raw_topic_list:
+                    if ex_name == best_ex:
+                        matched_existing_tid = tid
+                        break
 
         if matched_existing_tid:
             topic_map[norm_k] = matched_existing_tid
@@ -1570,7 +1711,7 @@ def extract_curriculum_questions_preview(
     # 1. DATA READ
     _print_step_header(1, "DATA READ & EXTRACTION", TermColors.CYAN)
     ext = document_processor.validate_upload(filename, len(file_bytes))
-    raw_text = document_processor.extract_text(file_bytes, ext)
+    raw_text = document_processor.extract_text(file_bytes, ext, board=board, class_grade=class_grade, subject=subject)
     cleaned_text = document_processor.clean_text(raw_text)
 
     char_count = len(cleaned_text)

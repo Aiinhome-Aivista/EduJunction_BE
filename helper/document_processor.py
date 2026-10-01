@@ -170,15 +170,15 @@ def extract_text(
         except Exception as err:
             logger.warning(f"pypdf extraction error: {err}")
 
-        # 3. Third fallback: Multimodal Gemini Vision OCR for scanned image PDFs / photos
-        logger.info(f"Digital text extraction yielded < 80 characters. Falling back to Gemini Vision OCR...")
+        # 3. Third fallback: Multimodal Vision OCR for scanned image PDFs / photos
+        logger.info("Digital text extraction yielded < 80 characters. Falling back to Dynamic Vision OCR...")
         try:
             from helper.ocr_vision_engine import extract_scanned_pdf_with_vision
             vision_text = extract_scanned_pdf_with_vision(file_bytes, board=board, class_grade=class_grade, subject=subject)
             if vision_text and vision_text.strip():
                 return vision_text.strip()
         except Exception as vision_err:
-            logger.error(f"Gemini Vision OCR fallback failed: {vision_err}")
+            logger.error(f"Vision OCR fallback failed: {vision_err}")
 
         return ""
     
@@ -231,6 +231,10 @@ DISCLAIMER_PATTERNS = [
     r"textbook\s+development\s+committee",
     r"printed\s+on\s+\d+\s*gsm\s+paper",
     r"reprinted\s+in\s+\d{4}",
+    r"www\.(?:tiwariacademy|vedantu|mycbseguide|selfstudys|learncbse|aglasem|topperlearning|byjus|meritnation)\.com",
+    r"downloaded\s+from\s+www\.",
+    r"visit\s+website\s*:\s*www\.",
+    r"free\s+ncert\s+solutions\s+and\s+cbs?e\s+study\s+material",
 ]
 
 
