@@ -219,6 +219,7 @@ def register():
             email=email,
             password_hash=password_hash,
             role_id=role.id,
+            auth_provider="EMAIL",
             is_active=True,
             created_by=None,
         )
@@ -696,54 +697,156 @@ def google_auth():
     name = name or email.split("@")[0]
     email = email.strip().lower()
     requested_role = str(payload.get("role", "PARENT")).strip().upper()
-    role_name = "TEACHER" if requested_role == "TEACHER" else "PARENT"
+    if requested_role == "TEACHER":
+        role_name = "TEACHER"
+    elif requested_role == "STUDENT":
+        role_name = "STUDENT"
+    else:
+        role_name = "PARENT"
+
     provided_username = (payload.get("username") or "").strip()
 
     with get_session() as session:
-        # Check if user already exists with this email
-        user = session.query(User).filter(func.lower(User.email) == email).first()
+        # Search all users registered under this email
+        candidates = session.query(User).filter(func.lower(User.email) == email).all()
+
+        user = None
+        if role_name == "STUDENT":
+            student_candidates = [c for c in candidates if c.role and c.role.role_name.upper() == "STUDENT"]
+            if student_candidates:
+                cand = student_candidates[0]
+                cand_student = session.query(Student).filter(Student.id == cand.id).first()
+                if cand_student and cand_student.parent_id is not None and getattr(cand, "auth_provider", "EMAIL") != "GOOGLE":
+                    raise AppError(
+                        "PARENT_REGISTERED_STUDENT",
+                        f"This Google account email belongs to the parent of student '{cand.username}'. Please log in using your Student Username and Password.",
+                        403
+                    )
+                user = cand
+            else:
+                parent_candidates = [c for c in candidates if c.role and c.role.role_name.upper() == "PARENT"]
+                if parent_candidates:
+                    raise AppError(
+                        "PARENT_GOOGLE_ACCOUNT",
+                        "This Google account is registered as a Parent. If you are a student registered by this parent, please log in with your Student Username and Password.",
+                        403
+                    )
+        elif role_name == "PARENT":
+            parent_candidates = [c for c in candidates if c.role and c.role.role_name.upper() == "PARENT"]
+            if parent_candidates:
+                user = parent_candidates[0]
+            else:
+                student_candidates = [c for c in candidates if c.role and c.role.role_name.upper() == "STUDENT"]
+                if student_candidates:
+                    cand = student_candidates[0]
+                    cand_student = session.query(Student).filter(Student.id == cand.id).first()
+                    if cand_student and cand_student.parent_id is None:
+                        raise AppError(
+                            "STUDENT_GOOGLE_ACCOUNT",
+                            "This Google account is registered as an independent Student. Please switch to the Student login tab.",
+                            403
+                        )
+        elif role_name == "TEACHER":
+            teacher_candidates = [c for c in candidates if c.role and c.role.role_name.upper() == "TEACHER"]
+            if teacher_candidates:
+                user = teacher_candidates[0]
 
         is_new_user = False
         if not user:
-            # If new user and no username provided, request username from frontend
-            if not provided_username:
-                return success({
-                    "requiresUsername": True,
-                    "email": email,
-                    "name": name,
-                    "googleId": google_id,
-                    "token": token_str,
-                }, message="Please provide a username to complete registration")
-            
-            # Username provided - validate and register
-            validate_username(provided_username)
-            existing_user = session.query(User).filter(func.lower(User.username) == func.lower(provided_username)).first()
-            if existing_user:
-                raise AppError("USERNAME_TAKEN", f"The username '{provided_username}' is already taken. Please choose another username.", 409)
+            # Registration needed
+            if role_name == "STUDENT":
+                # Instant Google Student onboarding: Generate clean unique username and create student with PENDING board/class
+                base_uname = (email.split("@")[0]).replace(".", "_").replace("-", "_")
+                base_uname = "".join([c for c in base_uname if c.isalnum() or c in "_-"])[:20]
+                if len(base_uname) < 3:
+                    base_uname = f"student_{base_uname}"
 
-            role = session.query(Role).filter(Role.role_name == role_name).first()
-            if not role:
-                role = Role(role_name=role_name, is_active=True)
-                session.add(role)
+                candidate_uname = base_uname
+                suffix = 1
+                while session.query(User).filter(func.lower(User.username) == func.lower(candidate_uname)).first():
+                    candidate_uname = f"{base_uname[:16]}_{suffix}"
+                    suffix += 1
+
+                role = session.query(Role).filter(Role.role_name == "STUDENT").first()
+                if not role:
+                    role = Role(role_name="STUDENT", is_active=True)
+                    session.add(role)
+                    session.flush()
+
+                user = User(
+                    name=name.strip(),
+                    username=candidate_uname,
+                    email=email,
+                    password_hash=hash_password(uuid.uuid4().hex[:12]),
+                    role_id=role.id,
+                    auth_provider="GOOGLE",
+                    google_id=google_id,
+                    is_active=True,
+                )
+                session.add(user)
                 session.flush()
 
-            user = User(
-                name=name.strip(),
-                username=provided_username,
-                email=email,
-                password_hash=hash_password(uuid.uuid4().hex[:12]),
-                role_id=role.id,
-                is_active=True,
-            )
-            session.add(user)
-            session.flush()
-
-            if role_name == "PARENT":
-                parent = Parent(id=user.id)
-                session.add(parent)
+                student = Student(
+                    id=user.id,
+                    parent_id=None,
+                    avatar="🧑‍🎓",
+                    class_grade="PENDING",
+                    target_board="PENDING",
+                    school_name=None,
+                    school_email=None,
+                    xp=0,
+                    level=1,
+                    streak_days=0,
+                    total_exams_taken=0,
+                    average_score=0.0,
+                    daily_exams_taken_today=0,
+                )
+                session.add(student)
                 session.flush()
 
-            is_new_user = True
+                is_new_user = True
+
+            else:
+                if not provided_username:
+                    return success({
+                        "requiresUsername": True,
+                        "email": email,
+                        "name": name,
+                        "googleId": google_id,
+                        "token": token_str,
+                        "role": role_name,
+                    }, message="Please provide a username to complete registration")
+
+                validate_username(provided_username)
+                existing_user = session.query(User).filter(func.lower(User.username) == func.lower(provided_username)).first()
+                if existing_user:
+                    raise AppError("USERNAME_TAKEN", f"The username '{provided_username}' is already taken. Please choose another username.", 409)
+
+                role = session.query(Role).filter(Role.role_name == role_name).first()
+                if not role:
+                    role = Role(role_name=role_name, is_active=True)
+                    session.add(role)
+                    session.flush()
+
+                user = User(
+                    name=name.strip(),
+                    username=provided_username,
+                    email=email,
+                    password_hash=hash_password(uuid.uuid4().hex[:12]),
+                    role_id=role.id,
+                    auth_provider="GOOGLE",
+                    google_id=google_id,
+                    is_active=True,
+                )
+                session.add(user)
+                session.flush()
+
+                if role_name == "PARENT":
+                    parent = Parent(id=user.id)
+                    session.add(parent)
+                    session.flush()
+
+                is_new_user = True
 
         if not user.is_active:
             raise UnauthorizedError("This account is not active", code="ACCOUNT_INACTIVE")
@@ -761,6 +864,13 @@ def google_auth():
             request=request,
         )
         session.commit()
+
+        # Check if onboarding is needed
+        is_onboarded = True
+        if user_role_name.upper() == "STUDENT":
+            student_rec = session.query(Student).filter(Student.id == user.id).first()
+            if not student_rec or not student_rec.target_board or student_rec.target_board in ("PENDING", "") or not student_rec.class_grade or student_rec.class_grade in ("PENDING", ""):
+                is_onboarded = False
 
         # Send Google registration welcome or login notification email
         if is_new_user:
@@ -794,7 +904,9 @@ def google_auth():
                     "roleId": user.role_id,
                     "roleName": user_role_name,
                     "role": user_role_name.lower(),
+                    "authProvider": user.auth_provider if hasattr(user, "auth_provider") else "GOOGLE",
                     "isActive": user.is_active,
+                    "isOnboarded": is_onboarded,
                     "createdAt": created_at_str,
                 },
                 "pageAccess": page_access,

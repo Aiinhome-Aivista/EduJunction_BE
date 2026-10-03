@@ -66,6 +66,8 @@ class User(Base):
     email = Column(String(190), nullable=True, index=True)
     password_hash = Column(String(255), nullable=False)
     role_id = Column(Integer, ForeignKey("roles.id"), nullable=False)
+    auth_provider = Column(String(20), default="EMAIL")
+    google_id = Column(String(100), nullable=True)
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=get_ist_now)
     created_by = Column(Integer, nullable=True)

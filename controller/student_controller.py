@@ -120,3 +120,71 @@ def get_assigned_exams():
         return success({"assignedExams": [scheduled_exam_to_dict(se) for se in assigned]})
 
 
+@token_required
+@roles_required("STUDENT")
+def complete_onboarding():
+    """Completes student onboarding after Google registration or initial sign-in by setting username, board, and class."""
+    from flask import request
+    from sqlalchemy import func
+    from model.models import User
+    from utils.errors import AppError
+    from utils.validators import validate_username, validate_board_class
+
+    payload = request.get_json(force=True, silent=True) or {}
+    target_board = (payload.get("targetBoard") or payload.get("target_board") or payload.get("board") or "").strip()
+    class_grade = (payload.get("classGrade") or payload.get("class_grade") or payload.get("class") or "").strip()
+    provided_username = (payload.get("username") or "").strip()
+    school_name = (payload.get("schoolName") or payload.get("school_name") or "").strip() or None
+
+    if not target_board or not class_grade:
+        raise AppError("MISSING_DATA", "Please select your Board and Class / Grade to continue.", 400)
+
+    validate_board_class(target_board, class_grade)
+
+    with get_session() as session:
+        student = session.get(Student, g.current_user_id)
+        if not student:
+            raise NotFoundError("Student not found")
+
+        user = session.get(User, g.current_user_id)
+        if not user:
+            raise NotFoundError("User not found")
+
+        # Update username if provided and changed
+        if provided_username and provided_username.lower() != user.username.lower():
+            validate_username(provided_username)
+            existing_user = session.query(User).filter(
+                func.lower(User.username) == func.lower(provided_username),
+                User.id != user.id
+            ).first()
+            if existing_user:
+                raise AppError("USERNAME_TAKEN", f"The username '{provided_username}' is already taken. Please choose another username.", 409)
+            user.username = provided_username
+
+        student.target_board = target_board
+        student.class_grade = class_grade
+        if school_name:
+            student.school_name = school_name
+
+        # Auto-assign active Mock Tests for this board and class
+        from controller.mock_test_controller import auto_assign_mock_tests_for_new_student
+        try:
+            auto_assign_mock_tests_for_new_student(session, student)
+        except Exception as e:
+            from utils.logger import logger
+            logger.warning(f"Auto-assign mock tests failed for student {student.id}: {e}")
+
+        session.commit()
+
+        badge_ids = [r.badge_id for r in session.query(StudentBadge).filter(StudentBadge.student_id == student.id).all()]
+        child_account = student_to_child_account(student, badge_ids)
+        child_account["isOnboarded"] = True
+
+        return success({
+            "profile": child_account,
+            "isOnboarded": True,
+            "message": "Profile setup complete! Welcome to EduJunction."
+        }, message="Profile setup complete! Welcome to EduJunction.")
+
+
+

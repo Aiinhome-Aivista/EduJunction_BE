@@ -246,6 +246,10 @@ def create_app() -> Flask:
     def api_student_overview():
         return student_controller.my_overview()
 
+    @app.route("/api/v1/students/complete-onboarding", methods=["POST"])
+    def api_student_complete_onboarding():
+        return student_controller.complete_onboarding()
+
     @app.route("/api/v1/students/me/learning-path", methods=["GET"])
     def api_student_learning_path():
         return student_controller.my_learning_path()
