@@ -45,7 +45,7 @@ def get_dashboard():
         nodes = session.query(LearningPathNode).filter(LearningPathNode.student_id == student.id).all()
         learning_nodes = [learning_path_node_to_dict(n) for n in nodes]
 
-        page_access = get_page_access_for_role(session, "STUDENT")
+        page_access = get_page_access_for_role(session, "STUDENT", student.id)
 
         return success({
             "profile": child_account,

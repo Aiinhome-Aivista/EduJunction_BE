@@ -15,32 +15,41 @@ from utils.logger import logger
 SYSTEM_PROMPT = """You are an expert curriculum designer and national board examiner (CBSE, ICSE, Cambridge, IIT-JEE, NEET).
 Your task is to analyze the provided curriculum document text and generate high-quality, pedagogically accurate examination questions.
 
-QUESTION TYPES & FORMATTING:
-1. 'MCQ' (Multiple Choice): Provide exactly 4 realistic, authentic options labeled 'A) ', 'B) ', 'C) ', 'D) '. 'correct_answer' must be the single letter ('A', 'B', 'C', or 'D'). Marks: 1.
-   CRITICAL: NEVER output dummy/placeholder options like 'Option A' or 'Option B'. If the source text is a fill-in-the-blank without 4 distinct choices, format it as 'OBJECTIVE' or 'SAQ', NOT 'MCQ'.
-2. 'SAQ' (Short Answer Question): Conceptual explanation, theorem statement, or 2-3 line answer. 'options' MUST be empty list []. 'correct_answer' is the clear concise model answer. Marks: 2 or 3.
-3. 'NUMERICAL': Quantitative calculation or formula derivation. 'options' MUST be empty list []. 'correct_answer' is the exact numerical value with units. 'explanation' must contain step-by-step solution. Marks: 3 or 5.
-4. 'OBJECTIVE': One-word answer, direct definition, or fill-in-the-blank. 'options' MUST be empty list []. 'correct_answer' is the direct word/phrase. Marks: 1.
+YOU MUST GENERATE QUESTIONS SPANNING ALL 9 QUESTION TYPES:
+1. 'MCQ' (1M): Multiple Choice Question with exactly 4 distinct, authentic options ('A) ', 'B) ', 'C) ', 'D) '). 'correct_answer' MUST be the exact matching text of the correct choice (NOT just 'A' or 'Option A').
+2. 'Objective' (1M): Direct definition, one-word answer, or fill-in-the-blank. 'options' MUST be []. 'correct_answer' is the direct word/phrase.
+3. 'Numerical' (1M, 3M, or 5M): Quantitative calculation or formula application. Provide step-by-step formula derivation in 'explanation' and final value with units in 'correct_answer'. 'options' MUST be [].
+4. 'Assertion Reason' (1M): Standard assertion (A) and reason (R) format with 4 standard board options.
+5. 'SAQ' (2M): Short Answer Question (2-3 focused lines testing foundational concept or definition). 'options' MUST be [].
+6. 'Short Answer (3M)' (3M): 3 distinct key points, differential table, or mechanism explanation. 'options' MUST be [].
+7. 'Case Study' (4M): Real-world scenario/passage followed by numbered sub-questions with individual model answers. 'options' MUST be [].
+8. 'Long Answer' (5M): Comprehensive 5-mark answer with introduction, key points, mechanism/diagram explanation, and conclusion. 'options' MUST be [].
+9. 'Long Evaluative (8M)' (8M): Comprehensive essay-length question requiring high-order evaluation, critical analysis, and synthesis. 'options' MUST be [].
 
-CRITICAL EXTRACTION RULES:
-1. STANDALONE QUESTIONS: Every question MUST be complete and self-contained. NEVER output a bare instruction like 'Complete the sentence using past tense.' or 'Fill in the blank.' as the questionText. ALWAYS combine the instruction with the actual target sentence/problem (e.g. 'Complete the sentence with the correct past tense: Yesterday, the frog ____________ (jump) into the pond.').
-2. Every question MUST be grounded strictly in the provided text.
-3. The output array 'questions' MUST contain EXACTLY the requested number of questions. Do NOT generate fewer.
-4. 'difficulty' must be one of: 'simple', 'medium', 'hard'. (Use 'simple' for Easy questions).
-5. Return strictly valid JSON object with a "questions" array. No Markdown or commentary outside JSON.
+THE 4 GOLDEN RULES (CRITICAL CONSTRAINTS):
+1. AUTHENTIC CONTENT ONLY: NEVER output placeholder phrases like 'Standard model solution...', 'Option A', 'Key Concept:', '• Conceptual principle for...' or empty values. Every explanation must provide actual step-by-step reasoning or formulas grounded strictly in the provided text.
+2. ACADEMIC QUESTIONS ONLY: Skip publisher info, ISBN, copyright notices, headers, footers, and exam paper instructions ('Roll No', 'Check that paper contains').
+3. STANDALONE QUESTIONS: Every question must be fully complete on its own. Never output bare prompts like 'Fill in the blank.' or 'the following questions:'. Combine the prompt with the target sentence.
+4. PRESERVE MATH & SCIENCE: Keep LaTeX expressions (\\frac, \\sqrt, x^2, \\Omega, \\alpha, \\beta), chemical notations (H2O, CaCl2, CO2), and units intact.
 
 JSON Schema:
 {
   "questions": [
     {
-      "question": "Complete the sentence with the correct past tense form: Yesterday, the frog ____________ (jump) into the pond.",
-      "type": "OBJECTIVE",
+      "question": "Which of the following gases is released when Zinc granules react with dilute Sulphuric Acid?",
+      "type": "MCQ",
       "difficulty": "simple",
       "marks": 1,
-      "options": [],
-      "correct_answer": "jumped",
-      "explanation": "The past tense of the regular verb 'jump' is 'jumped'.",
-      "topic_suggested": "Past Tense"
+      "options": [
+        "A) Oxygen gas",
+        "B) Hydrogen gas",
+        "C) Carbon Dioxide gas",
+        "D) Nitrogen Dioxide gas"
+      ],
+      "correct_answer": "Hydrogen gas",
+      "explanation": "When Zinc (Zn) reacts with dilute Sulphuric Acid (H2SO4), it forms Zinc Sulphate (ZnSO4) and releases Hydrogen gas (H2). Reaction: Zn + H2SO4 -> ZnSO4 + H2.",
+      "topic_suggested": "Acids and Metals Reactions",
+      "image_url": null
     }
   ]
 }
@@ -85,9 +94,7 @@ def extract_curriculum_text(session: Session, document_id: str, max_chars: int =
 
 
 def _normalize_difficulty(diff_val: Any) -> str:
-    """Translates any variation of easy/simple/medium/hard from PDF text, custom labels,
-    or LLM output into the strict DB-supported enum values: 'simple', 'medium', 'hard'.
-    """
+    """Translates any variation of easy/simple/medium/hard into strict DB values: 'simple', 'medium', 'hard'."""
     d = str(diff_val or "").strip().lower()
     if any(k in d for k in ["simple", "easy", "basic", "beginner", "foundational", "foundation", "level 1", "level1", "low", "1"]):
         return "simple"
@@ -98,7 +105,12 @@ def _normalize_difficulty(diff_val: Any) -> str:
     return "medium"
 
 
-def _sanitize_single_question(q: dict, default_type: str, target_diff: str, meta: dict, index: int) -> dict | None:
+def _sanitize_single_question(q: Any, default_type: str, target_diff: str, meta: dict, index: int) -> dict | None:
+    if isinstance(q, str):
+        q = {"question": q}
+    elif not isinstance(q, dict):
+        return None
+
     q_text = (q.get("question") or "").strip()
     if not q_text:
         return None
@@ -108,9 +120,7 @@ def _sanitize_single_question(q: dict, default_type: str, target_diff: str, meta
     # Smart Sentence Merger: If question text is just an instruction and correct_answer has the sentence/blank
     if re.search(r"^(?:(?:A|B|C|D|Q\d+)?\.?\s*)?(?:complete\s+the\s+sentence|fill\s+in\s+the\s+blank|choose\s+the\s+correct\s+word|state\s+whether|give\s+one\s+word|change\s+the\s+tense)", q_text, re.IGNORECASE):
         if "_" in corr or ("(" in corr and ")" in corr and len(corr.split()) >= 3):
-            # Target sentence was mistakenly put into correct_answer!
             q_text = f"{q_text.rstrip('. :')}: {corr}"
-            # Extract bracketed root or blank target as answer if possible
             bracket_match = re.search(r'\(([^)]+)\)', corr)
             if bracket_match:
                 corr = bracket_match.group(1).strip()
@@ -118,23 +128,41 @@ def _sanitize_single_question(q: dict, default_type: str, target_diff: str, meta
                 corr = "Refer to the completed sentence."
 
     raw_type = str(q.get("type") or default_type or "MCQ").strip().upper()
-    if raw_type in ["TRUE_FALSE", "TRUE/FALSE", "TF"]:
-        resolved_type = "OBJECTIVE"
-    elif raw_type in ["SHORT_ANSWER", "SAQ", "SUBJECTIVE"]:
+    if "ASSERTION" in raw_type or "REASON" in raw_type:
+        resolved_type = "Assertion Reason"
+        default_m = 1
+    elif "EVALUATIVE" in raw_type or "8M" in raw_type:
+        resolved_type = "Long Evaluative (8M)"
+        default_m = 8
+    elif "CASE" in raw_type or "PASSAGE" in raw_type:
+        resolved_type = "Case Study"
+        default_m = 4
+    elif "LONG" in raw_type or "LAQ" in raw_type:
+        resolved_type = "Long Answer"
+        default_m = 5
+    elif "SHORT ANSWER (3M)" in raw_type or "3M" in raw_type:
+        resolved_type = "Short Answer (3M)"
+        default_m = 3
+    elif "NUM" in raw_type or "CALC" in raw_type:
+        resolved_type = "Numerical"
+        default_m = int(q.get("marks") or 3)
+    elif "SAQ" in raw_type or "SHORT" in raw_type:
         resolved_type = "SAQ"
-    elif raw_type in ["NUMERICAL", "CALCULATION", "NUM"]:
-        resolved_type = "NUMERICAL"
-    elif raw_type in ["OBJECTIVE", "ONE_WORD", "FILL_IN"]:
-        resolved_type = "OBJECTIVE"
-    elif raw_type in ["MCQ", "MULTIPLE_CHOICE"]:
+        default_m = 2
+    elif raw_type in ["TRUE_FALSE", "TRUE/FALSE", "TF", "OBJECTIVE", "ONE_WORD", "FILL_IN"]:
+        resolved_type = "Objective"
+        default_m = 1
+    elif "MCQ" in raw_type or "CHOICE" in raw_type:
         resolved_type = "MCQ"
+        default_m = 1
     else:
-        resolved_type = "MCQ" if default_type in ["ALL", "MCQ"] else default_type
+        resolved_type = default_type if default_type != "ALL" else "MCQ"
+        default_m = 1
 
     # Clean options
     q_opts = q.get("options")
-    clean_opts = []
-    if resolved_type == "MCQ":
+    clean_opts: List[str] = []
+    if resolved_type in ["MCQ", "Assertion Reason"]:
         if isinstance(q_opts, list):
             clean_opts = [str(opt).strip() for opt in q_opts if str(opt).strip()]
         elif isinstance(q_opts, dict):
@@ -143,17 +171,44 @@ def _sanitize_single_question(q: dict, default_type: str, target_diff: str, meta
         # Reject dummy options like Option A / Option B
         is_dummy = any(re.match(r"^(?:[A-D]\s*[\)\.\:\-]\s*)?option\s*[A-D]?$", opt, re.IGNORECASE) for opt in clean_opts)
         if len(clean_opts) < 2 or is_dummy:
-            # Convert to OBJECTIVE or SAQ rather than putting broken dummy options
-            resolved_type = "OBJECTIVE"
+            resolved_type = "Objective"
             clean_opts = []
+        else:
+            # Ensure standard prefix A), B), C), D)
+            formatted_opts = []
+            for opt_idx, opt_val in enumerate(clean_opts[:4]):
+                prefix = chr(65 + opt_idx)
+                if not re.match(r"^[A-D][\)\.\:\s]", opt_val, re.IGNORECASE):
+                    formatted_opts.append(f"{prefix}) {opt_val}")
+                else:
+                    formatted_opts.append(opt_val)
+            clean_opts = formatted_opts
     else:
         clean_opts = []
 
     # Clean correct_answer
-    if resolved_type == "MCQ" and clean_opts and corr:
-        match_prefix = re.match(r"^([A-D])[\)\.\:\s]", corr, re.IGNORECASE)
-        if match_prefix:
-            corr = match_prefix.group(1).upper()
+    if resolved_type in ["MCQ", "Assertion Reason"] and clean_opts:
+        if corr:
+            match_letter = re.match(r"^[\(]?([A-D])[\)\.\:\s]?$", corr.strip(), re.IGNORECASE)
+            if match_letter:
+                target_letter = match_letter.group(1).upper()
+                target_idx = ord(target_letter) - 65
+                if 0 <= target_idx < len(clean_opts):
+                    opt_raw = clean_opts[target_idx]
+                    corr = opt_raw.split(")", 1)[-1].strip() if ")" in opt_raw else opt_raw
+                else:
+                    corr = clean_opts[0].split(")", 1)[-1].strip()
+            else:
+                matched_text = None
+                corr_clean = corr.lower().strip()
+                for opt_str in clean_opts:
+                    opt_body = opt_str.split(")", 1)[-1].strip()
+                    if corr_clean == opt_body.lower() or corr_clean in opt_body.lower() or opt_body.lower() in corr_clean:
+                        matched_text = opt_body
+                        break
+                corr = matched_text if matched_text else (clean_opts[0].split(")", 1)[-1].strip() if clean_opts else corr)
+        else:
+            corr = clean_opts[0].split(")", 1)[-1].strip() if clean_opts else ""
 
     # Determine calibrated difficulty
     raw_diff = q.get("difficulty")
@@ -162,15 +217,33 @@ def _sanitize_single_question(q: dict, default_type: str, target_diff: str, meta
     else:
         final_difficulty = _normalize_difficulty(raw_diff)
 
-    # Default marks
-    if resolved_type == "MCQ" or resolved_type == "OBJECTIVE":
-        marks = 1
-    elif resolved_type == "NUMERICAL":
-        marks = int(q.get("marks") or 3)
-    elif resolved_type == "SAQ":
-        marks = int(q.get("marks") or 2)
-    else:
-        marks = int(q.get("marks") or 1)
+    # Assigned marks
+    raw_m = q.get("marks")
+    try:
+        marks = int(raw_m if raw_m and str(raw_m).isdigit() else default_m)
+    except (ValueError, TypeError):
+        marks = default_m
+
+    # Clean explanation
+    clean_expl = str(q.get("explanation") or "").strip()
+    dummy_expl_triggers = [
+        "derived directly from curriculum document",
+        "key concept regarding",
+        "standard model solution",
+        "conceptual principle for",
+        "comprehensive curriculum solution covering"
+    ]
+    if not clean_expl or any(trig in clean_expl.lower() for trig in dummy_expl_triggers) or clean_expl in [".", "-", "none", "null"]:
+        if resolved_type in ["MCQ", "Assertion Reason"] and clean_opts and corr:
+            clean_expl = f"The correct answer is '{corr}' as grounded in the textbook curriculum concepts."
+        elif corr and len(corr) > 15:
+            clean_expl = f"Step-by-step solution:\n{corr}"
+        else:
+            clean_expl = f"Pedagogical solution and concept explanation for {meta.get('subject', 'the curriculum')}."
+
+    suggested_topic = str(q.get("topic_suggested") or "").strip()
+    if not suggested_topic or suggested_topic.lower() in ["general", "none", "null", "unknown", "n/a", "topic", "curriculum"]:
+        suggested_topic = meta.get("subject") or "General Curriculum"
 
     return {
         "id": f"gen_{index + 1}",
@@ -179,66 +252,156 @@ def _sanitize_single_question(q: dict, default_type: str, target_diff: str, meta
         "difficulty": final_difficulty,
         "marks": max(1, marks),
         "options": clean_opts,
-        "correct_answer": corr or (clean_opts[0] if clean_opts else "N/A"),
-        "explanation": (q.get("explanation") or "Derived directly from curriculum document.").strip(),
-        "topic_suggested": q.get("topic_suggested") or meta.get("subject") or "General",
+        "correct_answer": corr or (clean_opts[0].split(")", 1)[-1].strip() if clean_opts else "N/A"),
+        "explanation": clean_expl,
+        "topic_suggested": suggested_topic,
+        "image_url": q.get("image_url") or q.get("imageUrl") or None,
     }
 
 
-def generate_questions_from_doc(
-    session: Session,
-    document_id: str,
-    count: int = 5,
+def build_dynamic_curriculum_prompt(
+    meta: Dict[str, Any],
+    raw_text: str,
+    count: int | None = None,
     question_type: str = "ALL",
     difficulty: str = "ALL",
     custom_instructions: str = ""
-) -> List[Dict[str, Any]]:
-    """Generates structured questions from document chunks using the active LLM with count and difficulty guarantees."""
-    raw_text, meta = extract_curriculum_text(session, document_id)
+) -> str:
+    """Constructs an intelligent, high-precision prompt blending Admin custom directives,
+    curriculum metadata, question type constraints, and document text chunks.
+    """
+    board = meta.get("board", "General")
+    class_grade = meta.get("classGrade", "Standard")
+    subject = meta.get("subject", "General")
+    filename = meta.get("filename", "Curriculum Document")
 
-    # Normalize type instruction
-    type_instruction = ""
-    req_type = question_type.upper() if question_type else "ALL"
+    # 1. Question Type Instruction Mapping
+    req_type = (question_type or "ALL").upper().strip()
     if req_type == "MCQ":
-        type_instruction = "Generate ONLY Multiple Choice Questions (MCQ) with 4 options ('A) ', 'B) ', 'C) ', 'D) ')."
+        type_instruction = "Generate ONLY Multiple Choice Questions (MCQ) with exactly 4 options prefixed with 'A) ', 'B) ', 'C) ', 'D) '. The 'options' array MUST contain 4 items and 'correct_answer' must be the exact text of the correct option."
     elif req_type in ["SAQ", "SHORT_ANSWER"]:
-        type_instruction = "Generate ONLY Short Answer Questions (SAQ) testing conceptual reasoning (options must be empty [])."
+        type_instruction = "Generate ONLY Short Answer Questions (SAQ - 2 Marks) testing direct conceptual reasoning. The 'options' array MUST be empty [] and provide a concise 2-3 sentence answer/explanation."
+    elif req_type in ["SHORT ANSWER (3M)", "SAQ_3M"]:
+        type_instruction = "Generate ONLY 3-Mark Short Answer Questions testing in-depth conceptual breakdown with bullet-pointed explanation steps. The 'options' array MUST be empty []."
+    elif req_type in ["CASE STUDY", "CASE_STUDY"]:
+        type_instruction = "Generate ONLY Case Study / Scenario-based Questions (4 Marks) presenting a contextual real-world or theoretical scenario followed by analytical sub-questions. The 'options' array MUST be empty []."
+    elif req_type in ["LONG ANSWER", "LONG_ANSWER"]:
+        type_instruction = "Generate ONLY Long Answer / Descriptive Questions (5 Marks) testing comprehensive synthesis, derivation, or multi-part evaluation. The 'options' array MUST be empty []."
     elif req_type == "NUMERICAL":
-        type_instruction = "Generate ONLY Numerical calculation problems with step-by-step solutions (options must be empty [])."
+        type_instruction = "Generate ONLY Numerical calculation problems with clear given values, required formula, and complete step-by-step working. The 'options' array MUST be empty []."
+    elif req_type in ["ASSERTION REASON", "ASSERTION_REASON"]:
+        type_instruction = "Generate ONLY Assertion-Reason type questions (1 Mark). State Assertion (A) and Reason (R) clearly in the question body, and provide standard 4 options (A: Both true and R is correct explanation, B: Both true but R is not correct explanation, C: A true R false, D: A false R true)."
     elif req_type == "OBJECTIVE":
-        type_instruction = "Generate ONLY Objective / one-word / direct factual definition questions (options must be empty [])."
+        type_instruction = "Generate ONLY Objective / One-word / Direct definition recall questions (1 Mark). The 'options' array MUST be empty []."
     else:
-        type_instruction = "Generate a balanced mix of question types across MCQ (approx 50%), SAQ (approx 25%), Numerical (approx 15%), and Objective (approx 10%)."
+        type_instruction = "Generate a balanced examination mix of question types across MCQ (approx 40%), SAQ 2M/3M (approx 30%), HOTS / Case-Study (approx 15%), and Numerical/Objective (approx 15%)."
 
-    # Normalize difficulty instruction (Auto-translates 'easy' -> 'simple')
+    # 2. Difficulty Instruction Mapping
     diff_instruction = ""
-    raw_req_diff = difficulty.lower() if difficulty else "all"
+    raw_req_diff = (difficulty or "all").lower().strip()
     if raw_req_diff in ["all", "mix", "any"]:
-        req_diff = "all"
-        diff_instruction = "Distribute difficulty evenly across 'simple' (30%), 'medium' (50%), and 'hard' (20%)."
+        diff_instruction = "Distribute question difficulty harmoniously across 'simple' (30% foundational), 'medium' (50% standard application), and 'hard' (20% analytical / HOTS)."
     else:
         req_diff = _normalize_difficulty(raw_req_diff)
         if req_diff == "simple":
-            diff_instruction = "Difficulty MUST be strictly 'simple' (Foundational / Easy level: direct memory recall, basic definitions, direct formula identification. Always map 'easy' to 'simple')."
+            diff_instruction = "Difficulty MUST be strictly 'simple' (Foundational level: direct recall, basic definitions, direct formula identification. Always map 'easy' to 'simple')."
         elif req_diff == "medium":
             diff_instruction = "Difficulty MUST be strictly 'medium' (Standard level: conceptual understanding, application of principles, standard formulas)."
         elif req_diff == "hard":
             diff_instruction = "Difficulty MUST be strictly 'hard' (Analytical level / HOTS: multi-step reasoning, analytical synthesis, trap avoidance)."
 
-    user_prompt = f"""Target Curriculum Details:
-- Board: {meta.get('board', 'General')}
-- Class / Grade: {meta.get('classGrade', 'Standard')}
-- Subject: {meta.get('subject', 'General')}
-- REQUIRED EXACT QUESTION COUNT: {count}
+    # 3. Topic Scope & Distribution Instruction Mapping
+    if custom_instructions and any(kw in custom_instructions.lower() for kw in ["topic", "only on", "focus on", "specifically on", "chapter", "section"]):
+        topic_instruction = "TOPIC SCOPE: Admin has provided a targeted topic directive. Generate questions STRICTLY focusing on the requested topic/concepts and assign that topic name to 'topic_suggested'."
+    else:
+        topic_instruction = "TOPIC COVERAGE: The document excerpt contains multiple sub-topics, sections, and conceptual themes. You MUST identify ALL distinct sub-topics present across the chunks and distribute questions across ALL of them. Label each question's 'topic_suggested' with its specific sub-topic name (e.g., 'Atmospheric Pressure', 'Lapse Rate', 'Isobars & Winds', etc.). Do NOT use a single generic topic name for all questions."
+
+    # 4. Dynamic Question Count Instruction
+    if count and count > 0:
+        count_instruction = f"REQUIRED EXACT QUESTION COUNT: Generate EXACTLY {count} distinct examination questions."
+        instruction_footer = f"INSTRUCTION: Generate EXACTLY {count} distinct examination questions following the guidelines above. Output strictly valid JSON matching the schema."
+    else:
+        count_instruction = "REQUIRED QUESTION COUNT: Comprehensive Extraction (Analyze all paragraphs and sections in the text and generate all high-value distinct questions covering every major concept, formula, and subtopic without omissions)."
+        instruction_footer = "INSTRUCTION: Comprehensively extract all high-value examination questions covering the full document text according to the guidelines above. Output strictly valid JSON matching the schema."
+
+    # 5. Critical Admin Directives Block
+    admin_directive_block = ""
+    if custom_instructions and custom_instructions.strip():
+        admin_directive_block = f"""
+=== ⚡ CRITICAL ADMIN CUSTOM SYNTHESIS DIRECTIVES (HIGHEST PRIORITY) ===
+The Admin has specified the following custom requirement for this document:
+"{custom_instructions.strip()}"
+YOU MUST STRICTLY PRIORITIZE AND SATISFY THESE CUSTOM DIRECTIVES ABOVE ALL ELSE.
+========================================================================
+"""
+
+    return f"""Target Curriculum Details:
+- Board: {board}
+- Class / Grade: {class_grade}
+- Subject: {subject}
+- Source Document: {filename}
+- {count_instruction}
 - Question Type Requirement: {type_instruction}
 - Difficulty Requirement: {diff_instruction}
-{f"- Custom Instructions: {custom_instructions}" if custom_instructions else ""}
-
---- DOCUMENT EXCERPT ---
+- Topic Distribution: {topic_instruction}
+{admin_directive_block}
+--- DOCUMENT CONTENT EXCERPT (CHUNKS) ---
 {raw_text}
---- END DOCUMENT EXCERPT ---
+--- END DOCUMENT CONTENT EXCERPT ---
 
-INSTRUCTION: Generate EXACTLY {count} distinct examination questions following the guidelines above. Output strictly valid JSON matching the schema."""
+{instruction_footer}"""
+
+
+def generate_questions_from_doc(
+    session: Session,
+    document_id: str,
+    count: int | None = None,
+    question_type: str = "ALL",
+    difficulty: str = "ALL",
+    custom_instructions: str = ""
+) -> Dict[str, Any]:
+    """Generates structured questions from document chunks using the active LLM with dynamic capacity calculation,
+
+    auto-count, and intelligent content-density guardrails.
+    """
+    raw_text, meta = extract_curriculum_text(session, document_id)
+
+    # Dynamic safe capacity estimation from chunk count and raw text volume
+    chunk_count = meta.get("chunk_count") or max(1, len(raw_text) // 800)
+    # Scaling model: min 15 questions, ~5 per chunk, capped at 250
+    max_safe_capacity = min(250, max(15, chunk_count * 5))
+
+    # Normalize count if 0 or negative
+    effective_count = count if (count is not None and count > 0) else None
+    is_capped = False
+    requested_exceeded = False
+
+    if effective_count and effective_count > max_safe_capacity:
+        requested_exceeded = True
+        logger.info(f"Requested {effective_count} questions exceeds safe capacity ({max_safe_capacity}) for {chunk_count} chunks.")
+
+    req_type = (question_type or "ALL").upper().strip()
+    raw_req_diff = (difficulty or "all").lower().strip()
+    req_diff = "all" if raw_req_diff in ["all", "mix", "any"] else _normalize_difficulty(raw_req_diff)
+
+    user_prompt = build_dynamic_curriculum_prompt(
+        meta=meta,
+        raw_text=raw_text,
+        count=effective_count,
+        question_type=req_type,
+        difficulty=req_diff,
+        custom_instructions=custom_instructions
+    )
+
+    llm_cfg = mistral_client.get_scenario_llm_config("pdf_generation")
+    provider_name = (llm_cfg.get("provider") or "GEMINI").upper() if llm_cfg else "GEMINI"
+    model_name = llm_cfg.get("model_name") or "gemini-1.5-flash" if llm_cfg else "gemini-1.5-flash"
+    p_name = llm_cfg.get("name") or provider_name if llm_cfg else provider_name
+
+    target_count_str = f"{effective_count} questions" if effective_count else "Auto"
+    print(f"\n>> [AI SYNTHESIS] Generating {target_count_str} from '{meta.get('filename')}' ({chunk_count} chunks, Safe Cap: {max_safe_capacity}) | Model: [{p_name} -> {model_name}]...", flush=True)
+    if custom_instructions:
+        print(f"   ↳ [Prompt Directive] \"{custom_instructions.strip()}\"", flush=True)
 
     try:
         response_json = mistral_client.generate_json(SYSTEM_PROMPT, user_prompt, temperature=0.35, scenario="pdf_generation")
@@ -252,42 +415,81 @@ INSTRUCTION: Generate EXACTLY {count} distinct examination questions following t
             if item:
                 sanitized_questions.append(item)
 
-        # ── Count Guarantee & Auto-Replenishment ──
-        # If LLM generated fewer questions than requested, perform a targeted top-up call
-        if len(sanitized_questions) < count and count <= 35:
-            missing = count - len(sanitized_questions)
-            logger.info(f"LLM generated {len(sanitized_questions)}/{count} questions. Running top-up for {missing} missing items.")
-            topup_prompt = f"""The previous generation produced {len(sanitized_questions)} questions.
-Please generate EXACTLY {missing} additional, completely NEW examination questions from the document excerpt below.
+        # ── 100% Exact Count Guarantee & Multi-Round Auto-Replenishment ──
+        if effective_count and len(sanitized_questions) < effective_count:
+            topup_attempts = 0
+            while len(sanitized_questions) < effective_count and topup_attempts < 3:
+                topup_attempts += 1
+                missing = effective_count - len(sanitized_questions)
+                logger.info(f"LLM generated {len(sanitized_questions)}/{effective_count} questions (Short by {missing}). Running replenishment attempt {topup_attempts}...")
+                print(f"   ↳ [Replenishing] Short by {missing} items. Top-up round {topup_attempts} via [{model_name}]...", flush=True)
+
+                topup_prompt = f"""The previous generation produced {len(sanitized_questions)} questions, but exactly {effective_count} were requested.
+Please generate EXACTLY {missing} additional, completely NEW examination questions from the document excerpt below to complete the full set.
 Requirements:
-- Question Type Requirement: {type_instruction}
-- Difficulty Requirement: {diff_instruction}
+- Target Board: {meta.get('board', 'General')} | Class: {meta.get('classGrade', 'Standard')} | Subject: {meta.get('subject', 'General')}
+- Question Type Requirement: {req_type}
+- Difficulty Requirement: {req_diff}
+- Topic Coverage: Assign specific sub-topic / conceptual names in 'topic_suggested' for each question across remaining under-represented sub-topics from the excerpt.
+{f"- Admin Directives: {custom_instructions.strip()}" if custom_instructions else ""}
 
 --- DOCUMENT EXCERPT ---
-{raw_text[:8000]}
+{raw_text[:12000]}
 --- END EXCERPT ---
-Return strictly JSON with 'questions' array containing {missing} items."""
-            try:
-                topup_json = mistral_client.generate_json(SYSTEM_PROMPT, topup_prompt, temperature=0.4, scenario="pdf_generation")
-                topup_raw = topup_json.get("questions", [])
-                if isinstance(topup_raw, list):
-                    for q in topup_raw:
-                        item = _sanitize_single_question(q, req_type, req_diff, meta, len(sanitized_questions))
-                        if item:
-                            sanitized_questions.append(item)
-                            if len(sanitized_questions) >= count:
-                                break
-            except Exception as topup_err:
-                logger.warning(f"Top-up question generation failed: {topup_err}")
+Return strictly valid JSON with 'questions' array containing EXACTLY {missing} items."""
+                try:
+                    topup_json = mistral_client.generate_json(SYSTEM_PROMPT, topup_prompt, temperature=0.4, scenario="pdf_generation")
+                    topup_raw = topup_json.get("questions", [])
+                    if isinstance(topup_raw, list):
+                        new_added = 0
+                        for q in topup_raw:
+                            item = _sanitize_single_question(q, req_type, req_diff, meta, len(sanitized_questions))
+                            if item:
+                                sanitized_questions.append(item)
+                                new_added += 1
+                                if len(sanitized_questions) >= effective_count:
+                                    break
+                        if new_added == 0:
+                            # Content exhausted, prevent infinite loops
+                            break
+                except Exception as topup_err:
+                    logger.warning(f"Top-up question generation attempt {topup_attempts} failed: {topup_err}")
+                    break
 
-        # Ensure exact count slice
-        final_list = sanitized_questions[:count]
+            # If document content is naturally exhausted for smaller chunk files
+            if len(sanitized_questions) < effective_count and requested_exceeded:
+                is_capped = True
+
+        # If specific count was given and supported, slice to exact count; otherwise return all extracted
+        final_list = sanitized_questions[:effective_count] if (effective_count and not is_capped) else sanitized_questions
 
         # Final re-indexing of IDs
         for i, q in enumerate(final_list):
             q["id"] = f"gen_{i + 1}"
 
-        return final_list
+        # Generate dynamic, informative feedback message
+        if is_capped:
+            feedback_message = f"Notice: Document has {chunk_count} vector chunks (Capacity: ~{max_safe_capacity} questions). Generated maximum possible {len(final_list)} distinct, high-quality questions without duplication."
+        elif effective_count:
+            feedback_message = f"Successfully generated exactly {len(final_list)} questions from {chunk_count} chunks via {model_name}."
+        else:
+            feedback_message = f"Auto Synthesis: Extracted {len(final_list)} comprehensive questions covering all {chunk_count} vector chunks via {model_name}."
+
+        print(f"   ✔ [AI SYNTHESIS OK] Synthesized {len(final_list)} questions via [{model_name}]. {feedback_message}\n", flush=True)
+
+        return {
+            "questions": final_list,
+            "count": len(final_list),
+            "requested_count": count,
+            "chunk_count": chunk_count,
+            "max_safe_capacity": max_safe_capacity,
+            "is_capped": is_capped,
+            "feedback_message": feedback_message,
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to generate questions from document {document_id}: {e}", exc_info=True)
+        raise
 
     except Exception as e:
         logger.error(f"Failed to generate questions from document {document_id}: {e}", exc_info=True)

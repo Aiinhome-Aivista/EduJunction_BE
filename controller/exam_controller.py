@@ -443,8 +443,8 @@ def submit_exam(exam_id):
             )
             # Statistical update of question_master importance_score
             try:
-                q_obj = session.get(Question, ev["questionId"])
-                if q_obj:
+                qid = ev.get("questionId")
+                if qid and str(qid).isdigit():
                     is_corr = bool(ev.get("isCorrect"))
                     mistake_inc = 0 if is_corr else 1
                     session.execute(
@@ -456,12 +456,11 @@ def submit_exam(exam_id):
                                     CAST(COALESCE(mistake_count, 0) + :mistake_inc AS DECIMAL(10,2)) / 
                                     CAST(COALESCE(attempt_count, 0) + 1 AS DECIMAL(10,2))
                                 ) * 2.50))
-                            WHERE id = :qm_id OR question = :q_text
+                            WHERE id = :qm_id
                         """),
                         {
                             "mistake_inc": mistake_inc,
-                            "qm_id": q_obj.id,
-                            "q_text": q_obj.question_text
+                            "qm_id": int(qid),
                         }
                     )
             except Exception as stat_err:
@@ -491,8 +490,13 @@ def submit_exam(exam_id):
         # Daily Streak Logic: Based on distinct consecutive exam submission calendar dates (IST)
         gamification_engine.calculate_and_sync_student_streak(session, student)
 
-        # Server-side XP/badges (Canonical Simple XP: 1% exam percentage = 1 XP)
-        xp_earned = gamification_engine.compute_exam_xp(marks_obtained, exam.total_marks or 15)
+        # Server-side XP/badges (Canonical Simple XP: 1% exam percentage = 1 XP + streaks & speed bonuses)
+        xp_earned = gamification_engine.compute_exam_xp(
+            marks_obtained,
+            exam.total_marks or 15,
+            time_taken_seconds=time_taken_seconds,
+            streak_days=student.streak_days or 0,
+        )
         newly_unlocked_badges = gamification_engine.evaluate_badge_unlocks(
             session, student, marks_obtained, time_taken_seconds, exam.difficulty
         )

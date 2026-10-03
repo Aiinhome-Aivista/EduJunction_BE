@@ -59,17 +59,39 @@ def calculate_and_sync_student_streak(session: Session, student: Student) -> int
     return streak
 
 
-def compute_exam_xp(marks_obtained: float, total_marks: float) -> int:
-    """Canonical Rule: 1% = 1 XP (0 to 100 XP max).
-    Zero bonus for perfect score, speed, or streaks."""
+def compute_exam_xp(
+    marks_obtained: float,
+    total_marks: float,
+    time_taken_seconds: int = 0,
+    streak_days: int = 0,
+) -> int:
+    """Canonical EduPoints (XP) Calculation Rules:
+    1. Correct Answers: 1% = 1 XP (up to 100 XP base score)
+    2. Perfect 10/10 Bonus: +50 XP for scoring 100% full marks with zero errors
+    3. Daily Streak Power: +30 XP bonus for active consecutive test streak (>= 1 day)
+    4. Velocity Sprint: +25 XP speed bonus for finishing accurate sprints (>= 70%) in <= 6 mins (360s)
+    """
     if not total_marks or total_marks <= 0:
         return 0
+
     percentage = (float(marks_obtained) / float(total_marks)) * 100
-    return max(0, min(100, round(percentage)))
+    base_xp = max(0, min(100, round(percentage)))
+
+    # Perfect Score Bonus (+50 XP for full marks)
+    perfect_bonus = 50 if percentage >= 99.9 else 0
+
+    # Daily Streak Power (+30 XP if active streak >= 1 day)
+    streak_bonus = 30 if streak_days >= 1 else 0
+
+    # Velocity Sprint Speed Bonus (+25 XP if >= 70% accuracy in <= 6 mins / 360s)
+    speed_bonus = 25 if (0 < time_taken_seconds <= 360 and percentage >= 70) else 0
+
+    return base_xp + perfect_bonus + streak_bonus + speed_bonus
 
 
 def award_xp(session: Session, student: Student, amount: int, reason: str) -> Student:
-    student.xp = (student.xp or 250) + amount
+    current_xp = student.xp if student.xp is not None else 0
+    student.xp = current_xp + amount
     student.level = (student.xp // 250) + 1
     session.add(XPEvent(id=str(uuid.uuid4()), student_id=student.id, amount=amount, reason=reason))
     session.flush()
@@ -116,11 +138,25 @@ def evaluate_badge_unlocks(
     return newly_unlocked
 
 
-def get_leaderboard(session: Session, period: str = "all_time", limit: int = 500) -> list[dict]:
-    """period: daily | weekly | monthly | all_time. For non-all_time periods,
-    ranks by XP earned within the window (from xp_events); all_time ranks by
-    the student's running total."""
-    students = session.query(Student).all()
+def get_leaderboard(
+    session: Session,
+    period: str = "all_time",
+    board: str = None,
+    class_grade: str = None,
+    limit: int = 500,
+) -> list[dict]:
+    """period: daily | weekly | monthly | all_time.
+    Ranks students within the same batch (Target Board & Class Grade) or globally.
+    Multi-dimensional ranking tie-breaker: XP -> Average Score -> Total Exams -> Streak -> Badges.
+    """
+    from sqlalchemy import func
+    query = session.query(Student)
+    if board and str(board).lower() != "all":
+        query = query.filter(func.lower(Student.target_board) == func.lower(str(board).strip()))
+    if class_grade and str(class_grade).lower() != "all":
+        query = query.filter(func.lower(Student.class_grade) == func.lower(str(class_grade).strip()))
+
+    students = query.all()
 
     if period == "all_time":
         scored = [(s, s.xp or 0) for s in students]
@@ -136,11 +172,27 @@ def get_leaderboard(session: Session, period: str = "all_time", limit: int = 500
             )
             scored.append((s, sum(e.amount for e in window_xp)))
 
-    scored.sort(key=lambda pair: pair[1], reverse=True)
+    # Compute badge counts for tie-breaking
+    student_badge_map = {}
+    for s in students:
+        cnt = session.query(StudentBadge).filter(StudentBadge.student_id == s.id).count()
+        student_badge_map[s.id] = cnt
+
+    # Multi-dimensional ranking (Batch Cohort aware)
+    scored.sort(
+        key=lambda pair: (
+            pair[1],                                      # 1. XP
+            float(pair[0].average_score or 0),           # 2. Average Accuracy / Score
+            int(pair[0].total_exams_taken or 0),         # 3. Exams / Sprints Completed
+            int(pair[0].streak_days or 0),               # 4. Active Daily Streak
+            student_badge_map.get(pair[0].id, 0),        # 5. Badges Unlocked
+            int(pair[0].level or 1),                     # 6. Academic Level
+        ),
+        reverse=True,
+    )
 
     leaderboard = []
     for rank, (student, points) in enumerate(scored[:limit], start=1):
-        badge_count = session.query(StudentBadge).filter(StudentBadge.student_id == student.id).count()
         leaderboard.append(
             {
                 "rank": rank,
@@ -155,7 +207,7 @@ def get_leaderboard(session: Session, period: str = "all_time", limit: int = 500
                 "averageScore": float(student.average_score or 0),
                 "examsCompleted": student.total_exams_taken,
                 "streakDays": student.streak_days,
-                "badgesCount": badge_count,
+                "badgesCount": student_badge_map.get(student.id, 0),
             }
         )
     return leaderboard

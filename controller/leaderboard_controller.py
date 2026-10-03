@@ -10,9 +10,11 @@ VALID_PERIODS = {"daily", "weekly", "monthly", "all_time"}
 
 def leaderboard():
     period = request.args.get("period", "all_time")
+    board = request.args.get("board")
+    class_grade = request.args.get("classGrade") or request.args.get("class")
     if period not in VALID_PERIODS:
         raise ValidationError(f"period must be one of {sorted(VALID_PERIODS)}")
 
     with get_session() as session:
-        return success(get_leaderboard(session, period=period))
+        return success(get_leaderboard(session, period=period, board=board, class_grade=class_grade))
 

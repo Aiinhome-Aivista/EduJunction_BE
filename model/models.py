@@ -102,7 +102,7 @@ class Student(Base):
     __tablename__ = "students"
 
     id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
-    parent_id = Column(Integer, ForeignKey("parents.id", ondelete="CASCADE"), nullable=False)
+    parent_id = Column(Integer, ForeignKey("parents.id", ondelete="CASCADE"), nullable=True)
     teacher_id = Column(Integer, ForeignKey("teachers.id", ondelete="SET NULL"), nullable=True)
     avatar = Column(String(20), default="🧑‍🎓")
     class_grade = Column(String(20), nullable=False)
@@ -114,7 +114,7 @@ class Student(Base):
     total_exams_taken = Column(Integer, default=0)
     average_score = Column(Numeric(4, 2), default=0)
     streak_days = Column(Integer, default=0)
-    xp = Column(Integer, default=250)
+    xp = Column(Integer, default=0)
     level = Column(Integer, default=1)
     created_at = Column(DateTime, default=get_ist_now)
     updated_at = Column(DateTime, default=get_ist_now, onupdate=get_ist_now)

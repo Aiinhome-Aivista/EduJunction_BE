@@ -65,3 +65,4 @@ def update_learning_path_after_submission(
         node.updated_at = now_ist()
 
     session.flush()
+

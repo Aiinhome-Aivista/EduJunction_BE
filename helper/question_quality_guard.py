@@ -55,6 +55,37 @@ _SUBJECT_LEAKAGE_MAP = {
 }
 
 
+# Patterns indicating junk exam instructions or copyright artifacts
+_JUNK_INSTRUCTION_PATTERNS = [
+    r'\bplease\s+check\s+that\s+this\s+question\s+paper\s+contains\b',
+    r'\broll\s+number\s*[\:\-]?',
+    r'\bcandidate\s+must\s+write\s+the\s+q\.?p\.?\s*code\b',
+    r'\bserial\s+number\s+of\s+the\s+question\b',
+    r'\bno\s+part\s+of\s+this\s+(?:publication|book|document)\s+may\s+be\s+reproduced\b',
+    r'\ball\s+rights\s+reserved\b',
+    r'\bisbn\s*[\:\-]?\s*\d+',
+    r'\bgeneral\s+instructions\s*[\:\-]',
+    r'\bquestion\s+paper\s+code\b',
+]
+_COMPILED_JUNK_PATTERNS = [re.compile(p, re.IGNORECASE) for p in _JUNK_INSTRUCTION_PATTERNS]
+
+_DUMMY_ANSWER_PATTERNS = [
+    r'\bstandard\s+model\s+solution\b',
+    r'\bmodel\s+solution\s+for\b',
+    r'^(?:[a-d]\s*[\)\.\:\-]\s*)?option\s*[a-d]$',
+    r'^dummy\s+answer$',
+    r'\boperates\s+linearly\s+under\s+standard\b',
+]
+_COMPILED_DUMMY_ANSWERS = [re.compile(p, re.IGNORECASE) for p in _DUMMY_ANSWER_PATTERNS]
+
+_DUMMY_EXPL_PATTERNS = [
+    r'\bconceptual\s+principle\s+for\b',
+    r'\bstandard\s+conceptual\s+principle\b',
+    r'\bstandard\s+curriculum\s+solution\b',
+]
+_COMPILED_DUMMY_EXPLS = [re.compile(p, re.IGNORECASE) for p in _DUMMY_EXPL_PATTERNS]
+
+
 def validate_question_quality(q: Dict[str, Any], requested_subject: Optional[str] = None) -> Tuple[bool, Optional[str]]:
     """Validates a candidate question for pedagogical sanity, UI compatibility and completeness.
     
@@ -64,37 +95,40 @@ def validate_question_quality(q: Dict[str, Any], requested_subject: Optional[str
         return False, "Malformed question data structure"
 
     q_text = str(q.get("question_text") or q.get("question") or q.get("questionText") or "").strip()
-    if len(q_text) < 10:
+    if len(q_text) < 12:
         return False, f"Question text too short ({len(q_text)} chars)"
 
-    # Detect broken fragments (e.g. 'Explain the principle:' without substance or ending with hanging prepositions/articles)
-    if re.search(r"^(?:explain\s+the\s+principle\s*:\s*|state\s+whether\s*:\s*|calculate\s*:\s*)$", q_text, re.IGNORECASE):
+    # 1. Exam paper instructions and publisher / copyright junk check
+    for pat in _COMPILED_JUNK_PATTERNS:
+        if pat.search(q_text):
+            return False, "Question is an exam paper instruction or copyright artifact"
+
+    # Detect broken fragments
+    if re.search(r"^(?:explain\s+the\s+principle\s*:\s*|state\s+whether\s*:\s*|calculate\s*:\s*|the\s+following\s+questions\s*:\s*)$", q_text, re.IGNORECASE):
         return False, "Question is an incomplete prompt prefix"
 
     if re.search(r"\b(?:complete\s+the|to\s+the|of\s+the|in\s+the|at\s+the|for\s+the|is\s+a|is\s+an|is\s+the|are\s+the|such\s+as|like\s+a)\s*[\?\.\:]*$", q_text, re.IGNORECASE):
         return False, "Question ends abruptly with a truncated sentence fragment"
 
-    # 1. Missing Image / Diagram check
+    # 2. Missing Image / Diagram check
     has_image = bool(q.get("image_url") or q.get("imageUrl") or q.get("image") or q.get("has_image"))
     if not has_image:
         for pat in _COMPILED_IMAGE_PATTERNS:
             if pat.search(q_text):
                 return False, "Question refers to missing figure/diagram without image asset"
 
-    # 2. MCQ option and answer validation
+    # 3. MCQ option and answer validation
     q_type = str(q.get("type") or q.get("question_type") or "mcq").lower()
     raw_options = q.get("options")
     
-    if "mcq" in q_type or "objective" in q_type or "assertion" in q_type:
+    if "mcq" in q_type or "assertion" in q_type:
         if not raw_options or not isinstance(raw_options, (list, tuple)) or len(raw_options) < 2:
             return False, "MCQ question missing valid options list"
         
-        # Check that options are not empty strings
         non_empty_opts = [str(opt).strip() for opt in raw_options if str(opt).strip()]
         if len(non_empty_opts) < 2:
             return False, "MCQ options contain blank/empty choices"
 
-        # Check for placeholder/dummy options (e.g. Option A, Option B, Alternative Concept, Null Condition, Secondary Effect)
         dummy_patterns = [
             r"^(?:[a-d]\s*[\)\.\:\-]\s*)?option\s*(?:[a-d]|\d+)$",
             r"^(?:[a-d]\s*[\)\.\:\-]\s*)?alternative\s+(?:concept|option\s+[b-d])$",
@@ -114,12 +148,23 @@ def validate_question_quality(q: Dict[str, Any], requested_subject: Optional[str
         if dummy_count >= 1:
             return False, "Question contains dummy placeholder options (e.g. Option A/B, Alternative Concept, Null Condition)"
 
-    # 3. Correct Answer validation
+    # 4. Correct Answer validation
     correct_ans = str(q.get("correct_answer") or q.get("correctAnswer") or "").strip()
     if not correct_ans:
         return False, "Question is missing correct_answer"
 
-    # 4. Cross-Subject Boundary check
+    for pat in _COMPILED_DUMMY_ANSWERS:
+        if pat.search(correct_ans):
+            return False, "Question has dummy/placeholder correct_answer"
+
+    # 5. Explanation validation
+    explanation_text = str(q.get("explanation") or "").strip()
+    if explanation_text:
+        for pat in _COMPILED_DUMMY_EXPLS:
+            if pat.search(explanation_text):
+                return False, "Question has dummy/boilerplate explanation"
+
+    # 6. Cross-Subject Boundary check
     if requested_subject:
         subj_lower = requested_subject.strip().lower()
         for ref_subj, rules in _SUBJECT_LEAKAGE_MAP.items():

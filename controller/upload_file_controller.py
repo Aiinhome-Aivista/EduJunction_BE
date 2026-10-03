@@ -86,24 +86,67 @@ def get_rag_status():
         total_chunks = session.execute(text("SELECT COUNT(*) FROM document_chunks")).scalar() or 0
         total_runbooks = session.execute(text("SELECT COUNT(*) FROM runbooks WHERE status = 'PUBLISHED'")).scalar() or 0
         total_topics = session.execute(
-            text("SELECT COUNT(DISTINCT topic) FROM questions WHERE topic IS NOT NULL AND topic != ''")
+            text("SELECT COUNT(DISTINCT topic_name) FROM topic_master WHERE is_active = 1 AND topic_name IS NOT NULL AND topic_name != ''")
         ).scalar() or 0
 
-        # Query all documents with chunk count
+        # Query all documents with chunk count and runbook metadata
         docs_sql = text("""
             SELECT 
-                d.id, d.filename, d.content_type, d.board, d.class_grade, d.subject,
+                d.id, d.runbook_id, d.filename, d.content_type, d.board, d.class_grade, d.subject,
                 d.status, d.created_at,
-                COUNT(dc.id) AS chunk_count
+                COUNT(dc.id) AS chunk_count,
+                rb.core_concepts, rb.key_formulas_or_rules, rb.common_traps
             FROM documents d
             LEFT JOIN document_chunks dc ON dc.document_id = d.id
-            GROUP BY d.id, d.filename, d.content_type, d.board, d.class_grade, d.subject, d.status, d.created_at
+            LEFT JOIN runbooks rb ON rb.id = d.runbook_id
+            GROUP BY d.id, d.runbook_id, d.filename, d.content_type, d.board, d.class_grade, d.subject, d.status, d.created_at, rb.core_concepts, rb.key_formulas_or_rules, rb.common_traps
             ORDER BY d.created_at DESC
         """)
         rows = session.execute(docs_sql).mappings().fetchall()
 
+        import json
+        from model.models import Runbook
+        all_rbs = session.query(Runbook).all()
+
         docs_list = []
         for r in rows:
+            core_concepts = r.get("core_concepts") or []
+            key_formulas = r.get("key_formulas_or_rules") or []
+            common_traps = r.get("common_traps") or []
+
+            if isinstance(core_concepts, str):
+                try:
+                    core_concepts = json.loads(core_concepts)
+                except Exception:
+                    core_concepts = []
+            if isinstance(key_formulas, str):
+                try:
+                    key_formulas = json.loads(key_formulas)
+                except Exception:
+                    key_formulas = []
+            if isinstance(common_traps, str):
+                try:
+                    common_traps = json.loads(common_traps)
+                except Exception:
+                    common_traps = []
+
+            # If not directly linked by runbook_id, fallback match by board, class, subject & chapter/filename
+            if not core_concepts and all_rbs:
+                fn_clean = (r["filename"] or "").lower().replace(".pdf", "").replace(".docx", "").replace("_", " ")
+                matched_rb = next(
+                    (rb for rb in all_rbs if rb.board == r["board"] and rb.class_grade == r["class_grade"] and rb.subject == r["subject"] and (rb.chapter_name.lower() in fn_clean or fn_clean in rb.chapter_name.lower())),
+                    None
+                )
+                if not matched_rb:
+                    matched_rb = next(
+                        (rb for rb in all_rbs if rb.board == r["board"] and rb.class_grade == r["class_grade"] and rb.subject == r["subject"]),
+                        None
+                    )
+                if matched_rb:
+                    core_concepts = matched_rb.core_concepts if isinstance(matched_rb.core_concepts, list) else []
+                    key_formulas = matched_rb.key_formulas_or_rules if isinstance(matched_rb.key_formulas_or_rules, list) else []
+                    common_traps = matched_rb.common_traps if isinstance(matched_rb.common_traps, list) else []
+
             docs_list.append({
                 "id": r["id"],
                 "filename": r["filename"],
@@ -113,7 +156,10 @@ def get_rag_status():
                 "subject": r["subject"],
                 "status": r["status"],
                 "chunk_count": r["chunk_count"],
-                "created_at": r["created_at"].isoformat() if r["created_at"] else None
+                "created_at": r["created_at"].isoformat() if r["created_at"] else None,
+                "core_concepts": core_concepts or [],
+                "key_formulas_or_rules": key_formulas or [],
+                "common_traps": common_traps or [],
             })
 
         return success({
@@ -165,16 +211,23 @@ def generate_questions_from_doc_api():
 
     data = request.json or {}
     document_id = data.get("document_id")
-    count = int(data.get("count", 5))
-    question_type = data.get("type", "MCQ")
-    difficulty = data.get("difficulty", "medium")
+    raw_count = data.get("count")
+    count = None
+    if raw_count is not None and str(raw_count).strip() not in ["", "auto", "0"]:
+        try:
+            count = max(1, int(raw_count))
+        except (ValueError, TypeError):
+            count = None
+
+    question_type = data.get("type", "ALL")
+    difficulty = data.get("difficulty", "ALL")
     custom_instructions = data.get("instructions", "")
 
     if not document_id:
         raise ValidationError("document_id is required")
 
     with get_session() as session:
-        questions = generate_questions_from_doc(
+        result = generate_questions_from_doc(
             session=session,
             document_id=document_id,
             count=count,
@@ -182,10 +235,20 @@ def generate_questions_from_doc_api():
             difficulty=difficulty,
             custom_instructions=custom_instructions,
         )
+        if isinstance(result, dict):
+            return success({
+                "document_id": document_id,
+                "count": result.get("count", len(result.get("questions", []))),
+                "questions": result.get("questions", []),
+                "chunk_count": result.get("chunk_count"),
+                "max_safe_capacity": result.get("max_safe_capacity"),
+                "is_capped": result.get("is_capped", False),
+                "message": result.get("feedback_message"),
+            })
         return success({
             "document_id": document_id,
-            "count": len(questions),
-            "questions": questions,
+            "count": len(result),
+            "questions": result,
         })
 
 
@@ -285,10 +348,27 @@ def save_generated_questions_api():
                         except Exception:
                             session.rollback()
 
-            q_type = (q.get("type") or "MCQ").upper()
-            type_id = types_map.get(q_type, 1)
+            q_type_raw = str(q.get("type") or "MCQ").strip().upper()
+            if "ASSERTION" in q_type_raw or "REASON" in q_type_raw:
+                type_id = types_map.get("ASSERTION REASON", 8)
+            elif "EVALUATIVE" in q_type_raw or "8M" in q_type_raw:
+                type_id = types_map.get("LONG EVALUATIVE (8M)", 9)
+            elif "CASE" in q_type_raw:
+                type_id = types_map.get("CASE STUDY", 7)
+            elif "LONG" in q_type_raw:
+                type_id = types_map.get("LONG ANSWER", 3)
+            elif "SHORT ANSWER (3M)" in q_type_raw or "3M" in q_type_raw:
+                type_id = types_map.get("SHORT ANSWER (3M)", 6)
+            elif "NUM" in q_type_raw:
+                type_id = types_map.get("NUMERICAL", 5)
+            elif "SAQ" in q_type_raw or "SHORT" in q_type_raw:
+                type_id = types_map.get("SAQ", 2)
+            elif q_type_raw in ["OBJECTIVE", "ONE_WORD", "FILL_IN"]:
+                type_id = types_map.get("OBJECTIVE", 4)
+            else:
+                type_id = types_map.get(q_type_raw, 1)
 
-            q_diff = (q.get("difficulty") or "medium").lower()
+            q_diff = str(q.get("difficulty") or "medium").strip().lower()
             if q_diff in ["simple", "easy"]:
                 diff_id = diffs_map.get("easy", diffs_map.get("simple", 1))
                 diff_counts["simple"] += 1
@@ -300,9 +380,24 @@ def save_generated_questions_api():
                 diff_counts["medium"] += 1
 
             options = q.get("options")
-            options_json = json.dumps(options) if options else None
-            correct_answer = (q.get("correct_answer") or "").strip()
-            explanation = (q.get("explanation") or "").strip()
+            options_json = json.dumps(options) if options and isinstance(options, (list, tuple)) else (options if isinstance(options, str) else None)
+            
+            raw_ca = q.get("correct_answer")
+            if isinstance(raw_ca, (list, tuple)):
+                correct_answer = "\n".join(str(x) for x in raw_ca)
+            elif isinstance(raw_ca, dict):
+                correct_answer = json.dumps(raw_ca)
+            else:
+                correct_answer = str(raw_ca or "").strip()
+
+            raw_exp = q.get("explanation")
+            if isinstance(raw_exp, (list, tuple)):
+                explanation = "\n".join(str(x) for x in raw_exp)
+            elif isinstance(raw_exp, dict):
+                explanation = json.dumps(raw_exp)
+            else:
+                explanation = str(raw_exp or "").strip()
+
             marks = int(q.get("marks", 1))
 
             # --- Duplicate Check against question_master ---
@@ -525,8 +620,12 @@ def analyze_and_extract_book_api():
                 )
 
             # 2. Persist pedagogical insights into MySQL runbooks table for every chapter
-            for ch_data in analysis.get("chapters", []):
-                ch_fn = ch_data.get("filename") or filenames_list[0]
+            chapters_to_persist = analysis.get("chapters")
+            if not chapters_to_persist:
+                chapters_to_persist = [analysis]
+
+            for ch_data in chapters_to_persist:
+                ch_fn = ch_data.get("filename") or (filenames_list[0] if filenames_list else "Chapter")
                 ch_title = ch_fn.replace(".pdf", "").replace(".docx", "").replace(".doc", "").replace("_", " ")
                 
                 existing_rb = session.query(Runbook).filter(

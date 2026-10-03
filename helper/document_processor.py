@@ -304,13 +304,26 @@ def save_diagram_to_disk(image_bytes: bytes, ext: str = "png", prefix: str = "di
         return ""
 
 
-def extract_pdf_diagrams(file_bytes: bytes, max_diagrams: int = 20) -> list[dict]:
+def extract_pdf_diagrams(file_bytes: bytes, max_diagrams: int = 25) -> list[dict]:
     """Extracts candidate embedded diagrams and figures from PDF in-memory without polluting disk.
-
-    Only valid web formats (.png, .jpg, .jpeg, .webp) with academic diagram dimensions are retained.
+    Applies strict academic diagram heuristics:
+    1. Rejects full-page scanned text pages (where the entire page is an image).
+    2. Rejects decorative icons, bullets, thought bubbles, and text banners.
+    3. Retains true pedagogical diagrams (geometry, circuits, anatomy, maps, graphs).
+    Returns list of diagram dicts with attached `.metrics` summary dict.
     """
     extracted_diagrams = []
+    metrics = {
+        "total_raw_images": 0,
+        "valid_diagrams": 0,
+        "scanned_pages_rejected": 0,
+        "icons_filtered": 0,
+        "invalid_format_rejected": 0,
+        "yield_pct": 0.0,
+    }
     if not file_bytes:
+        extracted_diagrams = []
+        setattr(extracted_diagrams, "metrics", metrics)
         return extracted_diagrams
 
     try:
@@ -318,16 +331,15 @@ def extract_pdf_diagrams(file_bytes: bytes, max_diagrams: int = 20) -> list[dict
         saved_count = 0
 
         for page_idx, page in enumerate(doc):
-            if saved_count >= max_diagrams:
-                break
-
             page_num = page_idx + 1
             images = page.get_images(full=True)
+            page_rect = page.rect
+            page_width = page_rect.width
+            page_height = page_rect.height
+            page_text_len = len(page.get_text().strip())
 
             for img_idx, img_info in enumerate(images):
-                if saved_count >= max_diagrams:
-                    break
-
+                metrics["total_raw_images"] += 1
                 xref = img_info[0]
                 base_image = doc.extract_image(xref)
                 if not base_image:
@@ -340,37 +352,54 @@ def extract_pdf_diagrams(file_bytes: bytes, max_diagrams: int = 20) -> list[dict
 
                 # STRICT FILTER 1: Reject JPX (JPEG2000 masks) and non-web formats
                 if image_ext not in VALID_IMAGE_EXTS:
+                    metrics["invalid_format_rejected"] += 1
                     continue
 
-                # STRICT FILTER 2: Filter out tiny icon decorations, badges, or full-page blank scans
-                if width < 180 or height < 160 or width > 2800 or height > 3500:
+                # STRICT FILTER 2: Filter out tiny icon decorations, bullets, thought bubbles, or decorative avatars
+                # Increased minimum dimensions to 220x200 and min size to 12KB
+                if width < 220 or height < 180 or not image_bytes or len(image_bytes) < 12288:
+                    metrics["icons_filtered"] += 1
                     continue
 
-                # STRICT FILTER 3: Filter out byte size < 6KB (icons, bullets, thin color strips)
-                if not image_bytes or len(image_bytes) < 6144:
-                    continue
-
-                # STRICT FILTER 4: Filter out extreme aspect ratios and NCERT text-box banners (e.g. Find Out, Activity)
+                # STRICT FILTER 3: Filter out extreme aspect ratio banners (e.g., NCERT header banners, sidebar bars)
                 aspect = width / max(height, 1)
-                if aspect > 3.0 or aspect < 0.30:
+                if aspect > 2.6 or aspect < 0.35:
+                    metrics["icons_filtered"] += 1
                     continue
-                if aspect > 2.2 and height < 200:
+                if aspect > 2.0 and height < 220:
+                    metrics["icons_filtered"] += 1
                     continue
 
+                # STRICT FILTER 4: REJECT FULL-PAGE SCANNED TEXT PAGES
+                # If image dimensions closely match standard page proportions (e.g. 0.65 - 0.82)
+                # and height is large (> 750px) while taking up almost the whole page surface,
+                # it is a full scanned book page (as seen in word problem pages), NOT an isolated diagram.
+                is_portrait_page_scan = (0.64 <= aspect <= 0.82) and height >= 750 and width >= 550
+                if is_portrait_page_scan:
+                    metrics["scanned_pages_rejected"] += 1
+                    continue
 
-                extracted_diagrams.append({
-                    "image_bytes": image_bytes,
-                    "ext": image_ext,
-                    "page": page_num,
-                    "width": width,
-                    "height": height,
-                })
-                saved_count += 1
+                if saved_count < max_diagrams:
+                    extracted_diagrams.append({
+                        "image_bytes": image_bytes,
+                        "ext": image_ext,
+                        "page": page_num,
+                        "width": width,
+                        "height": height,
+                        "aspect": round(aspect, 2),
+                        "size_kb": round(len(image_bytes) / 1024, 1),
+                    })
+                    saved_count += 1
 
         doc.close()
     except Exception as e:
         logger.warning(f"In-memory diagram extraction notice: {e}")
 
+    metrics["valid_diagrams"] = len(extracted_diagrams)
+    if metrics["total_raw_images"] > 0:
+        metrics["yield_pct"] = round((metrics["valid_diagrams"] / metrics["total_raw_images"]) * 100, 1)
+
+    setattr(extracted_diagrams, "metrics", metrics)
     return extracted_diagrams
 
 

@@ -81,59 +81,237 @@ def is_diagram_referenced_in_question(question_text: str) -> bool:
     return any(re.search(pat, q_low) for pat in STRICT_FIGURE_PATTERNS)
 
 
+def print_extraction_quality_metrics(
+    raw_text_chars: int,
+    cleaned_text_chars: int,
+    diag_metrics: dict,
+    linked_diagrams_count: int,
+    total_questions: int,
+    filename: str = ""
+):
+    """Prints a clear, informative quality audit in the terminal for text and diagram extraction yield."""
+    text_coverage_pct = round((cleaned_text_chars / max(raw_text_chars, 1)) * 100, 1) if raw_text_chars > 0 else 100.0
+    total_raw_imgs = diag_metrics.get("total_raw_images", 0)
+    valid_diags = diag_metrics.get("valid_diagrams", 0)
+    page_scans_rej = diag_metrics.get("scanned_pages_rejected", 0)
+    icons_filtered = diag_metrics.get("icons_filtered", 0)
+    diag_yield_pct = diag_metrics.get("yield_pct", 0.0)
+
+    print(f"\n{TermColors.BOLD}{TermColors.CYAN}══════════════════════════════════════════════════════════════════════════════{TermColors.END}")
+    print(f"📊 {TermColors.BOLD}[EXTRACTION QUALITY & DIAGRAM YIELD AUDIT]{TermColors.END} {f'({filename})' if filename else ''}")
+    print(f"   ▶ Extracted Text Coverage   : {TermColors.BOLD}{cleaned_text_chars:,}{TermColors.END} chars ({text_coverage_pct}% of raw text retained)")
+    print(f"   ▶ Embedded Raw Images in Doc: {total_raw_imgs}")
+    print(f"   ▶ Valid Academic Diagrams   : {TermColors.BOLD}{valid_diags}{TermColors.END} ({diag_yield_pct}% valid yield)")
+    if total_raw_imgs > 0:
+        print(f"      ↳ Filtered Full-Page Scans : {page_scans_rej} (Prevented scanned text pages from mislinking)")
+        print(f"      ↳ Filtered Icons/Banners   : {icons_filtered} (Decorative icons/banners filtered out)")
+    print(f"   ▶ Questions with Diagram    : {TermColors.BOLD}{linked_diagrams_count}{TermColors.END} / {total_questions} (Strict context-verified matching)")
+    print(f"{TermColors.BOLD}{TermColors.CYAN}══════════════════════════════════════════════════════════════════════════════{TermColors.END}\n", flush=True)
+
+
+def assign_diagrams_to_questions(
+    questions: list[dict],
+    diagram_pool: list[dict],
+    subject: str = "",
+    filename: str = ""
+) -> int:
+    """Smart Diagram-to-Question Linker with Strict Rejection of Blind FIFO Assignments.
+    1. Checks if subject is genuinely visual (Math, Science, Physics, Chemistry, Biology, Geography).
+    2. Only links if question genuinely requires a figure (is_diagram_referenced_in_question).
+    3. Prefers diagram from matching page if figure number or page is referenced.
+    4. Cleans unnecessary 'In the given figure, ' prefixes if no diagram is attached and question is self-contained.
+    Returns count of successfully linked diagrams.
+    """
+    if not questions:
+        return 0
+
+    if not diagram_pool or not is_diagram_subject(subject):
+        # Clean redundant figure mentions if question is fully self-contained
+        for norm in questions:
+            if not norm.get("image_url"):
+                q_text = norm.get("question", "")
+                if re.match(r"^(?:in\s+the\s+given\s+figure|from\s+the\s+given\s+figure|referring\s+to\s+the\s+figure)[,\s]+", q_text, re.IGNORECASE):
+                    if any(num_kw in q_text for num_kw in ["sides", "cm", "m", "angle", "radius", "=", "value of", "calculate"]):
+                        norm["question"] = re.sub(r"^(?:in\s+the\s+given\s+figure|from\s+the\s+given\s+figure|referring\s+to\s+the\s+figure)[,\s]+", "For ", q_text, flags=re.IGNORECASE)
+        return 0
+
+    linked_count = 0
+    available_diagrams = list(diagram_pool)
+
+    for norm in questions:
+        if norm.get("image_url") or not available_diagrams:
+            continue
+
+        q_text = norm.get("question", "")
+        if not is_diagram_referenced_in_question(q_text):
+            continue
+
+        # Look for explicit figure/page number in question (e.g. Figure 5.4, Fig 3)
+        fig_match = re.search(r'\b(?:fig(?:ure)?\.?|diagram)\s*(\d+(?:\.\d+)?)\b', q_text, re.IGNORECASE)
+        target_fig_str = fig_match.group(1) if fig_match else None
+
+        selected_diag = None
+        if target_fig_str:
+            main_page_num = int(target_fig_str.split(".")[0]) if target_fig_str.replace(".", "").isdigit() else None
+            for d in available_diagrams:
+                if main_page_num and d.get("page") == main_page_num:
+                    selected_diag = d
+                    break
+
+        # If question specifically needs visual analysis (circuit, labeled structure, shaded area, ray diagram)
+        if not selected_diag and available_diagrams:
+            if re.search(r'\b(?:labeled|marked|circuit|apparatus|ray\s+diagram|shaded\s+region|flow\s*chart|map)\b', q_text, re.IGNORECASE):
+                selected_diag = available_diagrams[0]
+
+        if selected_diag:
+            available_diagrams.remove(selected_diag)
+            saved_url = document_processor.save_diagram_to_disk(
+                image_bytes=selected_diag["image_bytes"],
+                ext=selected_diag.get("ext", "png"),
+                prefix=f"diag_p{selected_diag.get('page', 1)}"
+            )
+            if saved_url:
+                norm["image_url"] = saved_url
+                linked_count += 1
+        else:
+            # Clean self-contained questions if no diagram was assigned
+            if re.match(r"^(?:in\s+the\s+given\s+figure|from\s+the\s+given\s+figure)[,\s]+", q_text, re.IGNORECASE):
+                if any(num_kw in q_text for num_kw in ["sides", "cm", "m", "angle", "radius", "=", "value of", "calculate"]):
+                    norm["question"] = re.sub(r"^(?:in\s+the\s+given\s+figure|from\s+the\s+given\s+figure)[,\s]+", "For ", q_text, flags=re.IGNORECASE)
+
+    return linked_count
+
 
 TEXTBOOK_QUESTION_PROMPT = """You are an expert curriculum designer and senior national board examiner (CBSE, ICSE, Cambridge, State Boards).
-Your task is to analyze the provided textbook/chapter text and extract all direct questions (in-text exercises, chapter end problems) AND synthesize rich, pedagogically accurate, high-yield examination questions covering key theory, concepts, and problem-solving.
+Your task is to analyze the provided textbook/chapter text and extract all direct questions AND synthesize rich, high-yield examination questions covering EVERY single concept in the text (MAX-TO-MAX YIELD).
 
-QUESTION TYPES & ANSWER DEPTH REQUIREMENTS (STRICT BOARD MARKING SCHEME):
-1. 'MCQ' (Multiple Choice - 1M): Exactly 4 distinct, meaningful options ('A) ', 'B) ', 'C) ', 'D) '). 'correct_answer' must be the single letter ('A', 'B', 'C', or 'D'). Marks: 1. (NEVER invent dummy options like 'Option A' or 'Alternative Concept').
-2. 'OBJECTIVE' (1M): Direct one-word/phrase answer, fill-in-the-blank, or key term. 'options' MUST be empty list []. Marks: 1.
-3. 'SAQ' (Short Answer - 2M): 2-3 focused conceptual lines or 2 key points. Marks: 2.
-4. 'SHORT ANSWER (3M)': Structured 3 distinct key points, differential comparison, or step-by-step formula working. Marks: 3.
-5. 'CASE STUDY' (4M): Practical scenario, passage, or clinical/experimental analysis with sub-answers. Marks: 4.
-6. 'LONG ANSWER' (5M): Comprehensive, detailed model answer (4-5 structured bullet points, mechanisms, or derivation).
-7. 'LONG EVALUATIVE' (8M): Comprehensive essay-length question with deep evaluative explanation. Marks: 8.
-8. 'NUMERICAL' (2M, 3M, or 5M): For Physics/Math/Chemistry numerical problem-solving with numbers, formulas, and calculation steps.
+YOU MUST GENERATE QUESTIONS SPANNING ALL 9 QUESTION TYPES:
+1. 'MCQ' (1M): Multiple Choice Question with exactly 4 authentic options ('A) ', 'B) ', 'C) ', 'D) '). 'correct_answer' MUST be the exact matching text from the options list (NOT just 'A' or 'Option A').
+2. 'Objective' (1M): Direct definition, one-word answer, or fill-in-the-blank. 'options' MUST be []. 'correct_answer' is the direct word/phrase.
+3. 'Numerical' (1M, 3M, or 5M): Quantitative calculation or formula application. Provide step-by-step formula derivation in 'explanation' and final value with units in 'correct_answer'. 'options' MUST be [].
+4. 'Assertion Reason' (1M): Standard assertion (A) and reason (R) format with 4 standard board options.
+5. 'SAQ' (2M): Short Answer Question (2-3 focused lines testing foundational concept or definition). 'options' MUST be [].
+6. 'Short Answer (3M)' (3M): 3 distinct key points, differential table, or mechanism explanation. 'options' MUST be [].
+7. 'Case Study' (4M): Real-world scenario/passage followed by numbered sub-questions with individual model answers. 'options' MUST be [].
+8. 'Long Answer' (5M): Comprehensive 5-mark answer with introduction, key points, mechanism/diagram explanation, and conclusion. 'options' MUST be [].
+9. 'Long Evaluative (8M)' (8M): Comprehensive essay-length question requiring high-order evaluation, critical analysis, and synthesis. 'options' MUST be [].
 
-DIFFICULTY GUIDELINES:
-- 'easy' (or 'simple'): Direct memory recall, foundational definition, basic formula identification.
-- 'medium': Conceptual application, standard multi-step calculations, analytical reasoning.
-- 'hard': Higher Order Thinking Skills (HOTS), complex synthesis, tricky problem solving.
+THE 4 GOLDEN RULES (CRITICAL CONSTRAINTS):
+1. AUTHENTIC CONTENT ONLY: NEVER output placeholder phrases like 'Standard model solution...', 'Option A', 'Key Concept:', '• Conceptual principle for...' or empty values. Every explanation must provide actual step-by-step reasoning or formulas grounded strictly in the provided text.
+2. ACADEMIC QUESTIONS ONLY: Skip publisher info, ISBN, copyright notices, headers, footers, and exam paper instructions ('Roll No', 'Check that paper contains').
+3. STANDALONE QUESTIONS: Every question must be fully complete on its own. Never output bare prompts like 'Fill in the blank.' or 'the following questions:'. Combine the prompt with the target sentence.
+4. PRESERVE MATH & SCIENCE: Keep LaTeX expressions (\\frac, \\sqrt, x^2, \\Omega, \\alpha, \\beta), chemical notations (H2O, CaCl2, CO2), and units intact.
 
-CRITICAL EXTRACTION & FORMATTING RULES:
-1. EVERY QUESTION MUST BE COMPLETE AND GRAMMATICALLY SOUND.
-2. CLEAN HUMAN-READABLE TEXT (NO MARKDOWN NOISE):
-   - DO NOT use markdown bold/italic asterisks (**text**, *text*), hashes (###), or markdown dashes (---) inside strings.
-   - DO NOT output raw JSON arrays or Python list brackets inside text strings.
-   - For multi-point answers or explanations, use clean bullet points starting with '• ' (e.g., '• Point 1\\n• Point 2').
-3. MATHEMATICAL & SCIENTIFIC FORMULAS:
-   - Preserve clean formulas and LaTeX expressions (e.g., x^2 + y^2 = r^2, dy/dx, sqrt(x), H2O, CO2, ATP).
-4. DIAGRAMS & FIGURES:
-   - If a question refers to a diagram, graph, circuit, anatomical chart, or geometrical figure in the text, preserve the explicit reference (e.g. 'In the given circuit diagram...', 'Observe the given figure...').
-5. STRICT ANTI-DUMMY & ANTI-BLEED RULES:
-   - NEVER prepend artificial phrases like 'Explain the principle:' or 'State the concept of:'.
-   - NEVER invent placeholder text like 'Model Solution' or 'Derived directly from document'.
-   - NEVER invent dummy MCQ options if no real options exist; classify such questions directly as SAQ or OBJECTIVE.
-6. CANONICAL TOPIC MAPPING:
-   - 'topic_suggested' MUST be a specific, granular syllabus sub-topic or concept (e.g., 'Holistic Development Through Physical Activities', 'Photosynthesis', 'Linear Equations').
-   - NEVER use generic subject names ('Biology', 'Science', 'Mathematics', 'General') as 'topic_suggested'.
-7. MANDATORY INFORMATIVE EXPLANATION:
-   - 'explanation' is STRICTLY MANDATORY for every question (including MCQs and 1M questions).
-   - For MCQs, state clearly why the selected option is correct and why other options are incorrect/distractors.
-   - For descriptive questions, provide clear marking step criteria. NEVER leave 'explanation' empty.
-
-JSON Schema:
+JSON Schema & Example:
 {
   "questions": [
     {
-      "question": "State the relationship between electric current and drift velocity in a conductor.",
+      "question": "Which of the following gases is released when Zinc granules react with dilute Sulphuric Acid?",
+      "type": "MCQ",
+      "difficulty": "simple",
+      "marks": 1,
+      "options": [
+        "A) Oxygen gas",
+        "B) Hydrogen gas",
+        "C) Carbon Dioxide gas",
+        "D) Nitrogen Dioxide gas"
+      ],
+      "correct_answer": "Hydrogen gas",
+      "explanation": "When Zinc (Zn) reacts with dilute Sulphuric Acid (H2SO4), it forms Zinc Sulphate (ZnSO4) and releases Hydrogen gas (H2). Reaction: Zn + H2SO4 -> ZnSO4 + H2.",
+      "topic_suggested": "Acids and Metals Reactions",
+      "image_url": null
+    },
+    {
+      "question": "Complete the statement: The SI unit of electric potential difference is ________.",
+      "type": "Objective",
+      "difficulty": "simple",
+      "marks": 1,
+      "options": [],
+      "correct_answer": "Volt (V)",
+      "explanation": "Electric potential difference between two points is measured in Volts (V), named in honor of Alessandro Volta.",
+      "topic_suggested": "Electric Potential and Potential Difference",
+      "image_url": null
+    },
+    {
+      "question": "Define Refractive Index of a medium and write its mathematical formula.",
       "type": "SAQ",
-      "difficulty": "easy",
+      "difficulty": "medium",
       "marks": 2,
       "options": [],
-      "correct_answer": "I = n * e * A * v_d, where I is current, n is charge carrier density, e is electron charge, A is cross-sectional area, and v_d is drift velocity.",
-      "explanation": "Current is directly proportional to drift velocity. Derived from the transport of charge carriers across unit cross-sectional area per unit time (I = n * e * A * v_d).",
-      "topic_suggested": "Drift Velocity & Current",
+      "correct_answer": "Refractive index of a medium is the ratio of the speed of light in vacuum (c) to the speed of light in that medium (v). Formula: n = c / v.",
+      "explanation": "It indicates how much light slows down and bends when entering the medium from vacuum or air.",
+      "topic_suggested": "Refraction of Light",
+      "image_url": null
+    },
+    {
+      "question": "State three differences between Arteries and Veins in the human circulatory system.",
+      "type": "Short Answer (3M)",
+      "difficulty": "medium",
+      "marks": 3,
+      "options": [],
+      "correct_answer": "1. Arteries carry oxygenated blood away from the heart (except pulmonary artery), while veins carry deoxygenated blood towards the heart.\\n2. Arteries have thick, elastic walls without valves, whereas veins have thin walls with valves to prevent backflow.\\n3. Blood flows under high pressure in arteries and under low pressure in veins.",
+      "explanation": "These structural adaptations enable arteries to withstand high ventricle pumping pressure and veins to direct low-pressure blood steadily back to the heart.",
+      "topic_suggested": "Human Circulatory System",
+      "image_url": null
+    },
+    {
+      "question": "Explain the process of Photosynthesis in green plants. Describe the light-dependent and light-independent reactions along with the balanced chemical equation.",
+      "type": "Long Answer",
+      "difficulty": "hard",
+      "marks": 5,
+      "options": [],
+      "correct_answer": "Photosynthesis is the biochemical process by which green plants synthesize glucose from carbon dioxide and water in the presence of sunlight and chlorophyll.\\n\\n• Balanced Equation:\\n6CO2 + 6H2O + Light Energy -> C6H12O6 + 6O2\\n\\n• Main Stages:\\n1. Light Reaction (in Thylakoid): Absorption of solar energy by chlorophyll, splitting of water molecules (photolysis) into hydrogen and oxygen, and generation of ATP and NADPH.\\n2. Dark Reaction / Calvin Cycle (in Stroma): Fixation and reduction of CO2 into glucose utilizing ATP and NADPH generated in the light phase.",
+      "explanation": "Photosynthesis sustains life on Earth by providing food and oxygen. It converts solar energy into chemical energy stored in glucose bonds.",
+      "topic_suggested": "Photosynthesis & Plant Nutrition",
+      "image_url": null
+    },
+    {
+      "question": "Critically analyze the socio-economic impacts of the Industrial Revolution in 19th-century Europe. Evaluate both its transformative benefits and adverse consequences on the working class.",
+      "type": "Long Evaluative (8M)",
+      "difficulty": "hard",
+      "marks": 8,
+      "options": [],
+      "correct_answer": "Introduction:\\nThe Industrial Revolution marked a structural transition from agrarian handcraft to mechanized factory production originating in Britain and expanding globally.\\n\\n1. Economic Transformation:\\n• Tremendous surge in industrial output, steam transportation (railways), and global trade networks.\\n• Emergence of corporate capitalism and commercial banking.\\n\\n2. Working Class Impact:\\n• Rapid, unplanned urbanization led to squalid tenements, lack of sanitation, and disease outbreaks.\\n• Unregulated 14-16 hour work shifts in hazardous factory environments with widespread child labor.\\n\\n3. Legislative Reforms:\\n• Spurred the rise of labor unions and Factory Acts regulating minimum working conditions and schooling.\\n\\nConclusion:\\nWhile establishing modern industrial wealth, the era underscored severe inequalities that shaped modern social welfare and labor laws.",
+      "explanation": "Comprehensive evaluation weighing industrial technological advancements against severe social costs and legislative reforms.",
+      "topic_suggested": "Industrialization and Social Changes",
+      "image_url": null
+    },
+    {
+      "question": "An electric iron consumes energy at a rate of 840 W when heating is at the maximum rate and 360 W at the minimum rate. The voltage is 220 V. Calculate the current and the resistance in each case.",
+      "type": "Numerical",
+      "difficulty": "medium",
+      "marks": 3,
+      "options": [],
+      "correct_answer": "Case (a) Maximum Rate: Current I = 3.82 A, Resistance R = 57.60 Ω\\nCase (b) Minimum Rate: Current I = 1.64 A, Resistance R = 134.15 Ω",
+      "explanation": "Given:\\nVoltage V = 220 V\\nPower P1 = 840 W, P2 = 360 W\\n\\nFormulas:\\n1. Power P = V * I  =>  I = P / V\\n2. Resistance R = V / I\\n\\nCalculations:\\n• Maximum Rate:\\n  I1 = 840 / 220 = 3.82 A\\n  R1 = 220 / 3.82 = 57.60 Ω\\n\\n• Minimum Rate:\\n  I2 = 360 / 220 = 1.64 A\\n  R2 = 220 / 1.64 = 134.15 Ω",
+      "topic_suggested": "Heating Effect of Electric Current",
+      "image_url": null
+    },
+    {
+      "question": "Assertion (A): The inner lining of the small intestine has numerous finger-like projections called villi.\\nReason (R): Villi decrease the surface area for absorption of digested food.",
+      "type": "Assertion Reason",
+      "difficulty": "medium",
+      "marks": 1,
+      "options": [
+        "A) Both Assertion (A) and Reason (R) are true and Reason (R) is the correct explanation of Assertion (A)",
+        "B) Both Assertion (A) and Reason (R) are true but Reason (R) is not the correct explanation of Assertion (A)",
+        "C) Assertion (A) is true but Reason (R) is false",
+        "D) Assertion (A) is false but Reason (R) is true"
+      ],
+      "correct_answer": "Assertion (A) is true but Reason (R) is false",
+      "explanation": "Assertion (A) is true because small intestine possesses millions of villi. Reason (R) is false because villi ENORMOUSLY INCREASE surface area for absorption, not decrease it.",
+      "topic_suggested": "Nutrition and Digestion in Humans",
+      "image_url": null
+    },
+    {
+      "question": "Read the following passage and answer the questions that follow:\\n\\nA student tested four solutions A, B, C, and D with universal indicator paper and recorded the pH values: A (pH = 2), B (pH = 7), C (pH = 13), and D (pH = 5).\\n\\n(i) Which solution is strongly basic and which one is strongly acidic?\\n(ii) What will happen when solution A is mixed with solution C in equal stoichiometric proportions?",
+      "type": "Case Study",
+      "difficulty": "medium",
+      "marks": 4,
+      "options": [],
+      "correct_answer": "(i) Solution C (pH = 13) is strongly basic, and Solution A (pH = 2) is strongly acidic.\\n(ii) Mixing strong acid A with strong base C results in a neutralization reaction, forming neutral salt and water with pH ~ 7.",
+      "explanation": "On the pH scale: pH < 7 is acidic (lower pH = stronger acid), pH = 7 is neutral, and pH > 7 is basic (higher pH = stronger base). Neutralization yields neutral salt and water.",
+      "topic_suggested": "pH Scale and Neutralization",
       "image_url": null
     }
   ]
@@ -143,7 +321,7 @@ JSON Schema:
 OLD_QUESTION_PAPER_PROMPT = """You are a senior national board paper evaluator, bilingual digitizer, and curriculum expert (CBSE, ICSE, ISC, State Boards).
 Your task is to parse the provided Question Paper / Question Bank / PYQ text, faithfully extract and digitize EVERY single question present in the document with 100% fidelity, exact printed marks, options, and diagrams.
 
-CRITICAL BILINGUAL & MULTILINGUAL INSTRUCTIONS:
+CRITICAL BILINGUAL & DIGITIZATION INSTRUCTIONS:
 1. BILINGUAL PAPERS (Hindi/Bengali + English):
    - For general subjects (Science, Physics, Chemistry, Biology, Mathematics, Social Studies, Physical Education, Computer Science), extract the clean ENGLISH version of the question text and options.
    - Strip out parallel Hindi, Bengali, or regional duplicate sentences, headers (e.g. 'अथवा / OR', 'प्रश्न 1.'), and option translations (e.g. '(A) कोयला / Coal' -> 'A) Coal').
@@ -151,16 +329,17 @@ CRITICAL BILINGUAL & MULTILINGUAL INSTRUCTIONS:
 
 2. MARKS-WISE & QUESTION TYPE MAPPING:
    - Assign exact official marks (1, 2, 3, 4, 5, or 8) and matching question type:
-     • 1 Mark: 'MCQ', 'ASSERTION REASON', or 'OBJECTIVE'
+     • 1 Mark: 'MCQ', 'Assertion Reason', or 'Objective'
      • 2 Marks: 'SAQ' (Short Answer Question - 2M)
-     • 3 Marks: 'SHORT ANSWER (3M)' or 'NUMERICAL'
-     • 4 Marks: 'CASE STUDY' (Case-based / passage-based with sub-questions)
-     • 5 Marks: 'LONG ANSWER'
-     • 8 Marks: 'LONG EVALUATIVE'
+     • 3 Marks: 'Short Answer (3M)' or 'Numerical'
+     • 4 Marks: 'Case Study' (Case-based / passage-based with sub-questions)
+     • 5 Marks: 'Long Answer'
+     • 8 Marks: 'Long Evaluative (8M)'
 
-3. OPTIONS & MODEL ANSWERS:
-   - For Multiple Choice Questions (MCQ), extract all 4 options labeled 'A) ', 'B) ', 'C) ', 'D) ' and determine the correct single-letter answer key ('A', 'B', 'C', or 'D').
-   - If a question does NOT have options, extract it strictly as SAQ, OBJECTIVE, or LONG ANSWER. NEVER invent fake dummy options.
+3. OPTIONS & AUTHENTIC MODEL ANSWERS:
+   - For Multiple Choice Questions (MCQ), extract all 4 options labeled 'A) ', 'B) ', 'C) ', 'D) '.
+   - 'correct_answer' MUST contain the exact authentic text of the correct choice (e.g. 'Hydrogen gas', NOT 'Option A' or 'A').
+   - If a question does NOT have options, extract it strictly as SAQ, Objective, Numerical, or Long Answer. NEVER invent fake dummy options.
    - For descriptive questions, provide a genuine, comprehensive model answer in 'correct_answer' and detailed step-by-step explanation in 'explanation'.
 
 4. 100% COMPLETE EXTRACTION:
@@ -168,24 +347,7 @@ CRITICAL BILINGUAL & MULTILINGUAL INSTRUCTIONS:
 
 5. DIAGRAMS & MATHEMATICS:
    - Preserve references to figures, charts, maps, circuits, and geometry triangles.
-   - Preserve clean mathematical formulas and scientific notation.
-
-JSON Schema:
-{
-  "questions": [
-    {
-      "question": "Which of the following is a displacement reaction?",
-      "type": "MCQ",
-      "difficulty": "easy",
-      "marks": 1,
-      "options": ["A) CaO + H2O -> Ca(OH)2", "B) Fe + CuSO4 -> FeSO4 + Cu", "C) 2H2 + O2 -> 2H2O", "D) CaCO3 -> CaO + CO2"],
-      "correct_answer": "B",
-      "explanation": "• Iron is more reactive than copper and displaces copper from copper sulphate solution.\n• Reaction: Fe + CuSO4 -> FeSO4 + Cu.",
-      "topic_suggested": "Displacement Reactions",
-      "image_url": null
-    }
-  ]
-}
+   - Preserve clean mathematical formulas and scientific notation (LaTeX, Greek symbols, formulas).
 """
 
 
@@ -623,21 +785,29 @@ def sanitize_question_item(
     # Clean correct_answer
     if resolved_type in ["MCQ", "ASSERTION REASON"] and clean_opts:
         if corr:
-            match_prefix = re.match(r"^[\(]?([A-D])[\)\.\:\s]?", corr, re.IGNORECASE)
-            if match_prefix and len(corr.strip()) <= 3:
-                corr = match_prefix.group(1).upper()
+            # Check if corr is a letter like 'A' or 'B'
+            match_letter = re.match(r"^[\(]?([A-D])[\)\.\:\s]?$", corr.strip(), re.IGNORECASE)
+            if match_letter:
+                target_letter = match_letter.group(1).upper()
+                target_idx = ord(target_letter) - 65
+                if 0 <= target_idx < len(clean_opts):
+                    # Extract authentic option text after "A) "
+                    opt_raw = clean_opts[target_idx]
+                    corr = opt_raw.split(")", 1)[-1].strip() if ")" in opt_raw else opt_raw
+                else:
+                    corr = clean_opts[0].split(")", 1)[-1].strip()
             else:
-                matched_letter = None
+                # corr contains text: match it against options
+                matched_text = None
                 corr_clean = corr.lower().strip()
-                for opt_idx, opt_str in enumerate(clean_opts):
-                    opt_letter = chr(65 + opt_idx)
-                    opt_text = opt_str.split(")", 1)[-1].strip().lower()
-                    if corr_clean == opt_text or opt_str.lower().startswith(corr_clean) or corr_clean == opt_str.lower():
-                        matched_letter = opt_letter
+                for opt_str in clean_opts:
+                    opt_body = opt_str.split(")", 1)[-1].strip()
+                    if corr_clean == opt_body.lower() or corr_clean in opt_body.lower() or opt_body.lower() in corr_clean:
+                        matched_text = opt_body
                         break
-                corr = matched_letter if matched_letter else (match_prefix.group(1).upper() if match_prefix else "A")
+                corr = matched_text if matched_text else (clean_opts[0].split(")", 1)[-1].strip() if clean_opts else corr)
         else:
-            corr = "A"
+            corr = clean_opts[0].split(")", 1)[-1].strip() if clean_opts else ""
 
     # Determine calibrated difficulty (Supports 'easy', 'simple', 'medium', 'hard')
     raw_diff = str(q.get("difficulty") or target_diff or "easy").strip().lower()
@@ -651,21 +821,21 @@ def sanitize_question_item(
     # Clean explanation
     raw_expl = q.get("explanation")
     clean_expl = clean_human_readable_text(raw_expl)
-    if not clean_expl or "derived directly from curriculum document" in clean_expl.lower() or "key concept regarding" in clean_expl.lower():
+    # Filter out synthetic boilerplate/dummy phrases
+    dummy_expl_triggers = [
+        "derived directly from curriculum document",
+        "key concept regarding",
+        "standard model solution",
+        "conceptual principle for",
+        "comprehensive curriculum solution covering"
+    ]
+    if not clean_expl or any(trig in clean_expl.lower() for trig in dummy_expl_triggers) or clean_expl.strip() in [".", "-", "none", "null"]:
         if resolved_type in ["MCQ", "ASSERTION REASON"] and clean_opts and corr:
-            matching_opt_text = ""
-            for opt_str in clean_opts:
-                if opt_str.upper().startswith(f"{corr})") or opt_str.upper().startswith(f"{corr}."):
-                    matching_opt_text = opt_str.split(")", 1)[-1].strip()
-                    break
-            if matching_opt_text:
-                clean_expl = f"Option ({corr}) is correct as {matching_opt_text.rstrip('.')} directly reflects the core syllabus concept."
-            else:
-                clean_expl = f"Option ({corr}) is the verified correct answer based on the curriculum text."
-        elif corr and len(corr) > 10:
-            clean_expl = f"Key conceptual reasoning:\n{corr}"
+            clean_expl = f"The correct answer is '{corr}' as established by the curriculum concepts in {meta.get('title', 'the topic')}."
+        elif corr and len(corr) > 15:
+            clean_expl = f"Step-by-step reasoning:\n{corr}"
         else:
-            clean_expl = f"Comprehensive curriculum solution covering key aspects of {meta.get('subject', 'the subject')}."
+            clean_expl = f"Core pedagogical solution and concept verification for {meta.get('subject', 'the curriculum')}."
 
     # Assigned marks
     raw_m = q.get("marks")
@@ -675,7 +845,6 @@ def sanitize_question_item(
         marks = extracted_marks or default_m
 
     # Subject-aware validation for NUMERICAL:
-    # Never tag Biology/History/Theory questions as NUMERICAL unless they have calculations
     sub_lower = str(meta.get("subject") or "").lower()
     non_num_subjects = ["biology", "history", "geography", "civics", "political science", "english", "hindi", "bengali", "sanskrit", "social science", "social studies", "botany", "zoology", "physical education", "sports", "yoga"]
     is_calculation = bool(re.search(r'\d+\s*[\+\-\*\/=]\s*\d+|\bcalculate\b|\bfind the value\b|\bsolve\b|\bhow many\b|\bmass of\b', q_text.lower()))
@@ -706,17 +875,17 @@ def sanitize_question_item(
         resolved_type = "LONG EVALUATIVE"
 
     # Fallback for empty or placeholder correct_answer in descriptive questions
-    if not corr or corr.lower() in ["model solution", "n/a", "none"]:
-        if clean_expl and len(clean_expl) > 10 and not clean_expl.startswith("• Key concept") and not clean_expl.startswith("Key conceptual reasoning"):
+    if not corr or corr.lower() in ["model solution", "n/a", "none", "standard model solution"]:
+        if clean_expl and len(clean_expl) > 10 and not clean_expl.startswith("Core pedagogical solution"):
             corr = clean_expl
         elif clean_opts:
-            corr = clean_opts[0]
+            corr = clean_opts[0].split(")", 1)[-1].strip()
         else:
-            corr = f"Accurate concept explanation and working for: {q_text}"
+            corr = f"Model solution: {clean_expl if clean_expl else q_text}"
 
     # For 5-mark long answers, ensure answer is enriched with explanation points if too brief
     if marks >= 5 and resolved_type in ["LONG ANSWER", "LONG EVALUATIVE"]:
-        if len(corr.split()) < 25 and clean_expl and not clean_expl.startswith("• Key concept"):
+        if len(corr.split()) < 25 and clean_expl and not clean_expl.startswith("Core pedagogical solution"):
             corr = f"{corr}\n\nDetailed Breakdown & Key Points:\n{clean_expl}"
 
     raw_topic = clean_human_readable_text(str(q.get("topic_suggested") or "").strip())
@@ -847,21 +1016,22 @@ CRITICAL INSTRUCTIONS:
                     })
 
     else:
-        # TEXTBOOK SYNTHESIS MODE (Supports both Single-Chapter files and Multi-Chapter Full Books)
-        q_count = target_q_count or 24
+        # UNLIMITED / EXHAUSTIVE TEXTBOOK & CURRICULUM SYNTHESIS (100% Full Document Coverage)
         system_prompt = TEXTBOOK_QUESTION_PROMPT
         text_len = len(cleaned_text)
 
-        # Check if the single uploaded file contains multiple chapters (e.g. Chapter 1, Chapter 2, Unit 1...)
+        # 1. Check for explicit multi-chapter structure (e.g. Chapter 1, Chapter 2, Unit 1, Lesson 1...)
         chapter_regex = re.compile(
-            r'(?:\n|\A)(?:CHAPTER|Chapter|UNIT|Unit|LESSON|Lesson)\s*[\-:]?\s*(\d+|[IVXLCDM]+)[\s\:\.\-–—]+([^\n]{3,80})',
+            r'(?:\n|\A)(?:CHAPTER|Chapter|UNIT|Unit|LESSON|Lesson|MODULE|Module)\s*[\-:]?\s*(\d+|[IVXLCDM]+)[\s\:\.\-–—]+([^\n]{3,80})',
             re.MULTILINE
         )
         detected_chap_matches = list(chapter_regex.finditer(cleaned_text))
 
+        sections_to_process = []
+
         if len(detected_chap_matches) >= 2 and text_len > 18000:
-            # MULTI-CHAPTER BOOK SEGMENTATION
-            print(f"  • [MULTI-CHAPTER BOOK DETECTED] Found {len(detected_chap_matches)} chapters inside single file '{filename}'. Parsing chapter by chapter...")
+            # Multi-chapter document: partition cleanly chapter by chapter
+            print(f"  • [MULTI-CHAPTER BOOK] Detected {len(detected_chap_matches)} chapters inside '{filename}'. Processing every chapter sequentially...")
             for c_idx, match in enumerate(detected_chap_matches):
                 start_p = match.start()
                 end_p = detected_chap_matches[c_idx + 1].start() if (c_idx + 1 < len(detected_chap_matches)) else text_len
@@ -869,76 +1039,60 @@ CRITICAL INSTRUCTIONS:
                 chap_raw_name = match.group(2).strip()
                 curr_chap_title = f"Chapter {chap_num}: {chap_raw_name}"
                 chap_chunk = cleaned_text[start_p:end_p].strip()
-                if len(chap_chunk) < 600:
-                    continue
-
-                per_chap_q_count = max(8, min(15, q_count // len(detected_chap_matches)))
-                chap_user_prompt = f"""Target Details:
-- Board: {board}
-- Class/Grade: {class_grade}
-- Subject: {subject}
-- Chapter/Paper Title: {curr_chap_title}
-- Section Focus: Full Chapter Content
-- Required Question Count: {per_chap_q_count}
-- Document Mode: {document_type}
-
---- DOCUMENT CONTENT ({curr_chap_title}) ---
-{chap_chunk[:10000]}
---- END DOCUMENT CONTENT ---
-
-Generate EXACTLY {per_chap_q_count} comprehensive structured exam questions (MCQ, SAQ, Numerical/LAQ) strictly covering the concepts and problem-solving in this chapter. Assign each question's 'topic_suggested' to its specific sub-topic within {curr_chap_title}."""
-
-                try:
-                    res_j = mistral_client.generate_json(system_prompt, chap_user_prompt, temperature=0.30, scenario="pdf_generation")
-                    chap_qs = res_j.get("questions", []) if isinstance(res_j, dict) else []
-                    for cq in chap_qs:
-                        cq["chapter_title"] = curr_chap_title
-                    if chap_qs:
-                        raw_questions.extend(chap_qs)
-                        print(f"    -> [{curr_chap_title}] Synthesized {len(chap_qs)} question(s)")
-                except Exception as c_err:
-                    logger.warning(f"Error synthesizing for multi-chapter segment {curr_chap_title}: {c_err}")
+                if len(chap_chunk) >= 400:
+                    sections_to_process.append((curr_chap_title, chap_chunk))
         else:
-            # SINGLE CHAPTER PARTITIONING (Part 1: Foundational/Concepts, Part 2: Applications/Problems)
-            if text_len > 6000:
-                mid = text_len // 2
-                sections = [
-                    ("Part 1: Core Concepts & Definitions", cleaned_text[:min(mid + 1000, 12000)], max(q_count // 2, 10)),
-                    ("Part 2: Applications, Problems & Exercises", cleaned_text[max(0, mid - 1000):min(text_len, mid + 12000)], max(q_count - (q_count // 2), 10)),
-                ]
+            # Single-chapter or un-partitioned book: sliding window across 100% of text without truncation
+            window_size = 12000
+            overlap = 1000
+            if text_len <= window_size:
+                sections_to_process.append((f"{title} - Full Content", cleaned_text))
             else:
-                sections = [
-                    ("Full Chapter Synthesis", cleaned_text[:12000], q_count)
-                ]
+                start = 0
+                sec_idx = 1
+                while start < text_len:
+                    end = min(start + window_size, text_len)
+                    chunk_text = cleaned_text[start:end]
+                    sec_title = f"{title} (Section {sec_idx})"
+                    sections_to_process.append((sec_title, chunk_text))
+                    if end == text_len:
+                        break
+                    start = end - overlap
+                    sec_idx += 1
 
-            for sec_name, sec_excerpt, sec_q_count in sections:
-                user_prompt = f"""Target Details:
+        print(f"  • [EXHAUSTIVE EXTRACTION] Processing {len(sections_to_process)} text section(s) spanning 100% of document ({text_len:,} chars)...")
+
+        for sec_name, sec_excerpt in sections_to_process:
+            user_prompt = f"""Target Details:
 - Board: {board}
 - Class/Grade: {class_grade}
 - Subject: {subject}
-- Chapter/Paper Title: {title}{topics_guide}
-- Section Focus: {sec_name}
-- Required Question Count: {sec_q_count}
+- Chapter/Paper Title: {sec_name}{topics_guide}
+- Section: {sec_name}
 - Document Mode: {document_type}
 
 --- DOCUMENT CONTENT ({sec_name}) ---
 {sec_excerpt}
 --- END DOCUMENT CONTENT ---
 
-Generate EXACTLY {sec_q_count} comprehensive structured exam questions (MCQ, SAQ, Numerical/LAQ) strictly covering the concepts, definitions, and problem-solving in this section. Map each question's 'topic_suggested' to its specific sub-topic."""
+CRITICAL INSTRUCTIONS:
+1. Exhaustively extract and synthesize ALL unique, high-yield, and pedagogically important examination questions (MCQ, SAQ 2M/3M, Case Study 4M, Long Answer 5M/8M, Numerical) covering EVERY major concept, definition, theorem, formula, and problem in this text section.
+2. DO NOT artificially limit question count. Extract all high-value distinct questions present in this section without skipping important topics.
+3. Ensure every question is complete, self-contained, and has an informative 'explanation' and accurate 'correct_answer'.
+4. Assign each question's 'topic_suggested' to its specific sub-topic / conceptual heading."""
 
-                try:
-                    response_json = mistral_client.generate_json(system_prompt, user_prompt, temperature=0.30, scenario="pdf_generation")
-                    sec_questions = response_json.get("questions", []) if isinstance(response_json, dict) else []
+            try:
+                response_json = mistral_client.generate_json(system_prompt, user_prompt, temperature=0.30, scenario="pdf_generation")
+                sec_questions = response_json.get("questions", []) if isinstance(response_json, dict) else []
+                if isinstance(sec_questions, list) and sec_questions:
                     for sq in sec_questions:
-                        sq["chapter_title"] = title
-                    if sec_questions:
-                        raw_questions.extend(sec_questions)
-                        print(f"    -> [{sec_name}] Synthesized {len(sec_questions)} question(s)")
-                except Exception as e:
-                    logger.error(f"Error synthesizing questions for {sec_name}: {e}")
+                        sq["chapter_title"] = sec_name.split(" (Section")[0] if " (Section" in sec_name else sec_name
+                    raw_questions.extend(sec_questions)
+                    print(f"    -> [{sec_name}] Synthesized {len(sec_questions)} unique question(s)")
+            except Exception as e:
+                logger.error(f"Error synthesizing questions for {sec_name}: {e}")
 
-        # Fallback if both sections returned empty (e.g. LLM timeout)
+        # Fallback if all sections returned empty (e.g. LLM timeout)
         if not raw_questions and len(cleaned_text) > 200:
             try:
                 sub_prompt = f"""Target Details:
@@ -946,19 +1100,17 @@ Generate EXACTLY {sec_q_count} comprehensive structured exam questions (MCQ, SAQ
 - Class/Grade: {class_grade}
 - Subject: {subject}
 - Chapter/Paper Title: {title}
-- Required Question Count: 10
 - Document Mode: {document_type}
 
 --- DOCUMENT CONTENT ---
-{cleaned_text[:6000]}
+{cleaned_text[:8000]}
 --- END DOCUMENT CONTENT ---
 
-Extract 10 essential structured questions covering key concepts."""
+Extract all essential examination questions covering the primary concepts and formulas."""
                 res_retry = mistral_client.generate_json(system_prompt, sub_prompt, temperature=0.25, scenario="pdf_generation")
                 raw_questions = res_retry.get("questions", []) if isinstance(res_retry, dict) else []
             except Exception as e_retry:
                 logger.warning(f"Secondary question extraction retry: {e_retry}")
-
 
     # Sanitize and deduplicate within extracted batch
     sanitized: List[Dict[str, Any]] = []
@@ -1440,25 +1592,31 @@ def process_curriculum_document_pipeline(
         detected_topics=detected_topics,
     )
 
-    # 3.5 In-Memory Diagram Extraction & On-Demand Save for Referenced Questions
+    # 3.5 In-Memory Diagram Extraction & Smart Context-Verified Linking
+    diag_metrics = {}
+    linked_diagrams_count = 0
     if ext == "pdf":
         try:
-            diagram_pool = document_processor.extract_pdf_diagrams(file_bytes, max_diagrams=15)
-            fig_keywords = ["figure", "diagram", "circuit", "adjoining", "graph", "shown below", "picture", "illustration", "shaded region", "ray diagram", "flow chart", "given below"]
-            for norm in final_questions:
-                if not norm.get("image_url") and diagram_pool:
-                    q_lower = norm.get("question", "").lower()
-                    if any(k in q_lower for k in fig_keywords):
-                        assigned_diag = diagram_pool.pop(0)
-                        saved_url = document_processor.save_diagram_to_disk(
-                            image_bytes=assigned_diag["image_bytes"],
-                            ext=assigned_diag.get("ext", "png"),
-                            prefix=f"diag_p{assigned_diag.get('page', 1)}"
-                        )
-                        if saved_url:
-                            norm["image_url"] = saved_url
+            diagram_pool = document_processor.extract_pdf_diagrams(file_bytes, max_diagrams=25)
+            diag_metrics = getattr(diagram_pool, "metrics", {})
+            linked_diagrams_count = assign_diagrams_to_questions(
+                questions=final_questions,
+                diagram_pool=diagram_pool,
+                subject=subject,
+                filename=filename,
+            )
         except Exception as diag_err:
             logger.warning(f"Diagram extraction notice: {diag_err}")
+
+    # Print comprehensive quality & yield audit in terminal
+    print_extraction_quality_metrics(
+        raw_text_chars=len(raw_text),
+        cleaned_text_chars=char_count,
+        diag_metrics=diag_metrics,
+        linked_diagrams_count=linked_diagrams_count,
+        total_questions=len(final_questions),
+        filename=filename,
+    )
 
     # -------------------------------------------------------------------------
     # STEP 4: PREPARE JSON SCHEMA OBJECTS
@@ -1777,15 +1935,32 @@ def extract_curriculum_questions_preview(
         detected_topics=detected_topics,
     )
 
-    # 3.5 In-Memory Diagram Extraction & On-Demand Save (Visual Subjects Only)
+    # 3.5 In-Memory Diagram Extraction & Smart Context-Verified Linking
     diagram_pool = []
+    diag_metrics = {}
+    linked_diagrams_count = 0
     if ext == "pdf" and is_diagram_subject(subject):
         try:
-            diagram_pool = document_processor.extract_pdf_diagrams(file_bytes, max_diagrams=15)
-            if diagram_pool:
-                print(f"  • Extracted {len(diagram_pool)} candidate diagram(s) in-memory for visual question linking")
+            diagram_pool = document_processor.extract_pdf_diagrams(file_bytes, max_diagrams=25)
+            diag_metrics = getattr(diagram_pool, "metrics", {})
+            linked_diagrams_count = assign_diagrams_to_questions(
+                questions=extracted_questions,
+                diagram_pool=diagram_pool,
+                subject=subject,
+                filename=filename,
+            )
         except Exception as diag_err:
             logger.warning(f"Diagram extraction notice: {diag_err}")
+
+    # Print comprehensive quality & yield audit in terminal
+    print_extraction_quality_metrics(
+        raw_text_chars=len(raw_text),
+        cleaned_text_chars=char_count,
+        diag_metrics=diag_metrics,
+        linked_diagrams_count=linked_diagrams_count,
+        total_questions=len(extracted_questions),
+        filename=filename,
+    )
 
     # 4. JSON SCHEMA PREP & PRE-INSERTION DUPLICATE CHECKER
     _print_step_header(4, "SCHEMA PREPARATION & DUPLICATE CHECKER", TermColors.YELLOW)
@@ -1813,18 +1988,6 @@ def extract_curriculum_questions_preview(
         if not norm:
             continue
         q_text = norm["question"]
-
-        # On-Demand Diagram Saving: only save to disk if the subject is visual AND question strictly references a figure
-        if not norm.get("image_url") and diagram_pool:
-            if is_diagram_referenced_in_question(q_text):
-                assigned_diag = diagram_pool.pop(0)
-                saved_url = document_processor.save_diagram_to_disk(
-                    image_bytes=assigned_diag["image_bytes"],
-                    ext=assigned_diag.get("ext", "png"),
-                    prefix=f"diag_p{assigned_diag.get('page', 1)}"
-                )
-                if saved_url:
-                    norm["image_url"] = saved_url
 
         # Check existing in question_master
         is_dup = False

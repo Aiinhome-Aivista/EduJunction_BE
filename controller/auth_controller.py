@@ -22,7 +22,7 @@ from utils.security import (
     hash_password, verify_password, create_access_token, create_refresh_token,
     decode_token,
 )
-from utils.validators import require_fields, validate_email, validate_password_strength, validate_username
+from utils.validators import require_fields, validate_email, validate_password_strength, validate_username, validate_board_class
 from helper.captcha_helper import generate_math_captcha, verify_math_captcha
 
 # pyrefly: ignore [missing-import]
@@ -66,14 +66,45 @@ def _issue_tokens(session, user_id: int, role_name: str) -> dict:
     return {"accessToken": access_token, "refreshToken": refresh_token}
 
 
-def get_page_access_for_role(session, role_name: str) -> list[dict]:
-    try:
-        rows = session.execute(
-            text("CALL sp_get_role_menu_permissions(:role_name)"),
-            {"role_name": role_name}
-        ).mappings().all()
+def get_page_access_for_role(session, role_name: str, user_id: int = None) -> list[dict]:
+    normalized_role = str(role_name).strip().upper()
+    is_self_student = False
 
-        return [
+    # Check if student is self-registered (parent_id IS NULL)
+    if normalized_role == "STUDENT" and user_id is not None:
+        try:
+            student_rec = session.query(Student).filter(Student.id == user_id).first()
+            if student_rec and student_rec.parent_id is None:
+                is_self_student = True
+        except Exception:
+            pass
+
+    # The 5 specific pages allowed for self-registered students
+    SELF_STUDENT_ALLOWED_ROUTES = {"/dashboard", "/arena", "/gamification", "/pricing", "/reports"}
+
+    rows = None
+    # 1. Try calling stored procedure with user_id
+    if user_id is not None:
+        try:
+            rows = session.execute(
+                text("CALL sp_get_role_menu_permissions(:role_name, :user_id)"),
+                {"role_name": normalized_role, "user_id": user_id}
+            ).mappings().all()
+        except Exception:
+            rows = None
+
+    # 2. Try calling stored procedure with role_name only (fallback)
+    if rows is None:
+        try:
+            rows = session.execute(
+                text("CALL sp_get_role_menu_permissions(:role_name)"),
+                {"role_name": normalized_role}
+            ).mappings().all()
+        except Exception:
+            rows = None
+
+    if rows is not None:
+        access_list = [
             {
                 "id": r["id"],
                 "pageName": r["page_name"],
@@ -84,26 +115,33 @@ def get_page_access_for_role(session, role_name: str) -> list[dict]:
             }
             for r in rows
         ]
-    except Exception:
-        from model.models import Role, RolePageAccess
-        role = session.query(Role).filter(func.lower(Role.role_name) == func.lower(role_name)).first()
-        if not role:
-            return []
-        items = session.query(RolePageAccess).filter(
-            RolePageAccess.role_id == role.id,
-            RolePageAccess.is_active == True
-        ).order_by(RolePageAccess.menu_order).all()
-        return [
-            {
-                "id": item.id,
-                "pageName": item.page_name,
-                "pageRoute": item.page_route,
-                "icon": item.icon,
-                "menuOrder": item.menu_order,
-                "isActive": item.is_active,
-            }
-            for item in items
-        ]
+        if is_self_student:
+            access_list = [p for p in access_list if p["pageRoute"] in SELF_STUDENT_ALLOWED_ROUTES]
+        return access_list
+
+    # 3. Fallback to ORM
+    from model.models import Role, RolePageAccess
+    role = session.query(Role).filter(func.lower(Role.role_name) == func.lower(normalized_role)).first()
+    if not role:
+        return []
+    items = session.query(RolePageAccess).filter(
+        RolePageAccess.role_id == role.id,
+        RolePageAccess.is_active == True
+    ).order_by(RolePageAccess.menu_order).all()
+    access_list = [
+        {
+            "id": item.id,
+            "pageName": item.page_name,
+            "pageRoute": item.page_route,
+            "icon": item.icon,
+            "menuOrder": item.menu_order,
+            "isActive": item.is_active,
+        }
+        for item in items
+    ]
+    if is_self_student:
+        access_list = [p for p in access_list if p["pageRoute"] in SELF_STUDENT_ALLOWED_ROUTES]
+    return access_list
 
 
 _get_page_access = get_page_access_for_role
@@ -134,7 +172,29 @@ def register():
     email = payload["email"].strip().lower()
     password_hash = hash_password(payload["password"])
     requested_role = str(payload.get("role", "PARENT")).strip().upper()
-    role_name = "TEACHER" if requested_role == "TEACHER" else "PARENT"
+    if requested_role == "TEACHER":
+        role_name = "TEACHER"
+    elif requested_role == "STUDENT":
+        role_name = "STUDENT"
+    else:
+        role_name = "PARENT"
+
+    target_board = None
+    class_grade = None
+    school_name = None
+
+    if role_name == "STUDENT":
+        target_board = payload.get("targetBoard") or payload.get("target_board") or payload.get("board")
+        class_grade = payload.get("classGrade") or payload.get("class_grade") or payload.get("class")
+        if not target_board or not class_grade:
+            raise AppError("MISSING_STUDENT_INFO", "Please select your Board and Class Grade to complete student registration.", 400)
+        
+        target_board = str(target_board).strip()
+        class_grade = str(class_grade).strip()
+        validate_board_class(target_board, class_grade)
+        school_name = payload.get("schoolName") or payload.get("school_name")
+        if school_name:
+            school_name = str(school_name).strip()
 
     with get_session() as session:
         # Check global username uniqueness
@@ -142,7 +202,7 @@ def register():
         if existing_username:
             raise AppError("USERNAME_TAKEN", "This username is already taken. Please choose another username.", 409)
 
-        # Check email uniqueness for parent / teacher
+        # Check email uniqueness
         existing_email = session.query(User).filter(func.lower(User.email) == func.lower(email)).first()
         if existing_email:
             raise AppError("EMAIL_TAKEN", "An account with this email already exists.", 409)
@@ -160,6 +220,7 @@ def register():
             password_hash=password_hash,
             role_id=role.id,
             is_active=True,
+            created_by=None,
         )
         session.add(user)
         session.flush()
@@ -168,9 +229,35 @@ def register():
             parent = Parent(id=user.id)
             session.add(parent)
             session.flush()
+        elif role_name == "STUDENT":
+            student = Student(
+                id=user.id,
+                parent_id=None,
+                avatar=payload.get("avatar", "🧑‍🎓"),
+                class_grade=class_grade,
+                target_board=target_board,
+                school_name=school_name,
+                school_email=None,
+                xp=0,
+                level=1,
+                streak_days=0,
+                total_exams_taken=0,
+                average_score=0.0,
+                daily_exams_taken_today=0,
+            )
+            session.add(student)
+            session.flush()
+
+            # Auto-assign active Mock Tests for this board and class
+            from controller.mock_test_controller import auto_assign_mock_tests_for_new_student
+            try:
+                auto_assign_mock_tests_for_new_student(session, student)
+            except Exception as e:
+                from utils.logger import logger
+                logger.warning(f"Auto-assign mock tests failed for self-registered student {student.id}: {e}")
 
         tokens = _issue_tokens(session, user.id, role_name)
-        page_access = _get_page_access(session, role_name)
+        page_access = _get_page_access(session, role_name, user.id)
         session.commit()
 
         # Send registration welcome email with credentials
@@ -271,7 +358,7 @@ def login():
 
         role_name = user.role.role_name if user.role else "STUDENT"
         tokens = _issue_tokens(session, user.id, role_name)
-        page_access = _get_page_access(session, role_name)
+        page_access = _get_page_access(session, role_name, user.id)
 
         log_audit(
             session,
@@ -663,7 +750,7 @@ def google_auth():
 
         user_role_name = user.role.role_name if user.role else role_name
         tokens = _issue_tokens(session, user.id, user_role_name)
-        page_access = _get_page_access(session, user_role_name)
+        page_access = _get_page_access(session, user_role_name, user.id)
 
         log_audit(
             session,
@@ -747,7 +834,7 @@ def verify_session():
             raise UnauthorizedError("Session invalid or account inactive", code="SESSION_INVALID")
 
         role_name = user.role.role_name if user.role else "STUDENT"
-        page_access = _get_page_access(session, role_name)
+        page_access = _get_page_access(session, role_name, user.id)
 
         return success(
             {
@@ -773,9 +860,10 @@ def verify_session():
 def get_menu_permissions():
     """Returns dynamic page access & navigation permissions for the active role."""
     role_name = g.current_user_role
+    user_id = g.current_user_id
 
     with get_session() as session:
-        page_access = _get_page_access(session, role_name)
+        page_access = _get_page_access(session, role_name, user_id)
         return success(
             {"role": role_name, "menuItems": page_access, "pageAccess": page_access},
             status_code=200,
@@ -840,7 +928,7 @@ def refresh():
             raise UnauthorizedError("User no longer exists or is inactive")
 
         tokens = _issue_tokens(session, user["id"], user["role_name"])
-        page_access = _get_page_access(session, user["role_name"])
+        page_access = _get_page_access(session, user["role_name"], user["id"])
         session.commit()
 
         return success(
