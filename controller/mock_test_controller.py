@@ -20,12 +20,20 @@ from utils.response import success
 
 
 def init_mock_test_tables():
-    """Ensure tables exist and seed initial blueprint configurations."""
+    """Ensure tables exist, schema is up-to-date and seed initial blueprint configurations."""
     try:
         Base.metadata.create_all(bind=engine, tables=[
             ExamBlueprintMaster.__table__,
             MockTestMaster.__table__
         ])
+        # Ensure parent_id can be NULL for independent students in scheduled_exams
+        try:
+            with engine.connect() as conn:
+                conn.execute(text("ALTER TABLE scheduled_exams MODIFY COLUMN parent_id INT NULL"))
+                conn.commit()
+        except Exception:
+            pass
+
         with get_session() as session:
             count = session.query(ExamBlueprintMaster).count()
             if count == 0:

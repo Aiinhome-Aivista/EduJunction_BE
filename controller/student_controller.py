@@ -170,16 +170,19 @@ def complete_onboarding():
         session.commit()
 
         # Auto-assign active Mock Tests for this board and class
+        st_id = student.id
         from controller.mock_test_controller import auto_assign_mock_tests_for_new_student
         try:
             auto_assign_mock_tests_for_new_student(session, student)
             session.commit()
         except Exception as e:
-            from utils.logger import logger
-            logger.warning(f"Auto-assign mock tests failed for student {student.id}: {e}")
             session.rollback()
+            from utils.logger import logger
+            logger.warning(f"Auto-assign mock tests failed for student {st_id}: {e}")
 
-        badge_ids = [r.badge_id for r in session.query(StudentBadge).filter(StudentBadge.student_id == student.id).all()]
+        # Ensure student is fresh in session after any potential rollback
+        student = session.get(Student, st_id)
+        badge_ids = [r.badge_id for r in session.query(StudentBadge).filter(StudentBadge.student_id == st_id).all()]
         child_account = student_to_child_account(student, badge_ids)
         child_account["isOnboarded"] = True
 
