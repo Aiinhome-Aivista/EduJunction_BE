@@ -469,7 +469,7 @@ class ScheduledExam(Base):
     __tablename__ = "scheduled_exams"
 
     id = Column(String(36), primary_key=True, default=gen_uuid)
-    parent_id = Column(Integer, ForeignKey("parents.id", ondelete="CASCADE"), nullable=False)
+    parent_id = Column(Integer, ForeignKey("parents.id", ondelete="CASCADE"), nullable=True)
     student_id = Column(Integer, ForeignKey("students.id", ondelete="CASCADE"), nullable=False)
     title = Column(String(255), nullable=False)
     subject = Column(String(60), nullable=False)

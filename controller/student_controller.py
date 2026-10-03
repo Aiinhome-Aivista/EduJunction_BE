@@ -166,15 +166,18 @@ def complete_onboarding():
         if school_name:
             student.school_name = school_name
 
+        # Commit student board & class first to guarantee profile completion
+        session.commit()
+
         # Auto-assign active Mock Tests for this board and class
         from controller.mock_test_controller import auto_assign_mock_tests_for_new_student
         try:
             auto_assign_mock_tests_for_new_student(session, student)
+            session.commit()
         except Exception as e:
             from utils.logger import logger
             logger.warning(f"Auto-assign mock tests failed for student {student.id}: {e}")
-
-        session.commit()
+            session.rollback()
 
         badge_ids = [r.badge_id for r in session.query(StudentBadge).filter(StudentBadge.student_id == student.id).all()]
         child_account = student_to_child_account(student, badge_ids)

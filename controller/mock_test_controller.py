@@ -523,7 +523,7 @@ def _bulk_assign_mock_to_students(session: Session, mock_test: MockTestMaster) -
         if not existing:
             scheduled_exam = ScheduledExam(
                 id=str(uuid.uuid4()),
-                parent_id=student.parent_id or student.id,
+                parent_id=student.parent_id,
                 student_id=student.id,
                 title=mock_test.title,
                 subject=mock_test.subject,
@@ -591,7 +591,7 @@ def auto_assign_mock_tests_for_new_student(session: Session, student: Student):
             if not existing:
                 se = ScheduledExam(
                     id=str(uuid.uuid4()),
-                    parent_id=student.parent_id or student.id,
+                    parent_id=student.parent_id,
                     student_id=student.id,
                     title=mt.title,
                     subject=mt.subject,
