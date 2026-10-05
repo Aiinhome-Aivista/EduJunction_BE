@@ -115,6 +115,7 @@ def submission_to_dict(submission: ExamSubmission, include_details: bool = True)
 
 
 def learning_path_node_to_dict(node: LearningPathNode) -> dict:
+    config = node.practice_exam_config or {}
     return {
         "id": node.id,
         "topic": node.topic,
@@ -129,8 +130,17 @@ def learning_path_node_to_dict(node: LearningPathNode) -> dict:
         "keyConcepts": node.key_concepts or [],
         "commonMisconceptions": node.common_misconceptions or [],
         "curatedResources": node.curated_resources or [],
-        "practiceExamConfig": node.practice_exam_config or {},
+        "practiceExamConfig": config,
         "recommendedReason": node.recommended_reason,
+        "recommendedAction": config.get("recommendedAction") or (
+            f"Advance to Level 2 HOTS & analytical challenges for {node.topic}."
+            if float(node.mastery_percentage or 0) >= 85
+            else (
+                f"Practice 3-5 multi-step board problems on {node.topic}."
+                if float(node.mastery_percentage or 0) >= 50
+                else f"Review core textbook definitions and practice basic concept drills in {node.topic}."
+            )
+        ),
     }
 
 

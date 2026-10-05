@@ -45,6 +45,7 @@ class KGraphInsightSchema(BaseModel):
     topic: str
     masteryPercentage: float
     status: Literal["mastered", "reinforce", "critical_gap"]
+    insight: Optional[str] = None
     recommendedAction: str
 
 

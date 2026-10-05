@@ -59,16 +59,41 @@ def update_learning_path_after_submission(
             status = "remedial_needed"
             level = "foundational"
 
+        insight_text = (
+            (matching_insight.get("insight") if matching_insight else None)
+            or (matching_insight.get("recommendedReason") if matching_insight else None)
+            or (
+                f"Awesome work! You handled {node.topic} with fantastic confidence and accuracy. You have built a solid grasp here and are capable of tackling higher-level challenges to level up your streak!"
+                if mastery >= 85
+                else (
+                    f"Good effort! You answered basic questions in {node.topic} nicely, but there are a few multi-step steps to polish. With a quick review, you will master it completely."
+                    if mastery >= 50
+                    else f"Don't worry, every champion learns by trying! You gave a great attempt, but {node.topic} has a few tricky definitions to brush up on. With a little review, you'll master this in no time."
+                )
+            )
+        )
+        action_text = (
+            (matching_insight.get("recommendedAction") if matching_insight else None)
+            or (
+                f"Read the advanced problem-solving section in your {subject} textbook for {node.topic}, then try 3-4 challenging questions to sharpen your speed."
+                if mastery >= 85
+                else (
+                    f"Review the key formulas and worked examples for {node.topic} in your {subject} textbook, then practice 3 multi-step problems."
+                    if mastery >= 50
+                    else f"Open your {subject} textbook chapter on {node.topic}, carefully read the core concept summary, and solve 2 foundational practice exercises."
+                )
+            )
+        )
+
         node.mastery_percentage = max(float(node.mastery_percentage or 0), mastery)
         node.status = status
         node.level = level
         node.attempts_count = (node.attempts_count or 0) + 1
         node.last_score = marks_obtained
-        node.recommended_reason = (
-            "Excellent mastery shown in latest diagnostic test! Ready for higher-order HOTS challenges."
-            if mastery >= 80
-            else "Diagnostic test detected conceptual nuances to reinforce with foundational practice."
-        )
+        node.recommended_reason = insight_text
+        cfg = dict(node.practice_exam_config or {})
+        cfg["recommendedAction"] = action_text
+        node.practice_exam_config = cfg
         node.updated_at = now_ist()
 
     # If insights had topics not matched to existing nodes (or if student had no nodes yet), dynamically insert them
@@ -79,7 +104,7 @@ def update_learning_path_after_submission(
                 continue
 
             mastery = float(insight.get("masteryPercentage", marks_obtained * 10))
-            if mastery >= 80:
+            if mastery >= 85:
                 status = "mastered"
                 level = "advanced_hots"
             elif mastery >= 50:
@@ -88,6 +113,32 @@ def update_learning_path_after_submission(
             else:
                 status = "remedial_needed"
                 level = "foundational"
+
+            insight_text = (
+                insight.get("insight")
+                or insight.get("recommendedReason")
+                or (
+                    f"Awesome work! You handled {topic_name} with fantastic confidence and accuracy. You have built a solid grasp here and are capable of tackling higher-level challenges to level up your streak!"
+                    if mastery >= 85
+                    else (
+                        f"Good effort! You answered basic questions in {topic_name} nicely, but there are a few multi-step steps to polish. With a quick review, you will master it completely."
+                        if mastery >= 50
+                        else f"Don't worry, every champion learns by trying! You gave a great attempt, but {topic_name} has a few tricky definitions to brush up on. With a little review, you'll master this in no time."
+                    )
+                )
+            )
+            action_text = (
+                insight.get("recommendedAction")
+                or (
+                    f"Read the advanced problem-solving section in your {subject} textbook for {topic_name}, then try 3-4 challenging questions to sharpen your speed."
+                    if mastery >= 85
+                    else (
+                        f"Review the key formulas and worked examples for {topic_name} in your {subject} textbook, then practice 3 multi-step problems."
+                        if mastery >= 50
+                        else f"Open your {subject} textbook chapter on {topic_name}, carefully read the core concept summary, and solve 2 foundational practice exercises."
+                    )
+                )
+            )
 
             new_node = LearningPathNode(
                 id=str(uuid.uuid4()),
@@ -110,12 +161,9 @@ def update_learning_path_after_submission(
                     "subject": subject,
                     "chapter": insight.get("chapter") or topic_name,
                     "difficulty": recommend_difficulty_for_score(mastery),
+                    "recommendedAction": action_text,
                 },
-                recommended_reason=(
-                    "Exam completed! Keep it going"
-                    if mastery < 80
-                    else "Exam completed! Keep it going"
-                ),
+                recommended_reason=insight_text,
                 attempts_count=1,
                 last_score=marks_obtained,
                 updated_at=now_ist(),

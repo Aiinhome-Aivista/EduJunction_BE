@@ -25,6 +25,17 @@ CRITICAL ASSESSMENT RULES (MANDATORY):
    - Score 40% - 69% (Developing): Highlight genuine strengths from the correctly solved topics and fast-paced areas. Pinpoint multi-step calculation traps and time-sink areas for revision.
    - Score >= 70% (Proficient / Advanced Mastery): Commend analytical precision, speed, and concept application. Recommend advancing to complex application problems (HOTS) and higher difficulty.
 
+4. COMPREHENSIVE KNOWLEDGE GRAPH INSIGHTS & INSPIRING NEXT STEPS (MENTOR VOICE):
+   - "kGraphInsights" MUST contain an entry for EVERY distinct topic tested in the exam.
+   - Tone must be warm, student-friendly, highly encouraging, and inspiring (like a supportive top teacher/mentor speaking directly to the student):
+     * "insight": A warm, encouraging 2-3 sentence performance reflection for this specific topic:
+       - If high score / mastered: Commend their solid grasp with genuine enthusiasm (e.g. "Awesome work! You tackled {topic} with great confidence and clarity. You've built a strong foundation here, and you are fully capable of taking on higher-level analytical challenges!").
+       - If developing / missed: Be supportive and constructive (e.g. "Don't worry, every champion learns by trying! You gave a good attempt, but {topic} has a few tricky definitions that need a quick brush-up. With a little focused review, you'll master this in no time!").
+     * "recommendedAction": An actionable, encouraging next step that recommends reading the specific subject/topic textbook chapter and practicing targeted exercises:
+       - (e.g. "Open your {subject} textbook chapter on {topic}, read through the key summary formulas and rules, and solve 3-4 practice problems to ace your next sprint!").
+     * For topics where questions were answered correctly: assign status="mastered" (or "reinforce") with masteryPercentage between 85 and 100.
+     * For topics where questions were missed or incorrect: assign status="critical_gap" with masteryPercentage between 0 and 40.
+
 Always respond with a single valid JSON object and nothing else.
 """
 
@@ -45,7 +56,8 @@ RESPONSE_SCHEMA_HINT = {
             "topic": "string",
             "masteryPercentage": "integer 0-100",
             "status": "mastered | reinforce | critical_gap",
-            "recommendedAction": "string",
+            "insight": "string (Warm, inspiring, student-friendly 2-3 sentence reflection on this topic)",
+            "recommendedAction": "string (Encouraging action step recommending subject/topic textbook reading and practice)",
         }
     ],
     "evolutionaryRoadmap": "string (concrete 2-3 sentence progress and pacing roadmap)",

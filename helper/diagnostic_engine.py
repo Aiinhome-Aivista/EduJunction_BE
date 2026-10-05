@@ -39,11 +39,98 @@ def generate_diagnostic_analysis(
             validated = DiagnosticAnalysisSchema.model_validate(raw)
             analysis = validated.model_dump()
             analysis["masteryScorePercentage"] = accuracy_percentage
+            analysis["kGraphInsights"] = _ensure_complete_kgraph_insights(
+                analysis.get("kGraphInsights", []), evaluations, accuracy_percentage, exam.subject
+            )
             return analysis, "mistral"
         except (mistral_client.MistralUnavailableError, PydanticValidationError) as exc:
             logger.error(f"Diagnostic analysis via Mistral failed, using fallback: {exc}")
 
     return _synthesize_fallback_analysis(exam, marks_obtained, evaluations, student_name, accuracy_percentage), "fallback"
+
+
+def _ensure_complete_kgraph_insights(
+    k_graph_insights: list[dict],
+    evaluations: list[dict],
+    accuracy_percentage: float,
+    subject: str,
+) -> list[dict]:
+    """Guarantees that all tested topics from student evaluations are captured with exact topic-level percentage."""
+    existing_topics = {
+        k.get("topic", "").strip().lower(): k
+        for k in (k_graph_insights or [])
+        if k.get("topic")
+    }
+
+    # Group questions by topic to compute exact topic-specific accuracy
+    topic_marks = {}
+    for e in evaluations:
+        t = (e.get("topic") or subject).strip()
+        if t not in topic_marks:
+            topic_marks[t] = {"obtained": 0.0, "total": 0.0}
+        
+        obtained = float(e.get("marksAwarded") or 0.0)
+        # Determine question total marks (from eval or fallback)
+        q_total = float(e.get("marks") or e.get("totalMarks") or (2.0 if obtained > 1.0 else 1.0))
+        if obtained > q_total:
+            q_total = obtained
+
+        topic_marks[t]["obtained"] += obtained
+        topic_marks[t]["total"] += max(q_total, 1.0)
+
+    enriched = list(k_graph_insights or [])
+
+    for topic, data in topic_marks.items():
+        topic_lower = topic.lower()
+        topic_pct = round((data["obtained"] / max(data["total"], 1.0)) * 100, 2)
+        topic_pct = min(100.0, max(0.0, topic_pct))
+
+        if topic_pct >= 85:
+            status = "mastered"
+            default_insight = (
+                f"Awesome work! You handled {topic} with fantastic confidence and accuracy. You have a solid grasp of this concept, and you are ready to take on advanced level challenges to level up your streak!"
+            )
+            default_action = (
+                f"Read the advanced problem-solving section in your {subject} textbook for {topic}, then try 3-4 challenging questions to sharpen your speed."
+            )
+        elif topic_pct >= 50:
+            status = "reinforce"
+            default_insight = (
+                f"Good effort! You answered basic questions in {topic} nicely, but there are a few multi-step steps to polish. With a quick review, you will master it completely."
+            )
+            default_action = (
+                f"Review the key formulas and worked examples for {topic} in your {subject} textbook, then practice 3 multi-step problems."
+            )
+        else:
+            status = "critical_gap"
+            default_insight = (
+                f"Don't worry, every champion learns by trying! You gave a great attempt, but {topic} has a few tricky definitions that need a quick revision. With a little practice, you'll be on top of this topic in no time."
+            )
+            default_action = (
+                f"Open your {subject} textbook chapter on {topic}, carefully read the core concept summary and definitions, and solve 2 foundational practice exercises."
+            )
+
+        if topic_lower in existing_topics:
+            # Update the existing insight with exact topic-level calculation
+            node = existing_topics[topic_lower]
+            node["masteryPercentage"] = topic_pct
+            node["status"] = status
+            if not node.get("insight") or len(str(node.get("insight", "")).strip()) < 15:
+                node["insight"] = default_insight
+            if not node.get("recommendedAction") or len(str(node.get("recommendedAction", "")).strip()) < 15:
+                node["recommendedAction"] = default_action
+        else:
+            node_insight = {
+                "topic": topic,
+                "masteryPercentage": topic_pct,
+                "status": status,
+                "insight": default_insight,
+                "recommendedAction": default_action,
+            }
+            enriched.append(node_insight)
+            existing_topics[topic_lower] = node_insight
+
+    return enriched
 
 
 def _synthesize_fallback_analysis(

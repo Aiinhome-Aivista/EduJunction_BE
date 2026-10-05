@@ -201,6 +201,7 @@ THE 4 GOLDEN RULES (CRITICAL CONSTRAINTS):
 2. ACADEMIC QUESTIONS ONLY: Skip publisher info, ISBN, copyright notices, headers, footers, and exam paper instructions ('Roll No', 'Check that paper contains').
 3. STANDALONE QUESTIONS: Every question must be fully complete on its own. Never output bare prompts like 'Fill in the blank.' or 'the following questions:'. Combine the prompt with the target sentence.
 4. PRESERVE MATH & SCIENCE: Keep LaTeX expressions (\\frac, \\sqrt, x^2, \\Omega, \\alpha, \\beta), chemical notations (H2O, CaCl2, CO2), and units intact.
+5. STRICT MCQ & SAQ ACCURACY: If a question is open-ended or descriptive (e.g., 'What is the life cycle of...', 'Rewrite...', 'Explain...'), set type='SAQ' or 'Objective' with options=[]. NEVER create an MCQ with irrelevant or mismatched options. For any 'MCQ', all 4 options MUST be directly relevant to the question topic, and 'correct_answer' MUST be one of those exact 4 options.
 
 JSON Schema & Example:
 {
@@ -544,8 +545,11 @@ def clean_human_readable_text(val: Any) -> str:
     text = re.sub(r'\*{1,3}(.*?)\*{1,3}', r'\1', text)
     text = re.sub(r'_{1,3}(.*?)_{1,3}', r'\1', text)
 
-    # Strip markdown headers like '### Header'
-    text = re.sub(r'^#{1,6}\s*', '', text, flags=re.MULTILINE)
+    # Convert HTML line breaks <br>, <br/>, <br />, <p>, </p>, <div> to clean plain text newlines
+    text = re.sub(r'<\s*br\s*/?>', '\n', text, flags=re.IGNORECASE)
+    text = re.sub(r'<\s*/?p\s*>', '\n\n', text, flags=re.IGNORECASE)
+    text = re.sub(r'<\s*/?div\s*>', '\n', text, flags=re.IGNORECASE)
+    text = re.sub(r'<\s*/?span[^>]*>', '', text, flags=re.IGNORECASE)
 
     # Normalize weird dashes / separators (e.g. '---', '--')
     text = re.sub(r'-{3,}', '-', text)
@@ -785,13 +789,12 @@ def sanitize_question_item(
     # Clean correct_answer
     if resolved_type in ["MCQ", "ASSERTION REASON"] and clean_opts:
         if corr:
-            # Check if corr is a letter like 'A' or 'B'
+            # Check if corr is a letter like 'A' or 'B' or '(A)'
             match_letter = re.match(r"^[\(]?([A-D])[\)\.\:\s]?$", corr.strip(), re.IGNORECASE)
             if match_letter:
                 target_letter = match_letter.group(1).upper()
                 target_idx = ord(target_letter) - 65
                 if 0 <= target_idx < len(clean_opts):
-                    # Extract authentic option text after "A) "
                     opt_raw = clean_opts[target_idx]
                     corr = opt_raw.split(")", 1)[-1].strip() if ")" in opt_raw else opt_raw
                 else:
@@ -802,10 +805,23 @@ def sanitize_question_item(
                 corr_clean = corr.lower().strip()
                 for opt_str in clean_opts:
                     opt_body = opt_str.split(")", 1)[-1].strip()
-                    if corr_clean == opt_body.lower() or corr_clean in opt_body.lower() or opt_body.lower() in corr_clean:
+                    if corr_clean == opt_body.lower() or (len(corr_clean) > 3 and corr_clean in opt_body.lower()) or (len(opt_body) > 3 and opt_body.lower() in corr_clean):
                         matched_text = opt_body
                         break
-                corr = matched_text if matched_text else (clean_opts[0].split(")", 1)[-1].strip() if clean_opts else corr)
+                if matched_text:
+                    corr = matched_text
+                else:
+                    # If corr does not match ANY of the options:
+                    # Check if this question is actually a descriptive/passage question that AI wrongly formatted as MCQ
+                    is_descriptive_q = bool(re.search(r'\b(?:rewrite|explain|describe|what is the life cycle|state the|why do|how does|give reason|summarize|list the)\b', q_text.lower()))
+                    is_long_corr = len(corr.split()) >= 4 or len(corr) > 30
+                    if is_descriptive_q or is_long_corr:
+                        # Auto-convert to SAQ or Objective with authentic descriptive answer preserved and unrelated options cleared
+                        resolved_type = "SAQ" if marks >= 2 else "OBJECTIVE"
+                        clean_opts = []
+                    else:
+                        # If authentic short MCQ, lock corr to the first option
+                        corr = clean_opts[0].split(")", 1)[-1].strip() if clean_opts else corr
         else:
             corr = clean_opts[0].split(")", 1)[-1].strip() if clean_opts else ""
 
