@@ -739,6 +739,13 @@ def sanitize_question_item(
         resolved_type = "MCQ"
         default_m = 1
 
+    # Assigned marks
+    raw_m = q.get("marks")
+    try:
+        marks = int(raw_m if raw_m and str(raw_m).isdigit() else (extracted_marks or default_m))
+    except (ValueError, TypeError):
+        marks = extracted_marks or default_m
+
     # Clean options
     q_opts = q.get("options")
     clean_opts: List[str] = []
