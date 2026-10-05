@@ -171,9 +171,12 @@ def get_curriculum_options():
             if ch_id and ch_name:
                 ch_name = ch_name.strip()
                 if ch_id not in subjects_dict[s_name]["chapters"]:
+                    from utils.constants import classify_science_chapter
+                    ch_branch = classify_science_chapter(ch_name) if "science" in s_name.lower() else None
                     subjects_dict[s_name]["chapters"][ch_id] = {
                         "id": ch_id,
                         "name": ch_name,
+                        "branch": ch_branch,
                         "topics": []
                     }
                 t_id = r["topic_id"]

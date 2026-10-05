@@ -72,6 +72,8 @@ def generate_exam():
         req_q_count = (scheduled_exam.question_count if scheduled_exam else None) or payload.get("questionCount")
         req_duration = (scheduled_exam.time_limit_minutes if scheduled_exam else None) or payload.get("timeLimitMinutes")
         req_topic = payload.get("chapterTopic") or payload.get("topic") or (scheduled_exam.chapter_topic if scheduled_exam else None)
+        req_branch = payload.get("branch")
+        req_chapter_ids = payload.get("chapterIds") or payload.get("chapter_ids")
         title = scheduled_exam.title if scheduled_exam else payload.get("title")
 
         is_assigned_flag = bool(scheduled_exam)
@@ -89,6 +91,8 @@ def generate_exam():
             title=title,
             is_assigned=is_assigned_flag,
             chapter_topic=req_topic,
+            branch=req_branch,
+            chapter_ids=req_chapter_ids,
         )
 
         if scheduled_exam:

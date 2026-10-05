@@ -181,6 +181,8 @@ def _fetch_questions_from_db(
     subject: str,
     difficulty: str,
     chapter_topic: str | None = None,
+    branch: str | None = None,
+    chapter_ids: list | None = None,
     student_id: str | int | None = None,
     target_count: int = 10,
 ) -> list[dict]:
@@ -192,14 +194,106 @@ def _fetch_questions_from_db(
     clean_subj = (subject or "").strip()
     clean_diff = (difficulty or "medium").strip()
     clean_topic = (chapter_topic or "").strip()
+    clean_branch = (branch or "").strip()
 
     seen_ids = get_student_seen_question_ids(session, student_id) if student_id else set()
     weak_ids = get_student_weak_question_ids(session, student_id) if student_id else set()
 
     sp_rows = []
 
-    # If specific topic requested for remedial sprint, try targeted topic query first
-    if clean_topic:
+    # 0. Branch-specific query for CBSE Science (Physics, Chemistry, Biology)
+    if clean_branch in ["Physics", "Chemistry", "Biology"] and "sci" in clean_subj.lower():
+        try:
+            from utils.constants import SCIENCE_BRANCH_KEYWORDS
+            keywords = SCIENCE_BRANCH_KEYWORDS.get(clean_branch, [])
+
+            if chapter_ids and isinstance(chapter_ids, (list, tuple)) and len(chapter_ids) > 0:
+                branch_sql = text("""
+                    SELECT 
+                        q.id AS question_id,
+                        q.question AS question_text,
+                        q.options,
+                        q.correct_answer,
+                        q.explanation,
+                        q.marks,
+                        COALESCE(q.importance_score, 7.00) AS importance_score,
+                        COALESCE(qt.question_type_name, 'MCQ') AS question_type,
+                        COALESCE(dl.difficulty_level_name, 'medium') AS difficulty,
+                        s.subject_name,
+                        ch.chapter_name,
+                        t.topic_name,
+                        b.board_name,
+                        c.class_name
+                    FROM question_master q
+                    JOIN topic_master t ON q.topic_id = t.id
+                    JOIN chapter_master ch ON t.chapter_id = ch.id
+                    JOIN subject_master s ON ch.subject_id = s.id
+                    JOIN board_master b ON s.board_id = b.id
+                    JOIN class_master c ON s.class_id = c.id
+                    JOIN question_type_master qt ON q.question_type_id = qt.id
+                    LEFT JOIN difficulty_level_master dl ON q.difficulty_level_id = dl.id
+                    WHERE q.is_active = 1
+                      AND ch.id IN :ch_ids
+                    ORDER BY 
+                      COALESCE(q.importance_score, 7.00) DESC,
+                      RAND()
+                    LIMIT 50
+                """)
+                branch_rows = session.execute(branch_sql, {"ch_ids": tuple(chapter_ids)}).mappings().fetchall()
+                if branch_rows:
+                    sp_rows = branch_rows
+            elif keywords:
+                like_clauses = " OR ".join([f"LOWER(ch.chapter_name) LIKE :kw_{i} OR LOWER(t.topic_name) LIKE :kw_{i}" for i in range(len(keywords))])
+                params = {
+                    "clean_board": f"%{clean_board}%" if clean_board else "",
+                    "clean_class": f"%{clean_class.replace('Class', '').strip()}%" if clean_class else "",
+                    "subject_pattern": f"%{clean_subj}%",
+                }
+                for i, kw in enumerate(keywords):
+                    params[f"kw_{i}"] = f"%{kw}%"
+
+                branch_sql = text(f"""
+                    SELECT 
+                        q.id AS question_id,
+                        q.question AS question_text,
+                        q.options,
+                        q.correct_answer,
+                        q.explanation,
+                        q.marks,
+                        COALESCE(q.importance_score, 7.00) AS importance_score,
+                        COALESCE(qt.question_type_name, 'MCQ') AS question_type,
+                        COALESCE(dl.difficulty_level_name, 'medium') AS difficulty,
+                        s.subject_name,
+                        ch.chapter_name,
+                        t.topic_name,
+                        b.board_name,
+                        c.class_name
+                    FROM question_master q
+                    JOIN topic_master t ON q.topic_id = t.id
+                    JOIN chapter_master ch ON t.chapter_id = ch.id
+                    JOIN subject_master s ON ch.subject_id = s.id
+                    JOIN board_master b ON s.board_id = b.id
+                    JOIN class_master c ON s.class_id = c.id
+                    JOIN question_type_master qt ON q.question_type_id = qt.id
+                    LEFT JOIN difficulty_level_master dl ON q.difficulty_level_id = dl.id
+                    WHERE q.is_active = 1
+                      AND (LOWER(s.subject_name) LIKE LOWER(:subject_pattern))
+                      AND (LOWER(b.board_name) LIKE LOWER(:clean_board) OR :clean_board = '')
+                      AND (LOWER(c.class_name) LIKE LOWER(:clean_class) OR :clean_class = '')
+                      AND ({like_clauses})
+                    ORDER BY 
+                      COALESCE(q.importance_score, 7.00) DESC,
+                      RAND()
+                    LIMIT 50
+                """)
+                branch_rows = session.execute(branch_sql, params).mappings().fetchall()
+                if branch_rows:
+                    sp_rows = branch_rows
+        except Exception as e:
+            logger.warning(f"Branch query failed for {clean_branch}: {e}")
+
+    # If specific topic requested for remedial sprint, try targeted topic query first (if not already filtered by branch)
+    if clean_topic and (not sp_rows or not clean_branch):
         try:
             topic_rows = session.execute(
                 text("""
@@ -475,8 +569,10 @@ def generate_exam(
     title: str | None = None,
     is_assigned: bool = False,
     chapter_topic: str | None = None,
+    branch: str | None = None,
+    chapter_ids: list | None = None,
 ) -> Exam:
-    if not chapter_topic:
+    if not chapter_topic and not branch:
         weak_ch, weak_df = get_student_weak_chapter_or_topic(session, student_id, subject=subject, board=board, class_grade=class_grade)
         if weak_ch:
             chapter_topic = weak_ch
@@ -537,6 +633,8 @@ def generate_exam(
         subject=subject,
         difficulty=difficulty,
         chapter_topic=chapter_topic,
+        branch=branch,
+        chapter_ids=chapter_ids,
         student_id=student_id,
         target_count=target_question_count * 2,
     )
@@ -559,6 +657,7 @@ def generate_exam(
             class_grade=class_grade,
             limit=needed_mcqs * 2,
             force_mcq=True,
+            branch=branch,
         )
         existing_texts = {q.get("questionText", "") for q in final_mcq_list}
         for fb_q in fb_mcqs:
@@ -591,6 +690,7 @@ def generate_exam(
             class_grade=class_grade,
             limit=needed_saqs * 2,
             force_mcq=False,
+            branch=branch,
         )
         existing_texts = {q.get("questionText", "") for q in final_saq_list}
         for fb_q in fb_saqs:
@@ -635,6 +735,8 @@ def generate_exam(
             exam_title = title
         elif chapter_topic:
             exam_title = f"{class_grade} {board} {subject}: {chapter_topic} Remedial Sprint ({calculated_marks} Marks)"
+        elif branch and branch.lower() != "all":
+            exam_title = f"{class_grade} {board} {subject} ({branch}) ({difficulty.upper()}) Diagnostic {calculated_marks}-Mark Exam"
         else:
             exam_title = f"{class_grade} {board} {subject} ({difficulty.upper()}) Diagnostic {calculated_marks}-Mark Exam"
 

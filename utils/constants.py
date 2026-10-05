@@ -70,3 +70,38 @@ BADGE_IDS = {
 DEFAULT_EXAM_QUESTION_COUNT = 10
 DEFAULT_EXAM_TOTAL_MARKS = 10
 DEFAULT_EXAM_TIME_LIMIT_MINUTES = 15
+
+# CBSE Science Sub-Branch Domain Taxonomy (Class 6 to 10)
+SCIENCE_BRANCH_KEYWORDS = {
+    "Physics": [
+        "light", "reflection", "refraction", "electricity", "magnetic",
+        "current", "eye", "motion", "force", "gravitation", "work",
+        "energy", "sound", "optics", "ray", "human eye", "natural phenomenon",
+        "effects of current", "heat", "temperature", "time", "speed",
+        "friction", "pressure", "wind", "storm", "cyclone", "measurement"
+    ],
+    "Chemistry": [
+        "chemical", "reaction", "acid", "base", "salt", "metal",
+        "non-metal", "carbon", "compound", "matter", "atom",
+        "molecule", "substance", "periodic", "chemical substances",
+        "fibre", "fabric", "synthetic", "combustion", "flame", "coal",
+        "petroleum", "physical and chemical", "separation of substances", "water", "soil"
+    ],
+    "Biology": [
+        "life", "process", "control", "coordination", "reproduce",
+        "reproduction", "heredity", "environment", "cell", "tissue",
+        "organism", "diversity", "disease", "natural resource", "living world",
+        "natural resources", "nutrition", "respiration", "transportation",
+        "crop", "microorganism", "plant", "animal", "forest", "waste", "photosynthesis"
+    ]
+}
+
+
+def classify_science_chapter(chapter_name: str) -> str:
+    """Classifies a chapter name into 'Physics', 'Chemistry', 'Biology' or 'General Science'."""
+    clean = str(chapter_name or "").strip().lower()
+    for branch, keywords in SCIENCE_BRANCH_KEYWORDS.items():
+        if any(kw in clean for kw in keywords):
+            return branch
+    return "General Science"
+

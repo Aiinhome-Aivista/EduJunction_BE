@@ -978,17 +978,8 @@ SECONDARY_QUESTION_BANKS = {
             "marks": 2,
         },
     ],
-    "science": [
+    "physics": [
         # 1-5: MCQs (1 Mark each)
-        {
-            "type": "mcq",
-            "questionText": "Which organelle is considered the powerhouse of eukaryotic cells?",
-            "options": ["A) Mitochondria", "B) Ribosome", "C) Golgi apparatus", "D) Endoplasmic reticulum"],
-            "correctAnswer": "A",
-            "explanation": "Mitochondria generate most of the cell's supply of ATP through cellular respiration.",
-            "topic": "Cell Structure",
-            "marks": 1,
-        },
         {
             "type": "mcq",
             "questionText": "What is the SI unit of Electric Current?",
@@ -1000,6 +991,91 @@ SECONDARY_QUESTION_BANKS = {
         },
         {
             "type": "mcq",
+            "questionText": "An object placed at 2F in front of a convex lens produces an image that is:",
+            "options": ["A) Real, inverted, and same size at 2F", "B) Virtual and magnified", "C) Real and diminished at F", "D) Highly magnified at infinity"],
+            "correctAnswer": "A",
+            "explanation": "When placed at 2F of a convex lens, a real, inverted image of identical size forms at 2F on the other side.",
+            "topic": "Light & Optics",
+            "marks": 1,
+        },
+        {
+            "type": "mcq",
+            "questionText": "Which law of motion gives the fundamental definition of Force as F = ma?",
+            "options": ["A) Newton's Second Law", "B) Newton's First Law", "C) Newton's Third Law", "D) Law of Gravitation"],
+            "correctAnswer": "A",
+            "explanation": "Newton's Second Law states that the rate of change of momentum is proportional to applied force (F = ma).",
+            "topic": "Laws of Motion",
+            "marks": 1,
+        },
+        {
+            "type": "mcq",
+            "questionText": "The transfer of thermal energy through liquids and gases primarily occurs by:",
+            "options": ["A) Convection", "B) Conduction", "C) Radiation", "D) Reflection"],
+            "correctAnswer": "A",
+            "explanation": "Convection is the mode of heat transfer in fluids (liquids and gases) via actual mass movement of heated particles.",
+            "topic": "Heat & Temperature",
+            "marks": 1,
+        },
+        {
+            "type": "mcq",
+            "questionText": "Which characteristic of a sound wave determines its pitch or shrillness?",
+            "options": ["A) Frequency", "B) Amplitude", "C) Speed", "D) Loudness"],
+            "correctAnswer": "A",
+            "explanation": "The pitch of sound is directly determined by its vibration frequency (higher frequency = higher pitch).",
+            "topic": "Sound & Waves",
+            "marks": 1,
+        },
+        # 6-10: SAQs (2 Marks each)
+        {
+            "type": "saq",
+            "questionText": "State Ohm's Law and write the mathematical relationship between Voltage (V), Current (I), and Resistance (R).",
+            "options": None,
+            "correctAnswer": "Ohm's Law: Current flowing through a conductor is directly proportional to the potential difference across its ends at constant temperature. V = I × R.",
+            "explanation": "V = IR, where V is potential difference in Volts, I is current in Amperes, and R is resistance in Ohms.",
+            "topic": "Electricity",
+            "marks": 2,
+        },
+        {
+            "type": "saq",
+            "questionText": "State Snell's Law of refraction and write the mathematical formula for refractive index.",
+            "options": None,
+            "correctAnswer": "Snell's Law: The ratio of sine of angle of incidence to sine of angle of refraction is constant for a given pair of media. sin(i) / sin(r) = n₂ / n₁.",
+            "explanation": "Refractive index n = c/v = sin(i)/sin(r).",
+            "topic": "Light Refraction",
+            "marks": 2,
+        },
+        {
+            "type": "saq",
+            "questionText": "Define Friction and state two practical methods used to reduce unwanted friction in machines.",
+            "options": None,
+            "correctAnswer": "Friction is the opposing force that resists relative motion between surfaces in contact. Methods to reduce friction: 1. Lubrication (using oil/grease), 2. Using ball bearings.",
+            "explanation": "Friction arises due to interlocking of surface irregularities. Lubricants and ball bearings replace sliding friction with rolling friction.",
+            "topic": "Force & Friction",
+            "marks": 2,
+        },
+        {
+            "type": "saq",
+            "questionText": "Differentiate between Speed and Velocity, specifying their definitions and scalar/vector nature.",
+            "options": None,
+            "correctAnswer": "Speed is the distance covered per unit time (Scalar quantity). Velocity is the displacement per unit time in a specific direction (Vector quantity). Both have SI unit m/s.",
+            "explanation": "Speed has magnitude only, while velocity has both magnitude and direction.",
+            "topic": "Motion & Time",
+            "marks": 2,
+        },
+        {
+            "type": "saq",
+            "questionText": "State the Law of Conservation of Energy and give one daily life example of energy transformation.",
+            "options": None,
+            "correctAnswer": "Energy can neither be created nor destroyed; it can only transform from one form to another. Example: In an electric bulb, electrical energy transforms into light and heat energy.",
+            "explanation": "Total mechanical and thermal energy of an isolated system remains constant over time.",
+            "topic": "Work & Energy",
+            "marks": 2,
+        },
+    ],
+    "chemistry": [
+        # 1-5: MCQs (1 Mark each)
+        {
+            "type": "mcq",
             "questionText": "What type of chemical reaction occurs when Calcium Carbonate decomposes into CaO and CO₂ upon heating?",
             "options": ["A) Thermal Decomposition", "B) Combination Reaction", "C) Displacement Reaction", "D) Neutralization"],
             "correctAnswer": "A",
@@ -1009,20 +1085,231 @@ SECONDARY_QUESTION_BANKS = {
         },
         {
             "type": "mcq",
-            "questionText": "Which part of the human brain controls involuntary actions like heartbeat and breathing?",
-            "options": ["A) Medulla Oblongata", "B) Cerebrum", "C) Cerebellum", "D) Hypothalamus"],
+            "questionText": "What is the chemical formula of common baking soda?",
+            "options": ["A) NaHCO₃", "B) Na₂CO₃", "C) NaCl", "D) NaOH"],
             "correctAnswer": "A",
-            "explanation": "The medulla oblongata in the brainstem regulates vital autonomous functions like heartbeat and breathing.",
-            "topic": "Control & Coordination",
+            "explanation": "Sodium hydrogen carbonate (Sodium Bicarbonate, NaHCO₃) is baking soda.",
+            "topic": "Acids, Bases & Salts",
             "marks": 1,
         },
         {
             "type": "mcq",
-            "questionText": "An object placed at 2F in front of a convex lens produces an image that is:",
-            "options": ["A) Real, inverted, and same size at 2F", "B) Virtual and magnified", "C) Real and diminished at F", "D) Highly magnified at infinity"],
+            "questionText": "Which metal remains in liquid state at standard room temperature?",
+            "options": ["A) Mercury (Hg)", "B) Sodium (Na)", "C) Lead (Pb)", "D) Gallium (Ga)"],
             "correctAnswer": "A",
-            "explanation": "When placed at 2F of a convex lens, a real, inverted image of identical size forms at 2F on the other side.",
-            "topic": "Light & Optics",
+            "explanation": "Mercury is the only elemental metal that is liquid at standard room temperature (25°C).",
+            "topic": "Metals and Non-Metals",
+            "marks": 1,
+        },
+        {
+            "type": "mcq",
+            "questionText": "Which gas is liberated when dilute hydrochloric acid reacts with zinc granules?",
+            "options": ["A) Hydrogen (H₂)", "B) Oxygen (O₂)", "C) Chlorine (Cl₂)", "D) Nitrogen (N₂)"],
+            "correctAnswer": "A",
+            "explanation": "Zn + 2HCl -> ZnCl₂ + H₂↑. Reactive metals displace hydrogen from acids.",
+            "topic": "Chemical Reactions & Acids",
+            "marks": 1,
+        },
+        {
+            "type": "mcq",
+            "questionText": "Which petroleum product is used for surfacing of roads in place of coal tar?",
+            "options": ["A) Bitumen", "B) Kerosene", "C) Paraffin wax", "D) Petrol"],
+            "correctAnswer": "A",
+            "explanation": "Bitumen, a petroleum fractional residue, is widely used for blacktopping road surfaces.",
+            "topic": "Coal and Petroleum",
+            "marks": 1,
+        },
+        # 6-10: SAQs (2 Marks each)
+        {
+            "type": "saq",
+            "questionText": "Differentiate between Exothermic and Endothermic chemical reactions with one chemical equation for each.",
+            "options": None,
+            "correctAnswer": "Exothermic releases heat (e.g., C + O₂ -> CO₂ + Heat). Endothermic absorbs heat (e.g., CaCO₃ + Heat -> CaO + CO₂).",
+            "explanation": "Exothermic reactions release thermal energy (ΔH < 0), while endothermic reactions absorb heat from surroundings (ΔH > 0).",
+            "topic": "Chemical Reactions",
+            "marks": 2,
+        },
+        {
+            "type": "saq",
+            "questionText": "Define a Neutralization Reaction and write the balanced chemical equation when Sodium Hydroxide reacts with Hydrochloric Acid.",
+            "options": None,
+            "correctAnswer": "A neutralization reaction is when an acid reacts with a base to form salt and water. Equation: NaOH + HCl -> NaCl + H₂O.",
+            "explanation": "H⁺ ions from the acid combine with OH⁻ ions from the base to produce neutral H₂O molecules.",
+            "topic": "Acids, Bases & Salts",
+            "marks": 2,
+        },
+        {
+            "type": "saq",
+            "questionText": "Explain the difference between Physical and Chemical Changes with two everyday examples for each.",
+            "options": None,
+            "correctAnswer": "Physical Change: Reversible, no new substance formed (e.g. melting of ice, tearing of paper). Chemical Change: Irreversible, new substance formed with new properties (e.g. rusting of iron, burning of wood).",
+            "explanation": "Physical changes alter state/shape without altering molecular composition. Chemical changes form new molecular bonds.",
+            "topic": "Physical and Chemical Changes",
+            "marks": 2,
+        },
+        {
+            "type": "saq",
+            "questionText": "Why are gold and platinum used to make jewelry, and why is copper used for electrical cables?",
+            "options": None,
+            "correctAnswer": "Gold and platinum are highly unreactive (noble metals), lustrous, and do not corrode. Copper has high electrical conductivity and ductility, making it ideal for wires.",
+            "explanation": "Gold/platinum resist oxidation from air and moisture. Copper provides minimal electrical resistance.",
+            "topic": "Metals and Non-Metals",
+            "marks": 2,
+        },
+        {
+            "type": "saq",
+            "questionText": "Explain the Greenhouse Effect and name two major greenhouse gases responsible for global temperature rise.",
+            "options": None,
+            "correctAnswer": "The greenhouse effect is the trapping of sun's infrared heat by atmospheric gases, keeping Earth warm. Two major greenhouse gases: Carbon Dioxide (CO₂) and Methane (CH₄).",
+            "explanation": "Excessive accumulation of greenhouse gases from fossil fuel combustion intensifies atmospheric heat retention.",
+            "topic": "Environmental Chemistry",
+            "marks": 2,
+        },
+    ],
+    "biology": [
+        # 1-5: MCQs (1 Mark each)
+        {
+            "type": "mcq",
+            "questionText": "Which cell organelle is commonly referred to as the 'Powerhouse of the Cell'?",
+            "options": ["A) Mitochondria", "B) Ribosome", "C) Golgi Apparatus", "D) Nucleus"],
+            "correctAnswer": "A",
+            "explanation": "Mitochondria generate cellular energy in the form of ATP through cellular respiration.",
+            "topic": "Cell Structure & Function",
+            "marks": 1,
+        },
+        {
+            "type": "mcq",
+            "questionText": "Which green pigment in chloroplasts absorbs solar energy during photosynthesis?",
+            "options": ["A) Chlorophyll", "B) Carotenoid", "C) Xanthophyll", "D) Anthocyanin"],
+            "correctAnswer": "A",
+            "explanation": "Chlorophyll trapped within chloroplast thylakoids absorbs photons to drive photochemical reactions.",
+            "topic": "Nutrition in Plants",
+            "marks": 1,
+        },
+        {
+            "type": "mcq",
+            "questionText": "Which blood vessels carry oxygenated blood from the heart to all body tissues?",
+            "options": ["A) Arteries", "B) Veins", "C) Capillaries", "D) Lymphatics"],
+            "correctAnswer": "A",
+            "explanation": "Arteries (except the pulmonary artery) transport oxygen-rich blood under high pressure away from the heart.",
+            "topic": "Transportation in Animals",
+            "marks": 1,
+        },
+        {
+            "type": "mcq",
+            "questionText": "Which unicellular fungus is used in baking and commercial alcohol production via fermentation?",
+            "options": ["A) Yeast", "B) Penicillium", "C) Amoeba", "D) Rhizobium"],
+            "correctAnswer": "A",
+            "explanation": "Yeast (Saccharomyces cerevisiae) ferments sugars into ethanol and CO₂ anaerobically.",
+            "topic": "Microorganisms",
+            "marks": 1,
+        },
+        {
+            "type": "mcq",
+            "questionText": "Which part of the human brain controls vital involuntary functions like heartbeat and breathing?",
+            "options": ["A) Medulla Oblongata", "B) Cerebrum", "C) Cerebellum", "D) Hypothalamus"],
+            "correctAnswer": "A",
+            "explanation": "The medulla oblongata in the brainstem regulates autonomous cardiovascular and respiratory centers.",
+            "topic": "Control & Coordination",
+            "marks": 1,
+        },
+        # 6-10: SAQs (2 Marks each)
+        {
+            "type": "saq",
+            "questionText": "Explain the process of Photosynthesis and write the overall balanced chemical equation.",
+            "options": None,
+            "correctAnswer": "Photosynthesis is the process by which green plants convert CO₂ and water into glucose and oxygen using sunlight and chlorophyll. Equation: 6CO₂ + 6H₂O + Sunlight -> C₆H₁₂O₆ + 6O₂.",
+            "explanation": "Light reactions produce ATP/NADPH, which fix CO₂ into carbohydrates in dark reactions.",
+            "topic": "Photosynthesis",
+            "marks": 2,
+        },
+        {
+            "type": "saq",
+            "questionText": "Explain the role of Bile Juice in human digestion and state where it is produced and stored.",
+            "options": None,
+            "correctAnswer": "Bile juice emulsifies large fat globules into smaller droplets and makes the medium alkaline for pancreatic enzymes. Produced by Liver, stored in Gallbladder.",
+            "explanation": "Bile salts lower surface tension to emulsify lipids for lipase action. Synthesized in liver hepatocytes.",
+            "topic": "Human Digestion",
+            "marks": 2,
+        },
+        {
+            "type": "saq",
+            "questionText": "Differentiate between Aerobic and Anaerobic Respiration in terms of oxygen requirement and energy yield (ATP).",
+            "options": None,
+            "correctAnswer": "Aerobic Respiration: Occurs in presence of O₂, complete oxidation of glucose, yields 36-38 ATP. Anaerobic Respiration: Occurs in absence of O₂, incomplete oxidation, yields only 2 ATP.",
+            "explanation": "Aerobic respiration completes via Krebs cycle in mitochondria; anaerobic pathway concludes with lactic acid or ethanol.",
+            "topic": "Respiration in Organisms",
+            "marks": 2,
+        },
+        {
+            "type": "saq",
+            "questionText": "What is the function of the Ozone layer (O₃) in Earth's stratosphere and what causes its depletion?",
+            "options": None,
+            "correctAnswer": "The ozone layer shields life on Earth by absorbing harmful ultraviolet (UV-B) radiation. Depleted by Chlorofluorocarbons (CFCs) and halons.",
+            "explanation": "Chlorine radicals released from photolyzed CFCs catalytically destroy stratospheric ozone molecules.",
+            "topic": "Our Environment",
+            "marks": 2,
+        },
+        {
+            "type": "saq",
+            "questionText": "Differentiate between Autotrophic and Heterotrophic modes of nutrition with two examples for each.",
+            "options": None,
+            "correctAnswer": "Autotrophic: Organisms synthesize their own food from inorganic raw materials (e.g. green plants, cyanobacteria). Heterotrophic: Organisms depend on other organisms for food (e.g. humans, lions, fungi).",
+            "explanation": "Autotrophs harness radiant or chemical energy to fix carbon; heterotrophs ingest pre-formed organic matter.",
+            "topic": "Nutrition Modes",
+            "marks": 2,
+        },
+    ],
+    "science": [
+        # 1-5: MCQs (1 Mark each)
+        {
+            "type": "mcq",
+            "questionText": "Which cell organelle is commonly referred to as the 'Powerhouse of the Cell'?",
+            "options": ["A) Mitochondria", "B) Ribosome", "C) Golgi Apparatus", "D) Nucleus"],
+            "correctAnswer": "A",
+            "explanation": "Mitochondria generate cellular energy in the form of ATP through cellular respiration.",
+            "topic": "Cell Biology",
+            "marks": 1,
+        },
+        {
+            "type": "mcq",
+            "questionText": "What is the chemical formula of common baking soda?",
+            "options": ["A) NaHCO₃", "B) Na₂CO₃", "C) NaCl", "D) NaOH"],
+            "correctAnswer": "A",
+            "explanation": "Sodium hydrogen carbonate (Sodium Bicarbonate, NaHCO₃) is baking soda.",
+            "topic": "Acids, Bases & Salts",
+            "marks": 1,
+        },
+        {
+            "type": "mcq",
+            "questionText": "Which law of motion gives the fundamental definition of Force as F = ma?",
+            "options": [
+                "A) Newton's Second Law",
+                "B) Newton's First Law",
+                "C) Newton's Third Law",
+                "D) Law of Gravitation"
+            ],
+            "correctAnswer": "A",
+            "explanation": "Newton's Second Law states that the rate of change of momentum is proportional to applied force (F = ma).",
+            "topic": "Laws of Motion",
+            "marks": 1,
+        },
+        {
+            "type": "mcq",
+            "questionText": "Which metal remains in liquid state at standard room temperature?",
+            "options": ["A) Mercury (Hg)", "B) Sodium (Na)", "C) Lead (Pb)", "D) Gallium (Ga)"],
+            "correctAnswer": "A",
+            "explanation": "Mercury is the only elemental metal that is liquid at standard room temperature (25°C).",
+            "topic": "Metals and Non-Metals",
+            "marks": 1,
+        },
+        {
+            "type": "mcq",
+            "questionText": "The phenomenon of splitting white light into its component colors through a prism is called:",
+            "options": ["A) Dispersion", "B) Refraction", "C) Total Internal Reflection", "D) Diffraction"],
+            "correctAnswer": "A",
+            "explanation": "Dispersion is the separation of white light into its spectrum of colors due to varying wavelengths.",
+            "topic": "Light and Optics",
             "marks": 1,
         },
         # 6-10: SAQs (2 Marks each)
@@ -1739,6 +2026,7 @@ def build_fallback_questions(
     class_grade: str = "Class 3",
     limit: int = 5,
     force_mcq: bool = False,
+    branch: str | None = None,
 ) -> list[dict]:
     """Generates deterministic, grade-appropriate, subject-matched curriculum questions
     matching the exact question count requested across 3 distinct tiers:
@@ -1748,6 +2036,7 @@ def build_fallback_questions(
     """
     clean_subj = (subject or "General Assessment").lower().strip()
     clean_grade = (class_grade or "").lower().strip()
+    clean_branch = (branch or "").lower().strip()
 
     # Accurate grade level classifier
     is_kid = False
@@ -1777,7 +2066,9 @@ def build_fallback_questions(
 
     matched_questions: list[dict] = []
 
-    if "chem" in clean_subj:
+    if clean_branch in ["physics", "chemistry", "biology"]:
+        matched_questions = bank_map.get(clean_branch, bank_map.get("science", []))
+    elif "chem" in clean_subj:
         matched_questions = bank_map.get("chemistry", bank_map.get("science", []))
     elif "phys" in clean_subj:
         matched_questions = bank_map.get("physics", bank_map.get("science", []))
