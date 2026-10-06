@@ -33,8 +33,12 @@ CRITICAL ASSESSMENT RULES (MANDATORY):
        - If developing / missed: Be supportive and constructive (e.g. "Don't worry, every champion learns by trying! You gave a good attempt, but {topic} has a few tricky definitions that need a quick brush-up. With a little focused review, you'll master this in no time!").
      * "recommendedAction": An actionable, encouraging next step that recommends reading the specific subject/topic textbook chapter and practicing targeted exercises:
        - (e.g. "Open your {subject} textbook chapter on {topic}, read through the key summary formulas and rules, and solve 3-4 practice problems to ace your next sprint!").
-     * For topics where questions were answered correctly: assign status="mastered" (or "reinforce") with masteryPercentage between 85 and 100.
-     * For topics where questions were missed or incorrect: assign status="critical_gap" with masteryPercentage between 0 and 40.
+     * Calculate exact topic-level accuracy (Marks Awarded / Total Marks for that topic * 100):
+       - If all questions in the topic are fully correct (100% accuracy): assign status="mastered" and masteryPercentage=100.
+       - If score in topic is between 75% and 99%: assign status="mastered" and masteryPercentage=exact calculated integer.
+       - If score in topic is between 50% and 74%: assign status="reinforce" and masteryPercentage=exact calculated integer.
+       - If score in topic is < 50%: assign status="critical_gap" and masteryPercentage=exact calculated integer.
+     * If overall exam accuracy is 100%, all tested topics must be assigned masteryPercentage=100.
 
 Always respond with a single valid JSON object and nothing else.
 """

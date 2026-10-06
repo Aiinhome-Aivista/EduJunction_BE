@@ -269,10 +269,10 @@ def generate_quick_test():
             title = scheduled_exam.title if scheduled_exam else f"{student.class_grade} {student.target_board} Adventure Challenge ({total_exam_marks} Marks)"
             time_limit = (scheduled_exam.time_limit_minutes if scheduled_exam else 10)
         elif is_senior:
-            title = scheduled_exam.title if scheduled_exam else f"{student.class_grade} {student.target_board} {primary_subject} ({requested_diff.upper()}) Diagnostic {total_exam_marks}-Mark Exam"
+            title = scheduled_exam.title if scheduled_exam else f"{student.class_grade} {student.target_board} {primary_subject} ({requested_diff.upper()}) {total_exam_marks}-Mark Exam"
             time_limit = (scheduled_exam.time_limit_minutes if scheduled_exam else 25)
         else:
-            title = scheduled_exam.title if scheduled_exam else f"{student.class_grade} {student.target_board} Quick Diagnostic Assessment ({total_exam_marks} Marks)"
+            title = scheduled_exam.title if scheduled_exam else f"{student.class_grade} {student.target_board} Quick Assessment ({total_exam_marks} Marks)"
             time_limit = (scheduled_exam.time_limit_minutes if scheduled_exam else 15)
 
         from model.models import Question

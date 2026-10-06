@@ -69,6 +69,7 @@ def submission_to_dict(submission: ExamSubmission, include_details: bool = True)
                 "referenceLinks": q.reference_links if q else [],
                 "topic": q.topic if q else (submission.exam.subject if submission.exam else "General"),
             })
+        evaluations_list.sort(key=lambda x: int(x.get("questionNumber") or 0))
 
     analysis_dict = {
         "overallBand": "Proficient",

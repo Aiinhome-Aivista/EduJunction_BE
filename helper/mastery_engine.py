@@ -35,14 +35,12 @@ def recalculate_student_mastery_from_evaluations(session: Session, student_id: i
     for sub in subs:
         evals = session.query(QuestionEvaluation).filter(QuestionEvaluation.submission_id == sub.id).all()
         for ev in evals:
-            q = session.get(Question, ev.question_id)
-            if not q or not q.topic:
-                continue
-            topic = q.topic.strip()
-            marks_possible = q.marks or 1
-            marks_awarded = ev.marks_awarded or (marks_possible if ev.is_correct else 0)
+            q = session.get(Question, ev.question_id) if getattr(ev, 'question_id', None) else None
+            topic = ((ev.topic if hasattr(ev, 'topic') and ev.topic else None) or (q.topic if q else None) or "Core Fundamentals").strip()
+            marks_possible = float(getattr(ev, 'marks', None) or (q.marks if q else 1) or 1)
+            marks_awarded = float(ev.marks_awarded if ev.marks_awarded is not None else (marks_possible if ev.is_correct else 0))
             topic_stats[topic]["awarded"] += marks_awarded
-            topic_stats[topic]["total"] += marks_possible
+            topic_stats[topic]["total"] += max(marks_possible, 1.0)
             topic_stats[topic]["attempts"] += 1
             if ev.is_correct:
                 topic_stats[topic]["correct"] += 1
@@ -75,7 +73,10 @@ def recalculate_student_mastery_from_evaluations(session: Session, student_id: i
             row.status = status
             row.last_assessed_at = now_ist()
             
-        graph_db.upsert_mastery_edge(str(student_id), topic, float(pct))
+        try:
+            graph_db.upsert_mastery_edge(str(student_id), topic, float(pct))
+        except Exception:
+            pass
 
     session.flush()
 

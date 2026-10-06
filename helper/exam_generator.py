@@ -736,9 +736,9 @@ def generate_exam(
         elif chapter_topic:
             exam_title = f"{class_grade} {board} {subject}: {chapter_topic} Remedial Sprint ({calculated_marks} Marks)"
         elif branch and branch.lower() != "all":
-            exam_title = f"{class_grade} {board} {subject} ({branch}) ({difficulty.upper()}) Diagnostic {calculated_marks}-Mark Exam"
+            exam_title = f"{class_grade} {board} {subject} ({branch}) ({difficulty.upper()}) {calculated_marks}-Mark Exam"
         else:
-            exam_title = f"{class_grade} {board} {subject} ({difficulty.upper()}) Diagnostic {calculated_marks}-Mark Exam"
+            exam_title = f"{class_grade} {board} {subject} ({difficulty.upper()}) {calculated_marks}-Mark Exam"
 
     # Compute 100% Dynamic Origins Breakdown
     final_db_count = sum(1 for q in questions_data if q.get("origin") == "db")

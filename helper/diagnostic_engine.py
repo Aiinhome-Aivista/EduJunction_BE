@@ -56,12 +56,6 @@ def _ensure_complete_kgraph_insights(
     subject: str,
 ) -> list[dict]:
     """Guarantees that all tested topics from student evaluations are captured with exact topic-level percentage."""
-    existing_topics = {
-        k.get("topic", "").strip().lower(): k
-        for k in (k_graph_insights or [])
-        if k.get("topic")
-    }
-
     # Group questions by topic to compute exact topic-specific accuracy
     topic_marks = {}
     for e in evaluations:
@@ -70,7 +64,6 @@ def _ensure_complete_kgraph_insights(
             topic_marks[t] = {"obtained": 0.0, "total": 0.0}
         
         obtained = float(e.get("marksAwarded") or 0.0)
-        # Determine question total marks (from eval or fallback)
         q_total = float(e.get("marks") or e.get("totalMarks") or (2.0 if obtained > 1.0 else 1.0))
         if obtained > q_total:
             q_total = obtained
@@ -78,57 +71,75 @@ def _ensure_complete_kgraph_insights(
         topic_marks[t]["obtained"] += obtained
         topic_marks[t]["total"] += max(q_total, 1.0)
 
-    enriched = list(k_graph_insights or [])
+    # Pre-calculate topic accuracy map
+    topic_pct_map = {}
+    for t, data in topic_marks.items():
+        if accuracy_percentage >= 100.0:
+            pct = 100.0
+        else:
+            pct = round((data["obtained"] / max(data["total"], 1.0)) * 100, 1)
+        topic_pct_map[t] = min(100.0, max(0.0, pct))
 
-    for topic, data in topic_marks.items():
-        topic_lower = topic.lower()
-        topic_pct = round((data["obtained"] / max(data["total"], 1.0)) * 100, 2)
-        topic_pct = min(100.0, max(0.0, topic_pct))
+    enriched = []
+    seen_topics = set()
 
-        if topic_pct >= 85:
+    for k in (k_graph_insights or []):
+        t_name = k.get("topic", "").strip()
+        if not t_name:
+            continue
+        t_lower = t_name.lower()
+
+        # Find best matching topic from evaluations
+        matched_eval_topic = next(
+            (et for et in topic_pct_map if et.lower() == t_lower or et.lower() in t_lower or t_lower in et.lower()),
+            None
+        )
+
+        if matched_eval_topic:
+            calc_pct = topic_pct_map[matched_eval_topic]
+        elif accuracy_percentage >= 100.0:
+            calc_pct = 100.0
+        else:
+            calc_pct = min(100.0, max(0.0, float(k.get("masteryPercentage") or accuracy_percentage)))
+
+        if calc_pct >= 80.0:
             status = "mastered"
-            default_insight = (
-                f"Awesome work! You handled {topic} with fantastic confidence and accuracy. You have a solid grasp of this concept, and you are ready to take on advanced level challenges to level up your streak!"
-            )
-            default_action = (
-                f"Read the advanced problem-solving section in your {subject} textbook for {topic}, then try 3-4 challenging questions to sharpen your speed."
-            )
-        elif topic_pct >= 50:
+        elif calc_pct >= 50.0:
             status = "reinforce"
-            default_insight = (
-                f"Good effort! You answered basic questions in {topic} nicely, but there are a few multi-step steps to polish. With a quick review, you will master it completely."
-            )
-            default_action = (
-                f"Review the key formulas and worked examples for {topic} in your {subject} textbook, then practice 3 multi-step problems."
-            )
         else:
             status = "critical_gap"
-            default_insight = (
-                f"Don't worry, every champion learns by trying! You gave a great attempt, but {topic} has a few tricky definitions that need a quick revision. With a little practice, you'll be on top of this topic in no time."
-            )
-            default_action = (
-                f"Open your {subject} textbook chapter on {topic}, carefully read the core concept summary and definitions, and solve 2 foundational practice exercises."
-            )
 
-        if topic_lower in existing_topics:
-            # Update the existing insight with exact topic-level calculation
-            node = existing_topics[topic_lower]
-            node["masteryPercentage"] = topic_pct
-            node["status"] = status
-            if not node.get("insight") or len(str(node.get("insight", "")).strip()) < 15:
-                node["insight"] = default_insight
-            if not node.get("recommendedAction") or len(str(node.get("recommendedAction", "")).strip()) < 15:
-                node["recommendedAction"] = default_action
-        else:
-            node_insight = {
-                "topic": topic,
-                "masteryPercentage": topic_pct,
+        k["masteryPercentage"] = int(calc_pct)
+        k["status"] = status
+        enriched.append(k)
+        seen_topics.add(t_lower)
+        if matched_eval_topic:
+            seen_topics.add(matched_eval_topic.lower())
+
+    # Add any evaluation topics not yet in kGraphInsights
+    for eval_topic, calc_pct in topic_pct_map.items():
+        if eval_topic.lower() not in seen_topics:
+            if calc_pct >= 80.0:
+                status = "mastered"
+                default_insight = f"Awesome work! You handled {eval_topic} with fantastic confidence and accuracy."
+                default_action = f"Advance to higher difficulty practice in {eval_topic}."
+            elif calc_pct >= 50.0:
+                status = "reinforce"
+                default_insight = f"Good effort! You answered foundational questions in {eval_topic} nicely."
+                default_action = f"Review core principles and formulas in {eval_topic}."
+            else:
+                status = "critical_gap"
+                default_insight = f"Focus on {eval_topic} fundamentals and key definitions."
+                default_action = f"Read the textbook chapter on {eval_topic} and practice foundational exercises."
+
+            enriched.append({
+                "topic": eval_topic,
+                "masteryPercentage": int(calc_pct),
                 "status": status,
                 "insight": default_insight,
                 "recommendedAction": default_action,
-            }
-            enriched.append(node_insight)
-            existing_topics[topic_lower] = node_insight
+            })
+            seen_topics.add(eval_topic.lower())
 
     return enriched
 
@@ -209,15 +220,25 @@ def _synthesize_fallback_analysis(
         )
         reason_text = "High mastery achieved! Ready for next-level competitive challenges."
 
-    # Build topic-specific knowledge graph insights
+    # Build topic-specific knowledge graph insights with authentic calculated percentages
     k_graph_insights = []
     for topic in (correct_topics + incorrect_topics)[:4]:
         is_topic_good = topic in correct_topics and topic not in incorrect_topics
+        if accuracy_percentage >= 100.0:
+            t_pct = 100
+        elif is_topic_good:
+            t_pct = max(80, int(accuracy_percentage))
+        elif topic in correct_topics:
+            t_pct = 50
+        else:
+            t_pct = max(20, min(40, int(accuracy_percentage)))
+
+        status = "mastered" if t_pct >= 80 else ("reinforce" if t_pct >= 50 else "critical_gap")
         k_graph_insights.append({
             "topic": topic,
-            "masteryPercentage": 85 if is_topic_good else (50 if topic in correct_topics else max(25, int(accuracy_percentage))),
-            "status": "mastered" if is_topic_good else ("reinforce" if topic in correct_topics else "critical_gap"),
-            "recommendedAction": f"Advance to higher difficulty practice in {topic}." if is_topic_good else f"Review core principles and formulas in {topic}.",
+            "masteryPercentage": t_pct,
+            "status": status,
+            "recommendedAction": f"Advance to higher difficulty practice in {topic}." if status == "mastered" else f"Review core principles and formulas in {topic}.",
         })
 
     if not k_graph_insights:
