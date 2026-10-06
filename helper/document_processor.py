@@ -228,9 +228,20 @@ DISCLAIMER_PATTERNS = [
     r"editorial\s+board\s*:",
     r"\bforeword\b",
     r"\bpreface\b",
+    r"\babout\s+(?:the\s+)?book\b",
+    r"\bnote\s+(?:for|to)\s+(?:the\s+)?teachers?\b",
+    r"\brationalisation\s+of\s+content\b",
     r"textbook\s+development\s+committee",
+    r"textbook\s+development\s+team",
     r"printed\s+on\s+\d+\s*gsm\s+paper",
     r"reprinted\s+in\s+\d{4}",
+    r"\bconstitution\s+of\s+india\b",
+    r"\bfundamental\s+duties\b",
+    r"\blearning\s+further\s+section\b",
+    r"\bpedagogical\s+(?:framework|approach|guidelines)\b",
+    r"\bhow\s+to\s+use\s+this\s+textbook\b",
+    r"\bstructure\s+of\s+the\s+textbook\b",
+    r"\bcuriosity\s*[:\-–]\s*textbook\s+of\s+science\b",
     r"www\.(?:tiwariacademy|vedantu|mycbseguide|selfstudys|learncbse|aglasem|topperlearning|byjus|meritnation)\.com",
     r"downloaded\s+from\s+www\.",
     r"visit\s+website\s*:\s*www\.",
@@ -238,10 +249,47 @@ DISCLAIMER_PATTERNS = [
 ]
 
 
+def extract_table_of_contents_chapters(raw_text: str) -> list[dict]:
+    """Scans for CONTENTS or Table of Contents table and extracts structured list of chapters."""
+    if not raw_text:
+        return []
+
+    # Pattern to match "CONTENTS" or "TABLE OF CONTENTS" or "INDEX"
+    toc_match = re.search(r'(?i)\b(?:CONTENTS|TABLE\s+OF\s+CONTENTS|INDEX)\b([\s\S]{100,5000}?)(?=\bCHAPTER\s+1\b|\bUNIT\s+1\b|\bLESSON\s+1\b|\Z)', raw_text)
+    chapters = []
+    toc_text = toc_match.group(1) if toc_match else raw_text[:12000]
+
+    chap_pattern = re.compile(
+        r'(?i)(?:CHAPTER|Chapter|UNIT|Unit|LESSON|Lesson)\s*(\d+|[IVXLCDM]+)[\s\:\.\-–—\n]+([^\n\d]{3,80})(?:\s+(\d+))?',
+        re.MULTILINE
+    )
+
+    for m in chap_pattern.finditer(toc_text):
+        c_num = m.group(1).strip()
+        c_title = m.group(2).strip()
+        c_title = re.sub(r'^(?:is\s+|are\s+|the\s+role\s+of\s+)', '', c_title, flags=re.IGNORECASE)
+        c_title = re.sub(r'[\.\s\d]+$', '', c_title).strip()
+        if len(c_title) >= 3 and not any(k in c_title.lower() for k in ["foreword", "preface", "about the book", "contents", "index"]):
+            chapters.append({
+                "number": int(c_num) if c_num.isdigit() else c_num,
+                "title": c_title
+            })
+
+    return chapters
+
+
 def strip_non_academic_preamble(raw_text: str) -> str:
     """Removes textbook publisher prefaces, copyright disclaimers, ISBNs, and editorial notes."""
     if not raw_text:
         return ""
+
+    # 1. Front-Matter Auto-Purge: If full textbook with Chapter 1, slice off all preceding preface / about book pages
+    first_chap_match = re.search(r'(?i)(?:\n|\A)\s*(?:CHAPTER|Chapter|UNIT|Unit|LESSON|Lesson)\s*[\-:]?\s*1[\s\:\.\-–—\n]+([^\n]{3,80})', raw_text)
+    if first_chap_match and first_chap_match.start() > 100:
+        preamble_text = raw_text[:first_chap_match.start()]
+        if any(re.search(pat, preamble_text, re.IGNORECASE) for pat in [r'\bforeword\b', r'\babout\s+the\s+book\b', r'\bcontents\b', r'\bpreface\b', r'\btextbook\s+development\b', r'\bnote\s+for\s+the\s+teacher\b']):
+            # Slice strictly from Chapter 1 onwards
+            raw_text = raw_text[first_chap_match.start():]
 
     paragraphs = raw_text.split("\n\n")
     cleaned_paragraphs = []
@@ -252,12 +300,10 @@ def strip_non_academic_preamble(raw_text: str) -> str:
             continue
 
         para_lower = para_clean.lower()
-        # Check if entire paragraph is copyright/preface boilerplate
         is_junk = any(re.search(pat, para_lower) for pat in DISCLAIMER_PATTERNS)
-        if is_junk and len(para_clean) < 800:
+        if is_junk:
             continue
 
-        # If long paragraph has some disclaimer lines, strip matching lines
         lines = para_clean.splitlines()
         valid_lines = []
         for line in lines:
@@ -270,6 +316,8 @@ def strip_non_academic_preamble(raw_text: str) -> str:
 
     return "\n\n".join(cleaned_paragraphs)
 
+
+clean_text = strip_non_academic_preamble
 
 VALID_IMAGE_EXTS = {"png", "jpg", "jpeg", "webp"}
 

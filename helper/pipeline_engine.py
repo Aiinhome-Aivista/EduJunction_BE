@@ -202,6 +202,9 @@ THE 4 GOLDEN RULES (CRITICAL CONSTRAINTS):
 3. STANDALONE QUESTIONS: Every question must be fully complete on its own. Never output bare prompts like 'Fill in the blank.' or 'the following questions:'. Combine the prompt with the target sentence.
 4. PRESERVE MATH & SCIENCE: Keep LaTeX expressions (\\frac, \\sqrt, x^2, \\Omega, \\alpha, \\beta), chemical notations (H2O, CaCl2, CO2), and units intact.
 5. STRICT MCQ & SAQ ACCURACY: If a question is open-ended or descriptive (e.g., 'What is the life cycle of...', 'Rewrite...', 'Explain...'), set type='SAQ' or 'Objective' with options=[]. NEVER create an MCQ with irrelevant or mismatched options. For any 'MCQ', all 4 options MUST be directly relevant to the question topic, and 'correct_answer' MUST be one of those exact 4 options.
+6. STRICT CURRICULUM SUBJECT MATTER GROUNDING (NEVER ASK ABOUT TEXTBOOK STRUCTURE OR PEDAGOGY):
+   - NEVER generate questions about the physical book, book design, textbook titles (e.g. 'Curiosity', 'Beehive'), layout, pedagogical sections (e.g. 'Learning further', 'role of Summary section', 'Teacher notes', 'activities section purpose', 'integrated approach in this book').
+   - ONLY generate questions testing pure scientific, mathematical, or academic concept facts (e.g. Magnetic Poles, Electric Current, Plant Structure, Separation Methods, Ecosystems).
 
 JSON Schema & Example:
 {
@@ -638,11 +641,29 @@ def sanitize_question_item(
     sub_lower = str(meta.get("subject") or "").lower()
     is_lang_subject = any(lang in sub_lower for lang in ["hindi", "bengali", "bangla", "sanskrit", "arabic", "urdu"])
 
-    # 0. Anti-Garbage & Copyright Guardrail: Discard any question generated from publisher disclaimers
+    # 0. Anti-Garbage, Meta-Textbook, & Copyright Guardrail
     q_lower = raw_q_text.lower()
     from helper.document_processor import DISCLAIMER_PATTERNS
     if any(re.search(pat, q_lower) for pat in DISCLAIMER_PATTERNS):
         return None
+
+    # Reject questions testing textbook design / physical book structure / pedagogical meta-text
+    META_BOOK_PATTERNS = [
+        r"\blearning\s+further\b",
+        r"\brole\s+of\s+(?:the\s+)?['\"]?summary['\"]?\s+section\b",
+        r"\bstructure\s+and\s+purpose\s+of\s+the\b",
+        r"\btextbook\s+['\"]?curiosity['\"]?\b",
+        r"\babout\s+(?:the\s+)?book\b",
+        r"\bin\s+this\s+textbook\b",
+        r"\bsection\s+in\s+(?:the|each)\s+chapter\b",
+        r"\bintegrated\s+approach\s+in\s+science\s+teaching\b",
+        r"\bpedagogical\s+(?:approach|intent|framework)\b",
+        r"\bwhy\s+is\s+this\s+textbook\s+designed\b",
+        r"\bpurpose\s+of\s+the\s+['\"]?curiosity['\"]?\s+textbook\b",
+    ]
+    if any(re.search(pat, q_lower) for pat in META_BOOK_PATTERNS):
+        return None
+
     if "alternative concept" in q_lower or "null condition" in q_lower or "secondary effect" in q_lower:
         return None
     if len(raw_q_text) < 15 or len(raw_q_text.split()) < 3:
@@ -929,6 +950,12 @@ def sanitize_question_item(
         canonical_match = _find_best_canonical_topic(raw_topic, det_topics, threshold=0.40) if det_topics else None
         resolved_topic = canonical_match if canonical_match else raw_topic
 
+    raw_chapter = str(q.get("chapter_title") or q.get("chapter_name") or "").strip()
+    if raw_chapter:
+        clean_chap = re.sub(r'^(?:Chapter|Unit|Lesson)\s*\d+[\s\:\.\-–—]*', '', raw_chapter, flags=re.IGNORECASE).strip()
+    else:
+        clean_chap = title_name
+
     return {
         "id": f"gen_{index + 1}",
         "question": q_text,
@@ -939,6 +966,7 @@ def sanitize_question_item(
         "correct_answer": corr,
         "explanation": clean_expl,
         "topic_suggested": resolved_topic,
+        "chapter_name": clean_chap or title_name,
         "image_url": q.get("image_url") or q.get("imageUrl") or None,
     }
 
@@ -1108,8 +1136,15 @@ CRITICAL INSTRUCTIONS:
                 response_json = mistral_client.generate_json(system_prompt, user_prompt, temperature=0.30, scenario="pdf_generation")
                 sec_questions = response_json.get("questions", []) if isinstance(response_json, dict) else []
                 if isinstance(sec_questions, list) and sec_questions:
+                    chap_clean_label = sec_name.split(" (Section")[0] if " (Section" in sec_name else sec_name
+                    if ":" in chap_clean_label:
+                        chap_clean_label = chap_clean_label.split(":", 1)[1].strip()
+                    chap_clean_label = re.sub(r'^(?:Chapter|Unit|Lesson)\s*\d+[\s\:\.\-–—]*', '', chap_clean_label, flags=re.IGNORECASE).strip()
+
                     for sq in sec_questions:
-                        sq["chapter_title"] = sec_name.split(" (Section")[0] if " (Section" in sec_name else sec_name
+                        if isinstance(sq, dict):
+                            sq["chapter_title"] = chap_clean_label or sec_name
+                            sq["chapter_name"] = chap_clean_label or sec_name
                     raw_questions.extend(sec_questions)
                     print(f"    -> [{sec_name}] Synthesized {len(sec_questions)} unique question(s)")
             except Exception as e:
