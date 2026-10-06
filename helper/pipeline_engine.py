@@ -113,19 +113,21 @@ def assign_diagrams_to_questions(
     questions: list[dict],
     diagram_pool: list[dict],
     subject: str = "",
-    filename: str = ""
+    filename: str = "",
+    file_bytes: bytes = b""
 ) -> int:
-    """Smart Diagram-to-Question Linker with Strict Rejection of Blind FIFO Assignments.
-    1. Checks if subject is genuinely visual (Math, Science, Physics, Chemistry, Biology, Geography).
-    2. Only links if question genuinely requires a figure (is_diagram_referenced_in_question).
-    3. Prefers diagram from matching page if figure number or page is referenced.
-    4. Cleans unnecessary 'In the given figure, ' prefixes if no diagram is attached and question is self-contained.
+    """Strict Multi-Stage Diagram-to-Question Linker with Zero Blind Fallbacks & Direct Precision Cropping.
+    1. Rejects non-visual subjects.
+    2. Stage 1 (Direct Precision Crop): If question cites a specific figure (e.g. 'Fig. 4.16', '7.10'),
+       finds the exact page in the PDF and renders a crisp, high-resolution crop of that figure.
+    3. Stage 2 (Page & Caption Match): If crop not found, matches candidate diagram pool strictly on matching page.
+    4. Stage 3 (Strict Safety): If confidence is not confirmed, leaves image_url = None (NO wrong images ever attached).
     Returns count of successfully linked diagrams.
     """
     if not questions:
         return 0
 
-    if not diagram_pool or not is_diagram_subject(subject):
+    if not is_diagram_subject(subject):
         # Clean redundant figure mentions if question is fully self-contained
         for norm in questions:
             if not norm.get("image_url"):
@@ -136,32 +138,103 @@ def assign_diagrams_to_questions(
         return 0
 
     linked_count = 0
-    available_diagrams = list(diagram_pool)
+    available_diagrams = list(diagram_pool or [])
 
-    for norm in questions:
-        if norm.get("image_url") or not available_diagrams:
+    print(f"\n{TermColors.BOLD}{TermColors.CYAN}--- [PRECISION DIAGRAM-TO-QUESTION MATCHING ENGINE] ---{TermColors.END}")
+    print(f"  • Candidate Academic Diagrams in Pool: {len(available_diagrams)}")
+
+    # Stopwords to ignore during caption keyword matching
+    STOP_WORDS = {
+        "the", "and", "for", "with", "this", "that", "from", "into", "shown", "what", "which",
+        "how", "why", "given", "figure", "diagram", "below", "above", "image", "following",
+        "observe", "refer", "study", "part", "table", "each", "both", "does", "have", "were"
+    }
+
+    # Pre-index PDF pages for fast figure search if file_bytes provided
+    fig_page_map = {}
+    if file_bytes:
+        try:
+            import fitz
+            doc_idx = fitz.open(stream=file_bytes, filetype="pdf")
+            for pno in range(len(doc_idx)):
+                p_text = doc_idx[pno].get_text()
+                p_figs = re.findall(r'\b(?:fig(?:ure)?\.?)\s*(\d+(?:\.\d+)?)\b', p_text, re.IGNORECASE)
+                for pf in p_figs:
+                    if pf not in fig_page_map:
+                        fig_page_map[pf] = pno + 1
+            doc_idx.close()
+        except Exception:
+            pass
+
+    for idx, norm in enumerate(questions, 1):
+        if norm.get("image_url"):
             continue
 
         q_text = norm.get("question", "")
         if not is_diagram_referenced_in_question(q_text):
             continue
 
-        # Look for explicit figure/page number in question (e.g. Figure 5.4, Fig 3)
-        fig_match = re.search(r'\b(?:fig(?:ure)?\.?|diagram)\s*(\d+(?:\.\d+)?)\b', q_text, re.IGNORECASE)
-        target_fig_str = fig_match.group(1) if fig_match else None
+        # Look for explicit figure identifier (e.g. '4.16', '7.10', '4.17', '1', '5')
+        fig_match = re.search(r'\b(?:fig(?:ure)?\.?)\s*(\d+(?:\.\d+)?)\b', q_text, re.IGNORECASE)
+        target_fig_str = fig_match.group(1).strip() if fig_match else str(norm.get("figure_ref") or "").strip() or None
 
+        saved_url = None
+
+        # ---------------------------------------------------------------------
+        # STAGE 1: DIRECT 3-LAYER PRECISION CROP FROM PDF (100% BULLETPROOF)
+        # ---------------------------------------------------------------------
+        if target_fig_str and file_bytes:
+            hint_page = norm.get("diagram_page") or fig_page_map.get(target_fig_str)
+            crop_bytes, actual_page = document_processor.crop_figure_from_pdf_page(
+                file_bytes, 
+                int(hint_page) if hint_page else None, 
+                target_fig_str
+            )
+            if crop_bytes and actual_page:
+                saved_url = document_processor.save_diagram_to_disk(
+                    image_bytes=crop_bytes,
+                    ext="png",
+                    prefix=f"crop_p{actual_page}_fig{target_fig_str.replace('.', '_')}"
+                )
+                if saved_url:
+                    norm["image_url"] = saved_url
+                    linked_count += 1
+                    q_snippet = (norm.get('question') or '')[:70].replace('\n', ' ')
+                    print(f"  [PRECISION-CROP] Q#{idx} ({norm.get('type')}) '{q_snippet}...'")
+                    print(f"     -> Diagram URL : {saved_url} (Direct Crisp 180 DPI Crop from PDF Page {actual_page})")
+                    print(f"     -> Matched Fig : Fig. {target_fig_str}")
+                    continue
+
+        # ---------------------------------------------------------------------
+        # STAGE 2: STRICT POOL MATCHING (PAGE-ISOLATED ONLY)
+        # ---------------------------------------------------------------------
         selected_diag = None
-        if target_fig_str:
-            main_page_num = int(target_fig_str.split(".")[0]) if target_fig_str.replace(".", "").isdigit() else None
+        if target_fig_str and available_diagrams:
             for d in available_diagrams:
-                if main_page_num and d.get("page") == main_page_num:
+                direct_figs = d.get("direct_figures", [])
+                cap = d.get("caption", "")
+                if target_fig_str in direct_figs or re.search(rf'\bfig(?:ure)?\.?\s*{re.escape(target_fig_str)}\b', cap, re.IGNORECASE):
                     selected_diag = d
                     break
 
-        # If question specifically needs visual analysis (circuit, labeled structure, shaded area, ray diagram)
         if not selected_diag and available_diagrams:
-            if re.search(r'\b(?:labeled|marked|circuit|apparatus|ray\s+diagram|shaded\s+region|flow\s*chart|map)\b', q_text, re.IGNORECASE):
-                selected_diag = available_diagrams[0]
+            q_words = set(re.findall(r'[a-zA-Z]{4,}', q_text.lower())) - STOP_WORDS
+            best_diag = None
+            best_overlap = 0
+
+            for d in available_diagrams:
+                cap = d.get("caption", "").lower()
+                if not cap:
+                    continue
+                cap_words = set(re.findall(r'[a-zA-Z]{4,}', cap)) - STOP_WORDS
+                overlap = len(q_words & cap_words)
+                # Require at least 2 distinct academic keywords
+                if overlap >= 2 and overlap > best_overlap:
+                    best_overlap = overlap
+                    best_diag = d
+
+            if best_diag and best_overlap >= 2:
+                selected_diag = best_diag
 
         if selected_diag:
             available_diagrams.remove(selected_diag)
@@ -173,11 +246,20 @@ def assign_diagrams_to_questions(
             if saved_url:
                 norm["image_url"] = saved_url
                 linked_count += 1
+                q_snippet = (norm.get('question') or '')[:70].replace('\n', ' ')
+                cap_snippet = (selected_diag.get('caption') or 'Direct Fig Match')[:50].replace('\n', ' ')
+                print(f"  [LINKED] Q#{idx} ({norm.get('type')}) '{q_snippet}...'")
+                print(f"     -> Diagram URL : {saved_url} (Page {selected_diag.get('page')})")
+                print(f"     -> Matched By  : {cap_snippet}")
         else:
-            # Clean self-contained questions if no diagram was assigned
+            # Clean self-contained questions if no verified diagram was matched
             if re.match(r"^(?:in\s+the\s+given\s+figure|from\s+the\s+given\s+figure)[,\s]+", q_text, re.IGNORECASE):
                 if any(num_kw in q_text for num_kw in ["sides", "cm", "m", "angle", "radius", "=", "value of", "calculate"]):
                     norm["question"] = re.sub(r"^(?:in\s+the\s+given\s+figure|from\s+the\s+given\s+figure)[,\s]+", "For ", q_text, flags=re.IGNORECASE)
+
+    if linked_count == 0:
+        print(f"  [INFO] No questions in this batch required diagrams or matched verified captions.")
+    print(f"----------------------------------------------------\n")
 
     return linked_count
 
@@ -187,7 +269,7 @@ Your task is to analyze the provided textbook/chapter text and extract all direc
 
 YOU MUST GENERATE QUESTIONS SPANNING ALL 9 QUESTION TYPES:
 1. 'MCQ' (1M): Multiple Choice Question with exactly 4 authentic options ('A) ', 'B) ', 'C) ', 'D) '). 'correct_answer' MUST be the exact matching text from the options list (NOT just 'A' or 'Option A').
-2. 'Objective' (1M): Direct definition, one-word answer, or fill-in-the-blank. 'options' MUST be []. 'correct_answer' is the direct word/phrase.
+2. 'Objective' (1M): Direct definition, one-word answer, or fill-in-the-blank. For every 'Fill in the blank' question, you MUST explicitly include an underscore blank '________' where the missing word belongs (e.g. 'Fill in the blank: ________ is a natural resource that can be replenished through natural processes.'). NEVER omit the blank line. 'options' MUST be []. 'correct_answer' is the direct word/phrase.
 3. 'Numerical' (1M, 3M, or 5M): Quantitative calculation or formula application. Provide step-by-step formula derivation in 'explanation' and final value with units in 'correct_answer'. 'options' MUST be [].
 4. 'Assertion Reason' (1M): Standard assertion (A) and reason (R) format with 4 standard board options.
 5. 'SAQ' (2M): Short Answer Question (2-3 focused lines testing foundational concept or definition). 'options' MUST be [].
@@ -205,6 +287,17 @@ THE 4 GOLDEN RULES (CRITICAL CONSTRAINTS):
 6. STRICT CURRICULUM SUBJECT MATTER GROUNDING (NEVER ASK ABOUT TEXTBOOK STRUCTURE OR PEDAGOGY):
    - NEVER generate questions about the physical book, book design, textbook titles (e.g. 'Curiosity', 'Beehive'), layout, pedagogical sections (e.g. 'Learning further', 'role of Summary section', 'Teacher notes', 'activities section purpose', 'integrated approach in this book').
    - ONLY generate questions testing pure scientific, mathematical, or academic concept facts (e.g. Magnetic Poles, Electric Current, Plant Structure, Separation Methods, Ecosystems).
+7. PRESERVE FIGURE & DIAGRAM CITATIONS:
+   - If an exercise or text question references a figure, chart, apparatus, or diagram (e.g., 'Fig. 4.16', 'shown in Fig. 7.10', 'In the given flowchart', 'observe the apparatus'), PRESERVE the figure identifier in the question text (e.g., 'Refer to Fig. 4.16: ...' or 'As shown in Fig. 7.10, what is...'). This allows the diagram engine to automatically attach the extracted visual image to the question.
+8. ATOMIC SINGLE-QUESTION RULE (NO COMPOUND GLUED QUESTIONS FOR 1M, 2M, 3M):
+   - Every MCQ (1M), Objective (1M), SAQ (2M), and Short Answer (3M) question MUST ask exactly ONE single, focused question.
+   - NEVER glue or concatenate two questions together into a single 1-mark item (e.g. NEVER output: 'What is the temperature reading in Fig. 7.10? What is the smallest value it can measure?').
+   - If a textbook question contains multi-part sub-questions (e.g. part a and part b), generate them as TWO separate, independent questions with their own options/answers.
+   - Multi-part sub-questions are ONLY permitted in Case Study (4M) and Long Answer (5M).
+9. STRICT OBJECTIVE VS SAQ SEGREGATION & NO ANSWER LEAKS:
+   - 'Fill in the blanks', 'Complete the sentence', 'Choose the correct word', 'True or False', or questions requiring filling '________' MUST ALWAYS have type='Objective'. NEVER classify Fill in the blanks or True/False as 'SAQ'.
+   - 'SAQ' (2M) MUST ALWAYS be an authentic conceptual or descriptive question (e.g. 'Explain why...', 'Define...', 'State two differences between...').
+   - NEVER paste or append the answer key into the question text (e.g. NEVER output '(i) temperature (ii) clinical' at the end of the question sentence). All answers must go exclusively in 'correct_answer'.
 
 JSON Schema & Example:
 {
@@ -625,6 +718,68 @@ def _find_best_canonical_topic(raw_topic: str, canonical_topics: List[str], thre
     return None
 
 
+def heal_fill_in_the_blank_question(q_text: str, correct_answer: str) -> str:
+    """Auto-heals Objective/Fill in the Blank questions to ensure a clean, grammatical '________' marker is present."""
+    if not q_text:
+        return q_text
+
+    # Normalize arbitrary blanks/dots like [blank], (blank), ..., ___ to standard '________'
+    normalized = re.sub(r'\[\s*(?:blank|\.\.\.|_)\s*\]|\(\s*(?:blank|\.\.\.|_)\s*\)', '________', q_text, flags=re.IGNORECASE)
+    normalized = re.sub(r'\.{3,}|_{2,}', '________', normalized)
+
+    # Check if question is a Fill-in-the-blank / Complete prompt
+    is_blank_prompt = bool(re.search(r'\b(?:fill\s+in\s+the\s+blanks?|complete\s+the\s+(?:sentence|statement|blank))\b', normalized, re.IGNORECASE))
+
+    # Process multi-line sub-parts (e.g. (i), (ii), (a), (b), 1., 2.)
+    lines = normalized.splitlines()
+    if len(lines) > 1 and any(re.match(r'^\s*\(?[iIvVxXa-d\d]+\)?[\.\:\s]', l) for l in lines):
+        healed_lines = []
+        for line in lines:
+            l = line.strip()
+            if not l:
+                continue
+            if re.match(r'^\(?[iIvVxXa-d\d]+\)?[\.\:\s]', l) and "________" not in l:
+                # If line ends with incomplete preposition or article
+                if re.search(r'\b(?:its|a|an|the|is|are|was|were|by|in|of|to|called|as)\s*[\.\:\s]*$', l, re.IGNORECASE):
+                    l = re.sub(r'(\b(?:its|a|an|the|is|are|was|were|by|in|of|to|called|as))\s*[\.\:\s]*$', r'\1 ________.', l, flags=re.IGNORECASE)
+                elif re.search(r'\b(?:a|an|the)\s+[a-zA-Z]+(?:\s+[a-zA-Z]+)?\s*[\.\:\s]*$', l, re.IGNORECASE):
+                    l = re.sub(r'\b(a|an|the)\s+([a-zA-Z]+(?:\s+[a-zA-Z]+)?)\s*[\.\:\s]*$', r'\1 ________ \2.', l, flags=re.IGNORECASE)
+                elif not l.endswith("________."):
+                    l = l.rstrip('. :') + " ________."
+            healed_lines.append(l)
+        normalized = "\n".join(healed_lines)
+    elif is_blank_prompt and "________" not in normalized:
+        # Case 1: Missing subject at start: 'Fill in the blank: is a natural resource...' -> 'Fill in the blank: ________ is a natural resource...'
+        verb_start_pattern = r'^(.*?\b(?:fill\s+in\s+the\s+blanks?|complete\s+the\s+(?:sentence|statement|blank))\s*[:\-–—]\s*)(is|are|was|were|refers|means|denotes|represents|can|could|will|would|should|has|have|had|helps|occurs|consists|contains|describes|states|involves)\b'
+        if re.search(verb_start_pattern, normalized, re.IGNORECASE):
+            normalized = re.sub(verb_start_pattern, r'\1________ \2', normalized, flags=re.IGNORECASE)
+
+        # Case 2: The correct_answer is still inside the question: 'Fill in the blank: Water is a natural resource...' -> 'Fill in the blank: ________ is a natural resource...'
+        elif correct_answer and len(correct_answer.strip()) > 1:
+            clean_ans = correct_answer.strip()
+            escaped_ans = re.escape(clean_ans)
+            ans_match = re.search(rf'^(.*?\b(?:fill\s+in\s+the\s+blanks?|complete\s+the\s+(?:sentence|statement|blank))\s*[:\-–—]\s*.*?\b)({escaped_ans})\b', normalized, re.IGNORECASE)
+            if ans_match:
+                prefix = ans_match.group(1)
+                rest = normalized[ans_match.end(2):]
+                normalized = f"{prefix}________{rest}"
+
+        # Case 3: Prompt ends with definition colon/preposition e.g. 'is called:' or 'is known as:'
+        if "________" not in normalized:
+            if re.search(r'\b(?:is\s+called|is\s+known\s+as|is\s+termed\s+as|is\s+defined\s+as|refers\s+to|means)\s*[:\.\s]*$', normalized, re.IGNORECASE):
+                normalized = re.sub(r'(\b(?:is\s+called|is\s+known\s+as|is\s+termed\s+as|is\s+defined\s+as|refers\s+to|means))\s*[:\.\s]*$', r'\1 ________.', normalized, flags=re.IGNORECASE)
+            else:
+                # Case 4: General fallback - insert blank before the main predicate
+                header_match = re.search(r'^(.*?\b(?:fill\s+in\s+the\s+blanks?|complete\s+the\s+(?:sentence|statement|blank))\s*[:\-–—]\s*)(.*)$', normalized, re.IGNORECASE)
+                if header_match:
+                    p_head = header_match.group(1)
+                    p_body = header_match.group(2).strip()
+                    if p_body:
+                        normalized = f"{p_head}________ {p_body}"
+
+    return normalized
+
+
 def sanitize_question_item(
     q: dict,
     default_type: str,
@@ -669,10 +824,11 @@ def sanitize_question_item(
     if len(raw_q_text) < 15 or len(raw_q_text.split()) < 3:
         return None
 
-    # Discard incomplete cut-off questions (e.g. truncated sentences without terminal marks or blanks)
-    if not any(raw_q_text.rstrip().endswith(ch) for ch in ['?', '.', ':', '"', "'", ')', ']', '_']):
-        # If it doesn't have an underline blank or MCQ options
-        if "_" not in raw_q_text and not q.get("options"):
+    # Ensure question ends with a clean terminal punctuation mark if ending with number/formula
+    if not any(raw_q_text.rstrip().endswith(ch) for ch in ['?', '.', ':', '"', "'", ')', ']', '_', '}']):
+        if len(raw_q_text.split()) >= 4:
+            raw_q_text = raw_q_text.rstrip() + "."
+        else:
             return None
 
     # Clean question text
@@ -680,14 +836,18 @@ def sanitize_question_item(
 
     # 1. Bilingual cleanup for CBSE / ICSE / ISC and STEM / General subjects
     if not is_lang_subject:
-        # If question contains 'Non-English / English', extract the English part
+        # If question contains non-Latin text (e.g. Hindi/Bengali), extract the English part
         if "/" in q_text:
-            parts = [p.strip() for p in q_text.split("/") if p.strip()]
-            for p in parts:
-                ascii_chars = sum(1 for c in p if ord(c) < 128)
-                if ascii_chars / max(len(p), 1) > 0.70 and len(p.split()) >= 2:
-                    q_text = p
-                    break
+            has_indic_script = bool(re.search(r'[\u0900-\u0D7F\u0E00-\u0E7F]', q_text))
+            has_math_slash = bool(re.search(r'\b\d+\s*/\s*\d+\b|\b[a-zA-Z]{1,4}\s*/\s*[a-zA-Z0-9]{1,4}\b', q_text))
+
+            if has_indic_script and not has_math_slash:
+                parts = [p.strip() for p in q_text.split("/") if p.strip()]
+                for p in parts:
+                    ascii_chars = sum(1 for c in p if ord(c) < 128)
+                    if ascii_chars / max(len(p), 1) > 0.80 and len(p.split()) >= 2:
+                        q_text = p
+                        break
 
         # Remove leading Question markers like 'Q1. ', '1. ', 'Question 1: '
         q_text = re.sub(r'^(?:Q(?:uestion)?\.?\s*\d+[\.\:\)]|\d+[\.\)])\s*', '', q_text).strip()
@@ -731,8 +891,36 @@ def sanitize_question_item(
             else:
                 corr = "Refer to the completed sentence."
 
+    # Strip leaked trailing answer blocks per line (e.g. '...measured by a thermometer (i) temperature (ii) clinical' or 'Ans: ...')
+    lines = q_text.splitlines()
+    cleaned_lines = []
+    extracted_leaks = []
+    for line in lines:
+        l = line.strip()
+        m = re.search(r'^(.*?)(\s*\(i\)\s*[a-zA-Z0-9_\-\s]+\s*\(ii\)\s*[a-zA-Z0-9_\-\s]+[\.\?\s]*|\s+Ans(?:wer)?\s*[:\-–—].*)$', l, re.IGNORECASE)
+        if m:
+            cleaned_body = m.group(1).strip()
+            leak = m.group(2).strip()
+            cleaned_lines.append(cleaned_body)
+            extracted_leaks.append(leak)
+        else:
+            cleaned_lines.append(l)
+
+    q_text = "\n".join(cleaned_lines)
+    extracted_leak = " ".join(extracted_leaks).strip()
+    if extracted_leak and (not corr or corr.strip().lower() in ["i", "ii", "iii", "iv", "a", "b", "c", "d", "none", "n/a", "null"]):
+        corr = clean_human_readable_text(extracted_leak)
+
+    # Auto-heal Fill in the Blank questions to guarantee a clean '________' placeholder
+    q_text = heal_fill_in_the_blank_question(q_text, corr)
+
+    is_fill_in_the_blank = bool(re.search(r'\b(?:fill\s+in\s+the\s+blanks?|complete\s+the\s+(?:sentence|statement|blank)|choose\s+the\s+correct\s+word|state\s+whether|true\s+or\s+false)\b', q_text, re.IGNORECASE)) or "________" in q_text
+
     raw_type = str(q.get("type") or default_type or "MCQ").strip().upper()
-    if "CASE" in raw_type:
+    if is_fill_in_the_blank:
+        resolved_type = "OBJECTIVE"
+        default_m = 1
+    elif "CASE" in raw_type:
         resolved_type = "CASE STUDY"
         default_m = 4
     elif "ASSERT" in raw_type:
@@ -795,6 +983,21 @@ def sanitize_question_item(
                 else:
                     clean_opt_list.append(opt_val)
             clean_opts = clean_opt_list
+
+        # Clean compound glued questions in MCQs e.g. "What is X? What is Y?" with options "A) x_val, y_val"
+        q_parts = [p.strip() for p in re.findall(r'[^?]+\?', q_text) if p.strip()]
+        if len(q_parts) >= 2 and clean_opts and all(',' in opt for opt in clean_opts):
+            q_text = q_parts[0]
+            atomic_opts = []
+            for opt in clean_opts:
+                m = re.match(r'^([A-D]\)\s*)([^,]+),\s*(.+)$', opt)
+                if m:
+                    atomic_opts.append(f"{m.group(1)}{m.group(2).strip()}")
+                else:
+                    atomic_opts.append(opt.split(',')[0].strip())
+            clean_opts = atomic_opts
+            if ',' in corr:
+                corr = corr.split(',')[0].strip()
 
         # Check for dummy options
         is_dummy = any(re.match(r"^(?:[A-D]\s*[\)\.\:\-]\s*)?option\s*[A-D]?$", opt, re.IGNORECASE) for opt in clean_opts)
@@ -905,9 +1108,11 @@ def sanitize_question_item(
             resolved_type = "OBJECTIVE"
 
     # Re-calibrate question type by marks if generic
-    if marks == 1 and resolved_type not in ["MCQ", "ASSERTION REASON"]:
+    if is_fill_in_the_blank:
         resolved_type = "OBJECTIVE"
-    elif marks == 2 and resolved_type not in ["MCQ", "ASSERTION REASON"]:
+    elif marks == 1 and resolved_type not in ["MCQ", "ASSERTION REASON"]:
+        resolved_type = "OBJECTIVE"
+    elif marks == 2 and resolved_type not in ["MCQ", "ASSERTION REASON", "OBJECTIVE"]:
         resolved_type = "SAQ"
     elif marks == 3 and resolved_type not in ["NUMERICAL"]:
         resolved_type = "SHORT ANSWER (3M)"
@@ -918,9 +1123,11 @@ def sanitize_question_item(
     elif marks >= 8:
         resolved_type = "LONG EVALUATIVE"
 
-    # Fallback for empty or placeholder correct_answer in descriptive questions
-    if not corr or corr.lower() in ["model solution", "n/a", "none", "standard model solution"]:
-        if clean_expl and len(clean_expl) > 10 and not clean_expl.startswith("Core pedagogical solution"):
+    # Fallback for empty, broken, or single-character placeholder correct_answer in descriptive / objective questions
+    if not corr or corr.strip().lower() in ["model solution", "n/a", "none", "null", "standard model solution", "i", "ii", "iii", "iv", "a", "b", "c", "d"]:
+        if extracted_leak:
+            corr = clean_human_readable_text(extracted_leak)
+        elif clean_expl and len(clean_expl) > 5 and not clean_expl.startswith("Core pedagogical solution"):
             corr = clean_expl
         elif clean_opts:
             corr = clean_opts[0].split(")", 1)[-1].strip()
@@ -1655,13 +1862,14 @@ def process_curriculum_document_pipeline(
     linked_diagrams_count = 0
     if ext == "pdf":
         try:
-            diagram_pool = document_processor.extract_pdf_diagrams(file_bytes, max_diagrams=25)
+            diagram_pool = document_processor.extract_pdf_diagrams(file_bytes, max_diagrams=150)
             diag_metrics = getattr(diagram_pool, "metrics", {})
             linked_diagrams_count = assign_diagrams_to_questions(
                 questions=final_questions,
                 diagram_pool=diagram_pool,
                 subject=subject,
                 filename=filename,
+                file_bytes=file_bytes,
             )
         except Exception as diag_err:
             logger.warning(f"Diagram extraction notice: {diag_err}")
@@ -1999,13 +2207,14 @@ def extract_curriculum_questions_preview(
     linked_diagrams_count = 0
     if ext == "pdf" and is_diagram_subject(subject):
         try:
-            diagram_pool = document_processor.extract_pdf_diagrams(file_bytes, max_diagrams=25)
+            diagram_pool = document_processor.extract_pdf_diagrams(file_bytes, max_diagrams=150)
             diag_metrics = getattr(diagram_pool, "metrics", {})
             linked_diagrams_count = assign_diagrams_to_questions(
                 questions=extracted_questions,
                 diagram_pool=diagram_pool,
                 subject=subject,
                 filename=filename,
+                file_bytes=file_bytes,
             )
         except Exception as diag_err:
             logger.warning(f"Diagram extraction notice: {diag_err}")

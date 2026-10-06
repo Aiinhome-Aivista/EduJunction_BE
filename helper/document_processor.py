@@ -352,15 +352,153 @@ def save_diagram_to_disk(image_bytes: bytes, ext: str = "png", prefix: str = "di
         return ""
 
 
-def extract_pdf_diagrams(file_bytes: bytes, max_diagrams: int = 25) -> list[dict]:
+def crop_figure_from_pdf_page(file_bytes: bytes, page_num: int | None, fig_label: str) -> tuple[bytes | None, int | None]:
+    """Precisely crops the visual figure/diagram associated with a specific figure label using a 3-Layer progressive search.
+    - Layer 1: Target question page (if page_num provided).
+    - Layer 2: Adjacent neighbor pages (page_num ± 1, page_num ± 2).
+    - Layer 3: Document-wide fallback (all remaining pages in document).
+
+    Academic Quality & Diagram Heuristics:
+    1. Full caption block detection & spatial bounding-box fusion.
+    2. Proximity threshold (max distance <= 120 pt between caption and diagram image).
+    3. Rejects 1-bit tint masks, full-page scanned backgrounds, and tiny decorative icons.
+    4. Adaptive padding (8 pt horizontal, 6 pt vertical) around the crop for clean aesthetics.
+    5. High-resolution rendering at 180 DPI for razor-sharp diagrams.
+
+    Returns:
+        tuple[bytes | None, int | None]: (png_image_bytes, actual_matched_page_number)
+    """
+    if not file_bytes or not fig_label:
+        return None, None
+    try:
+        import math
+        doc = fitz.open(stream=file_bytes, filetype="pdf")
+        total_pages = len(doc)
+        if total_pages == 0:
+            doc.close()
+            return None, None
+
+        clean_fig = str(fig_label).strip()
+        search_terms = [clean_fig]
+        if not clean_fig.lower().startswith("fig"):
+            search_terms.extend([f"Fig. {clean_fig}", f"Fig {clean_fig}", f"Figure {clean_fig}", clean_fig])
+
+        target_p = int(page_num) if (page_num and 1 <= int(page_num) <= total_pages) else None
+        layer1 = [target_p] if target_p else []
+        layer2 = []
+        if target_p:
+            for offset in [1, -1, 2, -2]:
+                p = target_p + offset
+                if 1 <= p <= total_pages and p not in layer1 and p not in layer2:
+                    layer2.append(p)
+        layer3 = [p for p in range(1, total_pages + 1) if p not in layer1 and p not in layer2]
+
+        for layer_idx, page_list in enumerate([layer1, layer2, layer3], 1):
+            for pno in page_list:
+                page = doc[pno - 1]
+                caption_rects = []
+
+                # Prioritize full block containing the figure caption for complete textual context
+                page_blocks = page.get_text("blocks") or []
+                for b in page_blocks:
+                    b_text = b[4]
+                    if re.search(rf'\bfig(?:ure)?\.?\s*{re.escape(clean_fig)}\b', b_text, re.IGNORECASE):
+                        b_rect = fitz.Rect(b[:4])
+                        if b_rect.height < page.rect.height * 0.4:
+                            caption_rects.append(b_rect)
+
+                if not caption_rects:
+                    for term in search_terms:
+                        res = page.search_for(term)
+                        if res:
+                            caption_rects.extend(res)
+                            break
+
+                if not caption_rects:
+                    continue
+
+                img_list = page.get_images(full=True)
+                best_match = None
+                min_dist = float("inf")
+
+                for cap_rect in caption_rects:
+                    for img in img_list:
+                        xref = img[0]
+                        base_image = doc.extract_image(xref)
+                        if not base_image:
+                            continue
+                        ext = (base_image.get("ext") or "png").lower()
+                        if ext not in ["png", "jpg", "jpeg", "webp"]:
+                            continue
+                        # Reject 1-bit monochrome tint / background masks
+                        if base_image.get("colorspace") == 1:
+                            continue
+                        w = base_image.get("width", 0)
+                        h = base_image.get("height", 0)
+                        img_data = base_image.get("image", b"")
+                        if (w < 40 and h < 40) or (max(w, h) < 100) or len(img_data) < 2048:
+                            continue
+                        aspect = w / max(h, 1)
+                        if aspect > 8.0 or aspect < 0.05:
+                            continue
+                        # Reject full portrait page scans
+                        if (0.64 <= aspect <= 0.82) and h >= 750 and w >= 550:
+                            continue
+
+                        r_list = page.get_image_rects(xref)
+                        if not r_list:
+                            continue
+                        r = r_list[0]
+                        # Reject full-page border overlays
+                        if r.width > page.rect.width * 0.95 and r.height > page.rect.height * 0.95:
+                            continue
+
+                        dx = max(0, max(cap_rect.x0 - r.x1, r.x0 - cap_rect.x1))
+                        dy = max(0, max(cap_rect.y0 - r.y1, r.y0 - cap_rect.y1))
+                        dist = math.hypot(dx, dy)
+                        if dist < min_dist:
+                            min_dist = dist
+                            best_match = (r, cap_rect, pno, dist)
+
+                if best_match and best_match[3] <= 120:
+                    crop_rect = best_match[0] | best_match[1]
+                    pad_x = 8
+                    pad_y = 6
+                    padded_rect = fitz.Rect(
+                        max(0, crop_rect.x0 - pad_x),
+                        max(0, crop_rect.y0 - pad_y),
+                        min(page.rect.width, crop_rect.x1 + pad_x),
+                        min(page.rect.height, crop_rect.y1 + pad_y)
+                    )
+                    pix = page.get_pixmap(clip=padded_rect, dpi=180)
+                    img_bytes = pix.tobytes("png")
+                    doc.close()
+                    return img_bytes, pno
+
+        doc.close()
+        return None, None
+    except Exception as e:
+        logger.warning(f"Precision 3-layer crop notice for Fig {fig_label} (p.{page_num}): {e}")
+        return None, None
+
+
+class DiagramList(list):
+    """Subclass of list that allows attaching extraction metadata/metrics."""
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.metrics = {}
+
+
+def extract_pdf_diagrams(file_bytes: bytes, max_diagrams: int = 150) -> list[dict]:
     """Extracts candidate embedded diagrams and figures from PDF in-memory without polluting disk.
     Applies strict academic diagram heuristics:
     1. Rejects full-page scanned text pages (where the entire page is an image).
     2. Rejects decorative icons, bullets, thought bubbles, and text banners.
     3. Retains true pedagogical diagrams (geometry, circuits, anatomy, maps, graphs).
+    4. Computes exact spatial bounding-box caption and nearby text for precision matching.
     Returns list of diagram dicts with attached `.metrics` summary dict.
     """
-    extracted_diagrams = []
+    extracted_diagrams = DiagramList()
     metrics = {
         "total_raw_images": 0,
         "valid_diagrams": 0,
@@ -370,8 +508,7 @@ def extract_pdf_diagrams(file_bytes: bytes, max_diagrams: int = 25) -> list[dict
         "yield_pct": 0.0,
     }
     if not file_bytes:
-        extracted_diagrams = []
-        setattr(extracted_diagrams, "metrics", metrics)
+        extracted_diagrams.metrics = metrics
         return extracted_diagrams
 
     try:
@@ -384,7 +521,9 @@ def extract_pdf_diagrams(file_bytes: bytes, max_diagrams: int = 25) -> list[dict
             page_rect = page.rect
             page_width = page_rect.width
             page_height = page_rect.height
-            page_text_len = len(page.get_text().strip())
+            page_text = page.get_text() or ""
+            page_blocks = page.get_text("blocks") or []
+            page_figs = [f.strip() for f in re.findall(r'\b(?:fig(?:ure)?\.?)\s*(\d+(?:\.\d+)?)\b', page_text, re.IGNORECASE)]
 
             for img_idx, img_info in enumerate(images):
                 metrics["total_raw_images"] += 1
@@ -404,34 +543,71 @@ def extract_pdf_diagrams(file_bytes: bytes, max_diagrams: int = 25) -> list[dict
                     continue
 
                 # STRICT FILTER 2: Filter out tiny icon decorations, bullets, thought bubbles, or decorative avatars
-                # Increased minimum dimensions to 220x200 and min size to 12KB
-                if width < 220 or height < 180 or not image_bytes or len(image_bytes) < 12288:
+                if width < 140 or height < 120 or not image_bytes or len(image_bytes) < 5120:
                     metrics["icons_filtered"] += 1
                     continue
 
                 # STRICT FILTER 3: Filter out extreme aspect ratio banners (e.g., NCERT header banners, sidebar bars)
                 aspect = width / max(height, 1)
-                if aspect > 2.6 or aspect < 0.35:
+                if aspect > 3.0 or aspect < 0.25:
                     metrics["icons_filtered"] += 1
                     continue
-                if aspect > 2.0 and height < 220:
+                if aspect > 2.2 and height < 160:
                     metrics["icons_filtered"] += 1
                     continue
 
                 # STRICT FILTER 4: REJECT FULL-PAGE SCANNED TEXT PAGES
-                # If image dimensions closely match standard page proportions (e.g. 0.65 - 0.82)
-                # and height is large (> 750px) while taking up almost the whole page surface,
-                # it is a full scanned book page (as seen in word problem pages), NOT an isolated diagram.
                 is_portrait_page_scan = (0.64 <= aspect <= 0.82) and height >= 750 and width >= 550
                 if is_portrait_page_scan:
                     metrics["scanned_pages_rejected"] += 1
                     continue
+
+                # SPATIAL CAPTION & PROXIMITY EXTRACTION
+                rects = page.get_image_rects(xref)
+                img_rect_tuple = None
+                nearby_captions = []
+                direct_figs = []
+
+                if rects:
+                    r = rects[0]
+                    img_rect_tuple = (round(r.x0, 1), round(r.y0, 1), round(r.x1, 1), round(r.y1, 1))
+                    for b in page_blocks:
+                        b_rect = fitz.Rect(b[:4])
+                        # Check if text is directly below, above, or adjacent to the image
+                        is_below = 0 <= (b_rect.y0 - r.y1) <= 90
+                        is_above = 0 <= (r.y0 - b_rect.y1) <= 60
+                        is_adjacent = (b_rect.y0 <= r.y1 and b_rect.y1 >= r.y0) and (abs(b_rect.x0 - r.x1) <= 180 or abs(r.x0 - b_rect.x1) <= 180)
+                        
+                        if is_below or is_above or is_adjacent:
+                            clean_b = b[4].strip().replace('\n', ' ')
+                            if clean_b and len(clean_b) > 2:
+                                nearby_captions.append(clean_b)
+                                # Extract specific figure labels in this bounding vicinity (e.g. 'Fig. 4.16', 'Figure 7.10')
+                                figs_found = re.findall(r'\b(?:fig(?:ure)?\.?)\s*(\d+(?:\.\d+)?)\b', clean_b, re.IGNORECASE)
+                                for f in figs_found:
+                                    direct_figs.append(f.strip())
+
+                caption_str = " | ".join(nearby_captions[:3])
+                
+                # Filter out pure Page 1 story illustrations (introductory cliparts with no academic figure context)
+                if page_num == 1 and not direct_figs:
+                    is_story_clipart = any(w in caption_str.lower() for w in ["story", "fond of writing", "grandmother", "lived in", "trade in the olden days"])
+                    if is_story_clipart:
+                        metrics["icons_filtered"] += 1
+                        continue
+
+                # Combine direct figures with page-level figures
+                all_figs = list(dict.fromkeys(direct_figs + page_figs))
 
                 if saved_count < max_diagrams:
                     extracted_diagrams.append({
                         "image_bytes": image_bytes,
                         "ext": image_ext,
                         "page": page_num,
+                        "rect": img_rect_tuple,
+                        "caption": caption_str[:250],
+                        "direct_figures": direct_figs,
+                        "figures": all_figs,
                         "width": width,
                         "height": height,
                         "aspect": round(aspect, 2),
@@ -447,7 +623,7 @@ def extract_pdf_diagrams(file_bytes: bytes, max_diagrams: int = 25) -> list[dict
     if metrics["total_raw_images"] > 0:
         metrics["yield_pct"] = round((metrics["valid_diagrams"] / metrics["total_raw_images"]) * 100, 1)
 
-    setattr(extracted_diagrams, "metrics", metrics)
+    extracted_diagrams.metrics = metrics
     return extracted_diagrams
 
 

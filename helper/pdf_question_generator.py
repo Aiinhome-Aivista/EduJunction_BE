@@ -26,11 +26,12 @@ YOU MUST GENERATE QUESTIONS SPANNING ALL 9 QUESTION TYPES:
 8. 'Long Answer' (5M): Comprehensive 5-mark answer with introduction, key points, mechanism/diagram explanation, and conclusion. 'options' MUST be [].
 9. 'Long Evaluative (8M)' (8M): Comprehensive essay-length question requiring high-order evaluation, critical analysis, and synthesis. 'options' MUST be [].
 
-THE 4 GOLDEN RULES (CRITICAL CONSTRAINTS):
+THE 5 GOLDEN RULES (CRITICAL CONSTRAINTS):
 1. AUTHENTIC CONTENT ONLY: NEVER output placeholder phrases like 'Standard model solution...', 'Option A', 'Key Concept:', '• Conceptual principle for...' or empty values. Every explanation must provide actual step-by-step reasoning or formulas grounded strictly in the provided text.
 2. ACADEMIC QUESTIONS ONLY: Skip publisher info, ISBN, copyright notices, headers, footers, and exam paper instructions ('Roll No', 'Check that paper contains').
 3. STANDALONE QUESTIONS: Every question must be fully complete on its own. Never output bare prompts like 'Fill in the blank.' or 'the following questions:'. Combine the prompt with the target sentence.
 4. PRESERVE MATH & SCIENCE: Keep LaTeX expressions (\\frac, \\sqrt, x^2, \\Omega, \\alpha, \\beta), chemical notations (H2O, CaCl2, CO2), and units intact.
+5. STRICT OBJECTIVE VS SAQ SEGREGATION: 'Fill in the blanks', 'Complete the sentence', 'True or False', or questions requiring filling '________' MUST ALWAYS have type='Objective'. NEVER classify Fill in the blanks as 'SAQ'. 'SAQ' (2M) MUST ALWAYS be an authentic conceptual or descriptive question. NEVER paste answer keys into the question prompt.
 
 JSON Schema:
 {
