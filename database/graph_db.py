@@ -105,10 +105,29 @@ def is_enabled() -> bool:
     return _enabled
 
 
-def _safe_key(value: str) -> str:
+def _safe_key(value: str, max_len: int = 120) -> str:
     if not value:
         return "unknown"
-    return re.sub(r"[^A-Za-z0-9_-]", "_", str(value).strip())[:200]
+    clean = re.sub(r"[^A-Za-z0-9_-]", "_", str(value).strip())
+    clean = re.sub(r"_+", "_", clean).strip("_")
+    if not clean:
+        clean = "item"
+    if len(clean) > max_len:
+        import hashlib
+        h = hashlib.md5(str(value).encode("utf-8")).hexdigest()[:10]
+        clean = f"{clean[:max_len-11]}_{h}"
+    return clean
+
+
+def _safe_edge_key(from_key: str, to_key: str) -> str:
+    combo = f"{from_key}__{to_key}"
+    if len(combo) <= 200:
+        return re.sub(r"_+", "_", re.sub(r"[^A-Za-z0-9_-]", "_", combo)).strip("_")
+    import hashlib
+    h = hashlib.md5(combo.encode("utf-8")).hexdigest()
+    f_short = from_key[:80].strip("_")
+    t_short = to_key[:80].strip("_")
+    return f"{f_short}__{t_short}_{h[:16]}"
 
 
 def upsert_hierarchical_curriculum_branch(
@@ -321,40 +340,43 @@ def sync_full_mysql_curriculum_to_arango(session):
         if not b_name or not c_name:
             continue
 
-        b_key = _safe_key(b_name)
-        c_key = f"{b_key}__{_safe_key(c_name)}"
+        b_key = _safe_key(b_name, 40)
+        c_key = f"{b_key}__{_safe_key(c_name, 40)}"
 
         boards_dict[b_key] = {"_key": b_key, "name": b_name, "type": "Board"}
         classes_dict[c_key] = {"_key": c_key, "name": c_name, "board": b_name, "type": "Class"}
-        board_class_edges[f"{b_key}__{c_key}"] = {
-            "_key": f"{b_key}__{c_key}",
+        e_bc_key = _safe_edge_key(b_key, c_key)
+        board_class_edges[e_bc_key] = {
+            "_key": e_bc_key,
             "_from": f"boards/{b_key}",
             "_to": f"classes/{c_key}",
             "relation": "CONTAINS"
         }
 
         if s_name:
-            s_key = f"{c_key}__{_safe_key(s_name)}"
+            s_key = _safe_key(f"{c_key}__{_safe_key(s_name, 40)}", 90)
             subjects_dict[s_key] = {"_key": s_key, "name": s_name, "class": c_name, "board": b_name, "type": "Subject"}
-            class_subject_edges[f"{c_key}__{s_key}"] = {
-                "_key": f"{c_key}__{s_key}",
+            e_cs_key = _safe_edge_key(c_key, s_key)
+            class_subject_edges[e_cs_key] = {
+                "_key": e_cs_key,
                 "_from": f"classes/{c_key}",
                 "_to": f"subjects/{s_key}",
                 "relation": "OFFERS"
             }
 
             if ch_name:
-                ch_key = f"{s_key}__{_safe_key(ch_name)}"
+                ch_key = _safe_key(f"{s_key}__{_safe_key(ch_name, 50)}", 130)
                 chapters_dict[ch_key] = {"_key": ch_key, "name": ch_name, "subject": s_name, "class": c_name, "board": b_name, "type": "Chapter"}
-                subject_chapter_edges[f"{s_key}__{ch_key}"] = {
-                    "_key": f"{s_key}__{ch_key}",
+                e_sc_key = _safe_edge_key(s_key, ch_key)
+                subject_chapter_edges[e_sc_key] = {
+                    "_key": e_sc_key,
                     "_from": f"subjects/{s_key}",
                     "_to": f"chapters/{ch_key}",
                     "relation": "INCLUDES"
                 }
 
                 if t_name:
-                    t_key = _safe_key(t_name)
+                    t_key = _safe_key(t_name, 70)
                     topics_dict[t_key] = {
                         "_key": t_key,
                         "name": t_name,
@@ -364,8 +386,9 @@ def sync_full_mysql_curriculum_to_arango(session):
                         "board": b_name,
                         "type": "Topic"
                     }
-                    chapter_topic_edges[f"{ch_key}__{t_key}"] = {
-                        "_key": f"{ch_key}__{t_key}",
+                    e_ct_key = _safe_edge_key(ch_key, t_key)
+                    chapter_topic_edges[e_ct_key] = {
+                        "_key": e_ct_key,
                         "_from": f"chapters/{ch_key}",
                         "_to": f"topics/{t_key}",
                         "relation": "COVERS_TOPIC"
@@ -401,7 +424,10 @@ def sync_full_mysql_curriculum_to_arango(session):
         _db.collection("CHAPTER_HAS_TOPIC").import_bulk(list(chapter_topic_edges.values()), on_duplicate="update")
 
     return {
+        "success": True,
         "synced": True,
+        "synced_chapters": len(chapters_dict),
+        "synced_topics": len(topics_dict),
         "counts": {
             "boards": len(boards_dict),
             "classes": len(classes_dict),
@@ -481,9 +507,9 @@ def get_knowledge_graph_payload(session, board=None, class_grade=None, subject=N
                 t.chapter_id,
                 ch.chapter_name,
                 COUNT(q.id) AS total_questions,
-                SUM(CASE WHEN LOWER(q.difficulty) = 'easy' THEN 1 ELSE 0 END) AS easy_count,
-                SUM(CASE WHEN LOWER(q.difficulty) = 'medium' THEN 1 ELSE 0 END) AS medium_count,
-                SUM(CASE WHEN LOWER(q.difficulty) = 'hard' THEN 1 ELSE 0 END) AS hard_count
+                SUM(CASE WHEN q.difficulty_level_id = 1 THEN 1 ELSE 0 END) AS easy_count,
+                SUM(CASE WHEN q.difficulty_level_id = 2 THEN 1 ELSE 0 END) AS medium_count,
+                SUM(CASE WHEN q.difficulty_level_id = 3 THEN 1 ELSE 0 END) AS hard_count
             FROM topic_master t
             JOIN chapter_master ch ON t.chapter_id = ch.id
             LEFT JOIN question_master q ON q.topic_id = t.id AND q.is_active = 1
@@ -609,8 +635,10 @@ def get_knowledge_graph_payload(session, board=None, class_grade=None, subject=N
                     elif not s_class and norm_cls not in s_key.lower():
                         continue
 
-                if subject and subject != "ALL" and subject.lower() not in s_name.lower():
-                    continue
+                if subject and subject != "ALL":
+                    norm_sub = subject.strip().lower()
+                    if s_name.strip().lower() != norm_sub and _safe_key(s_name) != _safe_key(subject):
+                        continue
 
                 node_obj = {
                     "id": f"subjects/{s_key}",
@@ -649,11 +677,15 @@ def get_knowledge_graph_payload(session, board=None, class_grade=None, subject=N
                         continue
 
                 if subject and subject != "ALL":
-                    norm_sub = subject.lower().replace(" ", "_")
-                    if ch_sub and subject.lower() not in ch_sub.lower() and norm_sub not in ch_key.lower():
-                        continue
-                    elif not ch_sub and norm_sub not in ch_key.lower():
-                        continue
+                    norm_sub = subject.strip().lower()
+                    ch_sub_clean = (ch_sub or "").strip().lower()
+                    if ch_sub_clean:
+                        if ch_sub_clean != norm_sub and _safe_key(ch_sub) != _safe_key(subject):
+                            continue
+                    else:
+                        sub_key = _safe_key(subject).lower()
+                        if f"__{sub_key}__" not in f"__{ch_key.lower()}__" and not ch_key.lower().endswith(f"__{sub_key}"):
+                            continue
 
                 ch_q_count = chapter_question_stats.get(_safe_key(ch_name), chapter_question_stats.get(ch_name.strip().lower(), 0))
                 ch_display_label = f"{ch_name} ({ch_q_count} Qs)" if ch_q_count > 0 else ch_name
@@ -704,11 +736,15 @@ def get_knowledge_graph_payload(session, board=None, class_grade=None, subject=N
                         continue
 
                 if subject and subject != "ALL":
-                    norm_sub = subject.lower().replace(" ", "_")
-                    if t_sub and subject.lower() not in t_sub.lower() and norm_sub not in t_key.lower():
-                        continue
-                    elif not t_sub and norm_sub not in t_key.lower():
-                        continue
+                    norm_sub = subject.strip().lower()
+                    t_sub_clean = (t_sub or "").strip().lower()
+                    if t_sub_clean:
+                        if t_sub_clean != norm_sub and _safe_key(t_sub) != _safe_key(subject):
+                            continue
+                    else:
+                        sub_key = _safe_key(subject).lower()
+                        if f"__{sub_key}__" not in f"__{t_key.lower()}__" and not t_key.lower().endswith(f"__{sub_key}"):
+                            continue
 
                 t_stat = topic_question_stats.get(t_key, topic_question_stats.get(t_name.strip().lower(), {"total_questions": int(t.get("question_count") or 0), "easy": 0, "medium": 0, "hard": 0}))
                 t_q_count = t_stat["total_questions"]
@@ -830,8 +866,10 @@ def get_knowledge_graph_payload(session, board=None, class_grade=None, subject=N
                     continue
                 if class_grade and class_grade != "ALL" and class_grade.lower() not in c_name.lower():
                     continue
-                if subject and subject != "ALL" and subject.lower() not in s_name.lower():
-                    continue
+                if subject and subject != "ALL":
+                    norm_sub = subject.strip().lower()
+                    if s_name.strip().lower() != norm_sub and _safe_key(s_name) != _safe_key(subject):
+                        continue
 
                 b_id = f"board_{_safe_key(b_name)}"
                 c_id = f"class_{_safe_key(b_name)}__{_safe_key(c_name)}"
@@ -1204,7 +1242,7 @@ def generate_standalone_k_graph_html(graph_data: dict) -> str:
         🎯 Reset View
       </button>
       <button onclick="togglePhysics()" id="btn-physics" class="px-3.5 py-2 bg-amber-500/20 text-amber-300 hover:bg-amber-500/30 text-xs font-semibold rounded-xl border border-amber-500/30 transition-all cursor-pointer">
-        ⚡ Freeze Physics
+        ⚡ Freeze
       </button>
     </div>
   </div>
@@ -1319,7 +1357,7 @@ def generate_standalone_k_graph_html(graph_data: dict) -> str:
     function togglePhysics() {{
       physicsRunning = !physicsRunning;
       network.setOptions({{ physics: {{ enabled: physicsRunning }} }});
-      document.getElementById('btn-physics').innerText = physicsRunning ? '⚡ Freeze Physics' : '▶️ Resume Physics';
+      document.getElementById('btn-physics').innerText = physicsRunning ? '⚡ Freeze' : '▶️ Resume';
     }}
 
     function resetView() {{

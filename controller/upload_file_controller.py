@@ -921,7 +921,7 @@ def save_extracted_curriculum_questions_api():
     common_traps = payload.get("common_traps") or payload.get("commonTraps", [])
 
     files_payload = payload.get("files")
-    if isinstance(files_payload, list) and len(files_payload) > 1:
+    if isinstance(files_payload, list) and len(files_payload) > 0:
         # Multi-file batch persistence
         total_ins = 0
         total_upd = 0

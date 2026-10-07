@@ -7,7 +7,9 @@ Executes the 5-step automated processing pipeline for Textbooks and Old Question
 5. Database Storage (Insertion into question_master, documents, document_chunks & ChromaDB)
 """
 import ast
+import concurrent.futures
 import json
+import os
 import re
 import uuid
 from typing import Any, Dict, List, Optional
@@ -18,7 +20,7 @@ from sqlalchemy.orm import Session
 from database import vector_db
 from helper import document_processor, embedding_engine
 from model import mistral_client
-from model.models import Document, DocumentChunk
+from model.models import Document, DocumentChunk, Runbook
 from utils.errors import ValidationError
 from utils.logger import logger
 
@@ -1375,7 +1377,8 @@ def extract_questions_from_document_text(
         print(f"  [+] Extraction Strategy: Parsing {len(chunks)} text section(s) for complete Question Bank digitization...")
 
         system_prompt = OLD_QUESTION_PAPER_PROMPT
-        for c_idx, c_text in enumerate(chunks):
+        def _process_qb_chunk(item):
+            c_idx, c_text = item
             section_label = f"Section {c_idx + 1} of {len(chunks)}"
             user_prompt = f"""Target Details:
 - Board: {board}
@@ -1394,15 +1397,27 @@ CRITICAL INSTRUCTIONS:
 2. If there are Multiple Choice Questions (MCQ), extract all options ('A) ', 'B) ', 'C) ', 'D) ') and identify the correct option letter.
 3. For Short Answer (2M or 3M), Case Studies (4M), Long Answer (5M or 8M), Numerical, Assertion Reason, or Objective questions, extract full question text and write accurate model solutions in 'correct_answer' and 'explanation'.
 4. Extract all distinguishable questions present in this section without an artificial limit."""
-
             try:
                 response_json = mistral_client.generate_json(system_prompt, user_prompt, temperature=0.25, scenario="pdf_generation")
                 q_list = response_json.get("questions", []) if isinstance(response_json, dict) else []
                 if isinstance(q_list, list) and q_list:
-                    raw_questions.extend(q_list)
                     print(f"    -> [{section_label}] Extracted {len(q_list)} question(s)")
+                    return (c_idx, q_list)
             except Exception as e:
                 logger.error(f"Error extracting questions from chunk {c_idx + 1}: {e}")
+            return (c_idx, [])
+
+        max_qb_workers = min(int(os.getenv("AI_MAX_PARALLEL_WORKERS")), len(chunks)) if len(chunks) > 1 else 1
+        if max_qb_workers > 1:
+            print(f"  • [CONCURRENT PARALLEL SYNTHESIS] Dispatching {len(chunks)} chunks across {max_qb_workers} worker threads...")
+            with concurrent.futures.ThreadPoolExecutor(max_workers=max_qb_workers) as executor:
+                results = list(executor.map(_process_qb_chunk, enumerate(chunks)))
+                for _, q_list in sorted(results, key=lambda x: x[0]):
+                    raw_questions.extend(q_list)
+        else:
+            for item in enumerate(chunks):
+                _, q_list = _process_qb_chunk(item)
+                raw_questions.extend(q_list)
 
         # Fallback question detection if LLM returned 0 questions
         if not raw_questions:
@@ -1469,7 +1484,8 @@ CRITICAL INSTRUCTIONS:
 
         print(f"  • [EXHAUSTIVE EXTRACTION] Processing {len(sections_to_process)} text section(s) spanning 100% of document ({text_len:,} chars)...")
 
-        for sec_name, sec_excerpt in sections_to_process:
+        def _process_textbook_section(item):
+            s_idx, (sec_name, sec_excerpt) = item
             user_prompt = f"""Target Details:
 - Board: {board}
 - Class/Grade: {class_grade}
@@ -1487,7 +1503,6 @@ CRITICAL INSTRUCTIONS:
 2. DO NOT artificially limit question count. Extract all high-value distinct questions present in this section without skipping important topics.
 3. Ensure every question is complete, self-contained, and has an informative 'explanation' and accurate 'correct_answer'.
 4. Assign each question's 'topic_suggested' to its specific sub-topic / conceptual heading."""
-
             try:
                 response_json = mistral_client.generate_json(system_prompt, user_prompt, temperature=0.30, scenario="pdf_generation")
                 sec_questions = response_json.get("questions", []) if isinstance(response_json, dict) else []
@@ -1501,10 +1516,23 @@ CRITICAL INSTRUCTIONS:
                         if isinstance(sq, dict):
                             sq["chapter_title"] = chap_clean_label or sec_name
                             sq["chapter_name"] = chap_clean_label or sec_name
-                    raw_questions.extend(sec_questions)
                     print(f"    -> [{sec_name}] Synthesized {len(sec_questions)} unique question(s)")
+                    return (s_idx, sec_questions)
             except Exception as e:
                 logger.error(f"Error synthesizing questions for {sec_name}: {e}")
+            return (s_idx, [])
+
+        max_sec_workers = min(int(os.getenv("AI_MAX_PARALLEL_WORKERS")), len(sections_to_process)) if len(sections_to_process) > 1 else 1
+        if max_sec_workers > 1:
+            print(f"  • [CONCURRENT PARALLEL SYNTHESIS] Processing {len(sections_to_process)} sections simultaneously across {max_sec_workers} threads...")
+            with concurrent.futures.ThreadPoolExecutor(max_workers=max_sec_workers) as executor:
+                results = list(executor.map(_process_textbook_section, enumerate(sections_to_process)))
+                for _, sec_q in sorted(results, key=lambda x: x[0]):
+                    raw_questions.extend(sec_q)
+        else:
+            for item in enumerate(sections_to_process):
+                _, sec_q = _process_textbook_section(item)
+                raw_questions.extend(sec_q)
 
         # Fallback if all sections returned empty (e.g. LLM timeout)
         if not raw_questions and len(cleaned_text) > 200:
@@ -2613,16 +2641,67 @@ def save_curriculum_extracted_questions_pipeline(
             )
             inserted_count += 1
 
+    # 2.5 Runbook Resolution / Creation & Linking
+    ch_title = (title or filename or "Chapter").replace(".pdf", "").replace(".docx", "").replace(".doc", "").replace("_", " ").strip()
+    rb_core_concepts = core_concepts or [f"{ch_title} Core Concepts"]
+    rb_formulas = key_formulas_or_rules or [f"{ch_title} Essential Principles"]
+    rb_traps = common_traps or ["Misapplication of fundamental definitions"]
+    rb_archetypes = [q.get("question") for q in questions[:4] if isinstance(q, dict) and q.get("question")]
+
+    resolved_runbook_id = None
+    try:
+        existing_rb = session.query(Runbook).filter(
+            Runbook.board == board,
+            Runbook.class_grade == class_grade,
+            Runbook.subject == subject,
+            Runbook.chapter_name == ch_title
+        ).first()
+
+        if not existing_rb:
+            new_rb = Runbook(
+                id=str(uuid.uuid4()),
+                board=board,
+                class_grade=class_grade,
+                subject=subject,
+                chapter_name=ch_title,
+                core_concepts=rb_core_concepts,
+                key_formulas_or_rules=rb_formulas,
+                common_traps=rb_traps,
+                curated_reference_urls=[],
+                sample_question_archetypes=rb_archetypes,
+                difficulty_calibration={"simple": 40, "medium": 40, "hard": 20},
+                status="PUBLISHED",
+                version=1,
+                created_by=uploaded_by if uploaded_by and str(uploaded_by).isdigit() else None,
+            )
+            session.add(new_rb)
+            session.flush()
+            resolved_runbook_id = new_rb.id
+        else:
+            if rb_core_concepts:
+                existing_rb.core_concepts = rb_core_concepts
+            if rb_formulas:
+                existing_rb.key_formulas_or_rules = rb_formulas
+            if rb_traps:
+                existing_rb.common_traps = rb_traps
+            if rb_archetypes:
+                existing_rb.sample_question_archetypes = rb_archetypes
+            session.flush()
+            resolved_runbook_id = existing_rb.id
+    except Exception as rb_err:
+        logger.warning(f"Runbook auto-sync notice: {rb_err}")
+
     # 3. Create Document and Document Chunks
     doc_id = str(uuid.uuid4())
     doc_record = Document(
         id=doc_id,
+        runbook_id=resolved_runbook_id,
         filename=filename,
         content_type=document_type,
         board=board,
         class_grade=class_grade,
         subject=subject,
-        uploaded_by=uploaded_by,
+        uploaded_by=uploaded_by if uploaded_by and str(uploaded_by).isdigit() else None,
         status="PROCESSED",
     )
     session.add(doc_record)
