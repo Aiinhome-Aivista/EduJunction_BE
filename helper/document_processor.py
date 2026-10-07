@@ -353,17 +353,18 @@ def save_diagram_to_disk(image_bytes: bytes, ext: str = "png", prefix: str = "di
 
 
 def crop_figure_from_pdf_page(file_bytes: bytes, page_num: int | None, fig_label: str) -> tuple[bytes | None, int | None]:
-    """Precisely crops the visual figure/diagram associated with a specific figure label using a 3-Layer progressive search.
+    """Precisely crops the visual figure, diagram, table, chart, or apparatus from the PDF using a 3-Layer progressive search.
     - Layer 1: Target question page (if page_num provided).
     - Layer 2: Adjacent neighbor pages (page_num ± 1, page_num ± 2).
     - Layer 3: Document-wide fallback (all remaining pages in document).
 
-    Academic Quality & Diagram Heuristics:
-    1. Full caption block detection & spatial bounding-box fusion.
-    2. Proximity threshold (max distance <= 120 pt between caption and diagram image).
-    3. Rejects 1-bit tint masks, full-page scanned backgrounds, and tiny decorative icons.
-    4. Adaptive padding (8 pt horizontal, 6 pt vertical) around the crop for clean aesthetics.
-    5. High-resolution rendering at 180 DPI for razor-sharp diagrams.
+    Academic Quality & Universal Visual Support:
+    1. Supports both Raster Figures (e.g. 'Fig. 4.16') and Vector Tables/Charts (e.g. 'Table 4.3').
+    2. Horizontally co-aligned sub-diagram clustering and side label preservation ('X', 'Y', '1', '2', 'N').
+    3. Multi-line caption and table title expansion.
+    4. Side-text column boundary protection (prevents cutting into adjacent questions).
+    5. Smart Background Whitener: Neutral light grey watermark erasure (NCERT 195-254) for crisp pure white background.
+    6. High-resolution rendering at 180 DPI for razor-sharp diagrams.
 
     Returns:
         tuple[bytes | None, int | None]: (png_image_bytes, actual_matched_page_number)
@@ -372,16 +373,23 @@ def crop_figure_from_pdf_page(file_bytes: bytes, page_num: int | None, fig_label
         return None, None
     try:
         import math
+        import io
+        from PIL import Image
+
         doc = fitz.open(stream=file_bytes, filetype="pdf")
         total_pages = len(doc)
         if total_pages == 0:
             doc.close()
             return None, None
 
-        clean_fig = str(fig_label).strip()
-        search_terms = [clean_fig]
-        if not clean_fig.lower().startswith("fig"):
-            search_terms.extend([f"Fig. {clean_fig}", f"Fig {clean_fig}", f"Figure {clean_fig}", clean_fig])
+        clean_label = str(fig_label).strip()
+        is_table_query = bool(re.search(r'\btable\b', clean_label, re.IGNORECASE))
+        is_chart_query = bool(re.search(r'\bchart\b', clean_label, re.IGNORECASE))
+
+        sub_match = re.search(r'(\d+(?:\.\d+)?)\s*(?:\(?([a-zA-Z0-9]+)\)?)?', clean_label, re.IGNORECASE)
+        base_num = sub_match.group(1) if sub_match else clean_label
+        raw_sub = sub_match.group(2) if (sub_match and sub_match.group(2)) else None
+        sub_id = raw_sub if (raw_sub and raw_sub.lower() not in ["figure", "fig", "table", "chart"]) else None
 
         target_p = int(page_num) if (page_num and 1 <= int(page_num) <= total_pages) else None
         layer1 = [target_p] if target_p else []
@@ -396,84 +404,367 @@ def crop_figure_from_pdf_page(file_bytes: bytes, page_num: int | None, fig_label
         for layer_idx, page_list in enumerate([layer1, layer2, layer3], 1):
             for pno in page_list:
                 page = doc[pno - 1]
-                caption_rects = []
-
-                # Prioritize full block containing the figure caption for complete textual context
                 page_blocks = page.get_text("blocks") or []
-                for b in page_blocks:
-                    b_text = b[4]
-                    if re.search(rf'\bfig(?:ure)?\.?\s*{re.escape(clean_fig)}\b', b_text, re.IGNORECASE):
-                        b_rect = fitz.Rect(b[:4])
-                        if b_rect.height < page.rect.height * 0.4:
-                            caption_rects.append(b_rect)
 
-                if not caption_rects:
-                    for term in search_terms:
-                        res = page.search_for(term)
-                        if res:
-                            caption_rects.extend(res)
-                            break
+                # =========================================================================
+                # PATH 1: TABLE & VECTOR CHART SEARCH & CROP (UNIVERSAL BI-DIRECTIONAL)
+                # =========================================================================
+                if is_table_query or is_chart_query:
+                    exact_titles = []
+                    for b in page_blocks:
+                        b_text = b[4].strip()
+                        if re.search(r'\b(?:what|which|explain|observe|answer|calculate|options\s+given|according\s+to|record\s+your|repeat\s+the)\b', b_text, re.IGNORECASE) or b_text.endswith("?"):
+                            continue
+                        # Genuine caption signature: starts with Table/Chart/Tab.
+                        if re.match(r'^\s*(?:table|chart|tab\.)\s*' + re.escape(base_num) + r'(?![a-zA-Z0-9])', b_text, re.IGNORECASE):
+                            if len(b_text) < 150:
+                                exact_titles.append((fitz.Rect(b[:4]), b_text))
 
-                if not caption_rects:
-                    continue
+                    if not exact_titles:
+                        continue
 
-                img_list = page.get_images(full=True)
-                best_match = None
-                min_dist = float("inf")
+                    t_rect, t_text = exact_titles[0]
 
-                for cap_rect in caption_rects:
-                    for img in img_list:
-                        xref = img[0]
-                        base_image = doc.extract_image(xref)
-                        if not base_image:
+                    # Multi-line title subtitle expansion (directly above or below caption)
+                    for b in page_blocks:
+                        b_r = fitz.Rect(b[:4])
+                        b_str = b[4].strip()
+                        if b_str == t_text:
                             continue
-                        ext = (base_image.get("ext") or "png").lower()
-                        if ext not in ["png", "jpg", "jpeg", "webp"]:
-                            continue
-                        # Reject 1-bit monochrome tint / background masks
-                        if base_image.get("colorspace") == 1:
-                            continue
-                        w = base_image.get("width", 0)
-                        h = base_image.get("height", 0)
-                        img_data = base_image.get("image", b"")
-                        if (w < 40 and h < 40) or (max(w, h) < 100) or len(img_data) < 2048:
-                            continue
-                        aspect = w / max(h, 1)
-                        if aspect > 8.0 or aspect < 0.05:
-                            continue
-                        # Reject full portrait page scans
-                        if (0.64 <= aspect <= 0.82) and h >= 750 and w >= 550:
-                            continue
+                        if max(b_r.x0, t_rect.x0 - 40) < min(b_r.x1, t_rect.x1 + 40) and len(b_str.split()) <= 12:
+                            if not b_str.endswith("?") and not re.match(r'^(?:Activity|\d+[\.\)]|Fig|Table|Chart|Q\.)', b_str, re.IGNORECASE):
+                                # Subtitle directly below header caption
+                                if -3 <= (b_r.y0 - t_rect.y1) <= 18:
+                                    t_rect = t_rect | b_r
+                                # Title directly above footer caption
+                                elif -18 <= (t_rect.y0 - b_r.y1) <= 3:
+                                    t_rect = t_rect | b_r
 
-                        r_list = page.get_image_rects(xref)
-                        if not r_list:
-                            continue
-                        r = r_list[0]
-                        # Reject full-page border overlays
-                        if r.width > page.rect.width * 0.95 and r.height > page.rect.height * 0.95:
-                            continue
+                    # Bi-directional Vector Drawings & Grid Expansion (Top-caption or Bottom-caption)
+                    table_drawings_box = None
+                    is_footer_caption = False
 
-                        dx = max(0, max(cap_rect.x0 - r.x1, r.x0 - cap_rect.x1))
-                        dy = max(0, max(cap_rect.y0 - r.y1, r.y0 - cap_rect.y1))
-                        dist = math.hypot(dx, dy)
-                        if dist < min_dist:
-                            min_dist = dist
-                            best_match = (r, cap_rect, pno, dist)
+                    # First check if table drawings exist BELOW caption (Header mode)
+                    for d in page.get_drawings():
+                        d_r = d["rect"]
+                        if d_r.width > page.rect.width * 0.85 or d_r.height > page.rect.height * 0.85:
+                            continue
+                        if d_r.width < 18 or d_r.height < 6 or d_r.height > 300 or d_r.width > 480:
+                            continue
+                        if d_r.y0 >= t_rect.y1 - 8 and d_r.y0 <= t_rect.y1 + 45 and max(d_r.x0, t_rect.x0 - 70) < min(d_r.x1, t_rect.x1 + 70):
+                            if table_drawings_box is None:
+                                table_drawings_box = d_r
+                            else:
+                                table_drawings_box = table_drawings_box | d_r
 
-                if best_match and best_match[3] <= 120:
-                    crop_rect = best_match[0] | best_match[1]
-                    pad_x = 8
-                    pad_y = 6
+                    # If no drawings below, check if table drawings exist ABOVE caption (Footer mode)
+                    if table_drawings_box is None:
+                        for d in page.get_drawings():
+                            d_r = d["rect"]
+                            if d_r.width > page.rect.width * 0.85 or d_r.height > page.rect.height * 0.85:
+                                continue
+                            if d_r.width < 18 or d_r.height < 6 or d_r.height > 300 or d_r.width > 480:
+                                continue
+                            if d_r.y1 <= t_rect.y0 + 8 and d_r.y1 >= t_rect.y0 - 45 and max(d_r.x0, t_rect.x0 - 70) < min(d_r.x1, t_rect.x1 + 70):
+                                is_footer_caption = True
+                                if table_drawings_box is None:
+                                    table_drawings_box = d_r
+                                else:
+                                    table_drawings_box = table_drawings_box | d_r
+
+                    # Expand connected drawings in the active direction
+                    if table_drawings_box:
+                        for d in page.get_drawings():
+                            d_r = d["rect"]
+                            if d_r.width > page.rect.width * 0.85 or d_r.height > page.rect.height * 0.85:
+                                continue
+                            if d_r.width < 18 or d_r.height < 6 or d_r.height > 300 or d_r.width > 480:
+                                continue
+                            if d_r.y0 <= table_drawings_box.y1 + 10 and d_r.y1 >= table_drawings_box.y0 - 10:
+                                if max(d_r.x0, table_drawings_box.x0 - 40) < min(d_r.x1, table_drawings_box.x1 + 40):
+                                    table_drawings_box = table_drawings_box | d_r
+
+                    table_box = t_rect
+                    if table_drawings_box:
+                        table_box = table_box | table_drawings_box
+                        grid_y0 = table_drawings_box.y0 - 5
+                        grid_y1 = table_drawings_box.y1 + 5
+                        grid_x0 = table_drawings_box.x0
+                        grid_x1 = table_drawings_box.x1
+                    else:
+                        if is_footer_caption:
+                            grid_y0 = t_rect.y0 - 220
+                            grid_y1 = t_rect.y0
+                        else:
+                            grid_y0 = t_rect.y1
+                            grid_y1 = t_rect.y1 + 220
+                        grid_x0 = t_rect.x0 - 20
+                        grid_x1 = t_rect.x1 + 20
+
+                    # Include Table row labels on the left & data cells inside grid
+                    included_blocks = 0
+                    for b in page_blocks:
+                        b_r = fitz.Rect(b[:4])
+                        b_str = b[4].strip()
+                        if b_str == t_text:
+                            continue
+                        if re.match(r'^(?:\d+[\.\)]\s+[A-Z]|Activity|Fig|Q\.)', b_str):
+                            continue
+                        if grid_y0 <= b_r.y0 and b_r.y1 <= grid_y1 + 10:
+                            if (grid_x0 - 55 <= b_r.x0 <= grid_x1 + 25) and (b_r.x1 <= grid_x1 + 25):
+                                table_box = table_box | b_r
+                                included_blocks += 1
+
+                    # Table Structure Verification: must have drawings or data cells
+                    if not table_drawings_box and included_blocks == 0:
+                        continue
+
+                    pad_x = 10
+                    pad_y = 10
                     padded_rect = fitz.Rect(
-                        max(0, crop_rect.x0 - pad_x),
-                        max(0, crop_rect.y0 - pad_y),
-                        min(page.rect.width, crop_rect.x1 + pad_x),
-                        min(page.rect.height, crop_rect.y1 + pad_y)
+                        max(0, table_box.x0 - pad_x),
+                        max(0, table_box.y0 - pad_y),
+                        min(page.rect.width, table_box.x1 + pad_x),
+                        min(page.rect.height, table_box.y1 + pad_y)
                     )
                     pix = page.get_pixmap(clip=padded_rect, dpi=180)
                     img_bytes = pix.tobytes("png")
+
+                    # Smart Whitener & Watermark Remover
+                    try:
+                        pil_img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+                        pixels = pil_img.load()
+                        p_w, p_h = pil_img.size
+                        for py in range(p_h):
+                            for px in range(p_w):
+                                pr, pg, pb = pixels[px, py]
+                                # Neutral light grey watermark:
+                                if pr >= 195 and pg >= 195 and pb >= 195 and abs(pr - pg) <= 10 and abs(pg - pb) <= 12:
+                                    pixels[px, py] = (255, 255, 255)
+                                # Tan/beige watermark ink (e.g. NCERT 'not to be republished'):
+                                elif 195 <= pr <= 252 and 185 <= pg <= 248 and 165 <= pb <= 242:
+                                    if 6 <= (pr - pb) <= 45 and (pr >= pg >= pb or abs(pr - pg) <= 15):
+                                        pixels[px, py] = (255, 255, 255)
+                        buf = io.BytesIO()
+                        pil_img.save(buf, format="PNG")
+                        img_bytes = buf.getvalue()
+                    except Exception:
+                        pass
+
                     doc.close()
                     return img_bytes, pno
+
+                # =========================================================================
+                # PATH 2: FIGURE / DIAGRAM SEARCH & CROP
+                # =========================================================================
+                if is_table_query or is_chart_query:
+                    continue
+
+                exact_captions = []
+                fallback_captions = []
+
+                for b in page_blocks:
+                    b_text = b[4].strip()
+                    if re.search(r'\b(?:what|which|explain|observe|answer|calculate|state|following\s+questions|activity|can\s+you)\b', b_text, re.IGNORECASE) or b_text.endswith("?"):
+                        continue
+                    if sub_id:
+                        sub_pat = rf'fig(?:ure)?\.?\s*{re.escape(base_num)}\s*(?:\(\s*{re.escape(sub_id)}\s*\)|{re.escape(sub_id)})(?![a-zA-Z0-9])'
+                        if re.search(sub_pat, b_text, re.IGNORECASE):
+                            b_rect = fitz.Rect(b[:4])
+                            if b_rect.height < 60 and len(b_text) < 120:
+                                if re.match(r'^\s*fig(?:ure)?\.?', b_text, re.IGNORECASE):
+                                    exact_captions.insert(0, (b_rect, b_text))
+                                else:
+                                    exact_captions.append((b_rect, b_text))
+                    else:
+                        pat = rf'fig(?:ure)?\.?\s*{re.escape(base_num)}(?![a-zA-Z0-9])'
+                        if re.search(pat, b_text, re.IGNORECASE):
+                            b_rect = fitz.Rect(b[:4])
+                            if b_rect.height < 60 and len(b_text) < 120:
+                                if re.match(r'^\s*fig(?:ure)?\.?', b_text, re.IGNORECASE):
+                                    exact_captions.insert(0, (b_rect, b_text))
+                                else:
+                                    exact_captions.append((b_rect, b_text))
+
+                chosen_caption = (exact_captions or fallback_captions or [None])[0]
+                if not chosen_caption:
+                    if not sub_id:
+                        for b in page_blocks:
+                            b_text = b[4].strip()
+                            if any(term.lower() in b_text.lower() for term in [f"fig. {base_num}", f"fig.{base_num}", f"fig {base_num}", f"figure {base_num}"]):
+                                b_rect = fitz.Rect(b[:4])
+                                chosen_caption = (b_rect, b_text)
+                                break
+
+                if not chosen_caption:
+                    continue
+
+                cap_rect, cap_text = chosen_caption
+
+                # Expand caption to include multi-line caption continuations directly below cap_rect
+                for b in page_blocks:
+                    b_rect = fitz.Rect(b[:4])
+                    b_str = b[4].strip()
+                    if b_str == cap_text:
+                        continue
+                    if -2 <= (b_rect.y0 - cap_rect.y1) <= 18:
+                        if max(b_rect.x0, cap_rect.x0 - 40) < min(b_rect.x1, cap_rect.x1 + 40):
+                            if not b_str.endswith("?") and not re.match(r'^(?:Activity|\d+\.|\d+\s+[A-Z]|Fig|Table|Q\.)', b_str, re.IGNORECASE):
+                                if len(b_str.split()) <= 12:
+                                    cap_rect = cap_rect | b_rect
+
+                img_list = page.get_images(full=True)
+                best_img = None
+                min_dist = float("inf")
+                all_valid_imgs = []
+
+                for img in img_list:
+                    xref = img[0]
+                    base_image = doc.extract_image(xref)
+                    if not base_image:
+                        continue
+                    ext = (base_image.get("ext") or "png").lower()
+                    if ext not in ["png", "jpg", "jpeg", "webp"]:
+                        continue
+                    if base_image.get("colorspace") == 1:
+                        continue
+                    w = base_image.get("width", 0)
+                    h = base_image.get("height", 0)
+                    img_data = base_image.get("image", b"")
+                    if (w < 35 and h < 35) or len(img_data) < 1500:
+                        continue
+                    aspect = w / max(h, 1)
+                    if (0.64 <= aspect <= 0.82) and h >= 750 and w >= 550:
+                        continue
+
+                    r_list = page.get_image_rects(xref)
+                    if not r_list:
+                        continue
+                    r = r_list[0]
+                    if r.width > page.rect.width * 0.9 and r.height > page.rect.height * 0.9:
+                        continue
+
+                    dx = max(0, max(cap_rect.x0 - r.x1, r.x0 - cap_rect.x1))
+                    dy = max(0, max(cap_rect.y0 - r.y1, r.y0 - cap_rect.y1))
+                    dist = math.hypot(dx, dy)
+                    all_valid_imgs.append((r, dist, xref))
+                    if dist < min_dist:
+                        min_dist = dist
+                        best_img = (r, dist, xref)
+
+                if not best_img or best_img[1] > 140:
+                    continue
+
+                r_best, _, _ = best_img
+                # Cluster ONLY horizontally co-aligned sub-images (e.g. 3 thermometers at the same vertical band)
+                cluster_rect = r_best
+                for r, dist, _ in all_valid_imgs:
+                    if dist <= 140:
+                        v_overlap = min(r.y1, r_best.y1) - max(r.y0, r_best.y0)
+                        if v_overlap > min(r.height, r_best.height) * 0.4:
+                            cluster_rect = cluster_rect | r
+
+                # Include short diagram labels (e.g., 'X', 'Y', '1', '2', 'A', 'B') located immediately beside cluster_rect
+                for b in page_blocks:
+                    b_rect = fitz.Rect(b[:4])
+                    b_str = b[4].strip()
+                    if b_str == cap_text:
+                        continue
+                    if len(b_str.split()) <= 2 and not b_str.endswith("?") and not re.match(r'^\d+\.\s', b_str):
+                        if (cluster_rect.y0 - 15 <= b_rect.y0 <= cluster_rect.y1 + 15 or cluster_rect.y0 - 15 <= b_rect.y1 <= cluster_rect.y1 + 15):
+                            dx = max(0, max(cluster_rect.x0 - b_rect.x1, b_rect.x0 - cluster_rect.x1))
+                            if dx <= 35:
+                                cluster_rect = cluster_rect | b_rect
+
+                crop_rect = cluster_rect | cap_rect
+
+                # Prevent right-side and left-side text bleeding: find nearest text columns
+                max_x1 = page.rect.width
+                min_x0 = 0.0
+                for b in page_blocks:
+                    b_rect = fitz.Rect(b[:4])
+                    b_str = b[4].strip()
+                    if b_str == cap_text or len(b_str.split()) <= 2:
+                        continue
+                    if b_rect.x0 >= crop_rect.x1 - 5 and max(b_rect.y0, crop_rect.y0) < min(b_rect.y1, crop_rect.y1):
+                        if b_rect.x0 < max_x1:
+                            max_x1 = b_rect.x0 - 2
+                    if b_rect.x1 <= crop_rect.x0 + 5 and max(b_rect.y0, crop_rect.y0) < min(b_rect.y1, crop_rect.y1):
+                        if b_rect.x1 > min_x0:
+                            min_x0 = b_rect.x1 + 2
+
+                pad_x = 6
+                pad_y = 8
+                padded_rect = fitz.Rect(
+                    max(min_x0, crop_rect.x0 - pad_x),
+                    max(0, crop_rect.y0 - pad_y),
+                    min(max_x1, crop_rect.x1 + pad_x),
+                    min(page.rect.height, crop_rect.y1 + pad_y)
+                )
+                pix = page.get_pixmap(clip=padded_rect, dpi=180)
+                img_bytes = pix.tobytes("png")
+
+                # Smart Background Whitener: Erase faint grey watermarks (e.g. 'NCERT not to be republished')
+                try:
+                    pil_img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+                    pixels = pil_img.load()
+                    p_w, p_h = pil_img.size
+                    for py in range(p_h):
+                        for px in range(p_w):
+                            pr, pg, pb = pixels[px, py]
+                            # Neutral light grey watermark removal (NCERT watermark is solid 232 or anti-aliased 195-254)
+                            if pr >= 195 and pg >= 195 and pb >= 195 and abs(pr - pg) <= 10 and abs(pg - pb) <= 12:
+                                pixels[px, py] = (255, 255, 255)
+                    buf = io.BytesIO()
+                    pil_img.save(buf, format="PNG")
+                    img_bytes = buf.getvalue()
+                except Exception:
+                    pass
+
+                doc.close()
+                return img_bytes, pno
+
+        # =========================================================================
+        # PATH 3: UNLABELLED VISUAL / DIAGRAM ON TARGET PAGE (GENERIC QUERIES ONLY)
+        # =========================================================================
+        if (clean_label.lower() in ["visual", "diagram", "apparatus", "image"]) and target_p and 1 <= target_p <= total_pages:
+            page = doc[target_p - 1]
+            img_list = page.get_images(full=True)
+            for img in img_list:
+                xref = img[0]
+                base_image = doc.extract_image(xref)
+                if not base_image or base_image.get("ext", "").lower() not in ["png", "jpg", "jpeg", "webp"]:
+                    continue
+                w = base_image.get("width", 0)
+                h = base_image.get("height", 0)
+                if w < 120 or h < 100:
+                    continue
+                aspect = w / max(h, 1)
+                if (0.64 <= aspect <= 0.82) and h >= 750 and w >= 550:
+                    continue
+                r_list = page.get_image_rects(xref)
+                if r_list:
+                    r = r_list[0]
+                    pad = 6
+                    padded_rect = fitz.Rect(max(0, r.x0 - pad), max(0, r.y0 - pad), min(page.rect.width, r.x1 + pad), min(page.rect.height, r.y1 + pad))
+                    pix = page.get_pixmap(clip=padded_rect, dpi=180)
+                    img_bytes = pix.tobytes("png")
+                    try:
+                        pil_img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+                        pixels = pil_img.load()
+                        p_w, p_h = pil_img.size
+                        for py in range(p_h):
+                            for px in range(p_w):
+                                pr, pg, pb = pixels[px, py]
+                                if pr >= 195 and pg >= 195 and pb >= 195 and abs(pr - pg) <= 10 and abs(pg - pb) <= 12:
+                                    pixels[px, py] = (255, 255, 255)
+                        buf = io.BytesIO()
+                        pil_img.save(buf, format="PNG")
+                        img_bytes = buf.getvalue()
+                    except Exception:
+                        pass
+                    doc.close()
+                    return img_bytes, target_p
 
         doc.close()
         return None, None

@@ -51,15 +51,17 @@ def is_diagram_subject(subject_name: str) -> bool:
     return any(v in sub for v in VISUAL_SUBJECTS)
 
 
-# Regex patterns that identify genuine question requirements for diagrams / figures
+# Regex patterns that identify genuine question requirements for diagrams / figures / tables / charts
 STRICT_FIGURE_PATTERNS = [
-    r"\b(?:refer to|study|observe|look at|see)\s+(?:the\s+)?(?:figure|fig\.?|diagram|circuit|ray diagram|map|graph|chart)\b",
-    r"\b(?:in|from)\s+(?:the\s+)?(?:adjoining|given|above|below|following)\s+(?:figure|fig\.?|diagram|circuit|ray diagram|map|graph|chart)\b",
+    r"\b(?:refer to|study|observe|look at|see)\s+(?:the\s+)?(?:figure|fig\.?|diagram|circuit|ray diagram|map|graph|chart|table|setup|apparatus)\b",
+    r"\b(?:in|from|according to|based on)\s+(?:the\s+)?(?:adjoining|given|above|below|following|observations in)?\s*(?:figure|fig\.?|diagram|circuit|ray diagram|map|graph|chart|table|setup|apparatus|data table)\b",
     r"\b(?:figure|fig\.?)\s+\d+(?:\.\d+)?\b",
+    r"\b(?:table|chart|grid)\s+\d+(?:\.\d+)?\b",
     r"\b(?:labeled|shaded|marked)\s+(?:part|region|area|component|zone)\b",
     r"\bidentify\s+(?:the\s+)?(?:part|structure|organ|circuit|apparatus)\s+(?:labeled|marked)\b",
     r"\b(?:circuit|ray)\s+diagram\s+(?:shows|illustrates|represents|given)\b",
-    r"\b(?:pie\s*chart|bar\s*graph|flow\s*chart)\s+(?:shows|indicates|given)\b",
+    r"\b(?:pie\s*chart|bar\s*graph|flow\s*chart|observation\s*table)\s+(?:shows|indicates|given)\b",
+    r"\b(?:experimental\s+setup|given\s+apparatus|experimental\s+arrangement)\b",
 ]
 
 # False positive terms where 'figure' or 'diagram' is used metaphorically or non-visually
@@ -70,8 +72,10 @@ NON_VISUAL_FIGURE_EXCLUSIONS = [
 ]
 
 
-def is_diagram_referenced_in_question(question_text: str) -> bool:
-    """Checks if a question strictly references an embedded figure, diagram, map, or chart."""
+def is_diagram_referenced_in_question(question_text: str, norm_dict: dict = None) -> bool:
+    """Checks if a question strictly references an embedded figure, diagram, table, chart, or map."""
+    if norm_dict and (norm_dict.get("figure_ref") or norm_dict.get("has_visual") or norm_dict.get("image_url")):
+        return True
     if not question_text:
         return False
     q_low = question_text.lower()
@@ -150,18 +154,27 @@ def assign_diagrams_to_questions(
         "observe", "refer", "study", "part", "table", "each", "both", "does", "have", "were"
     }
 
-    # Pre-index PDF pages for fast figure search if file_bytes provided
-    fig_page_map = {}
+    # Pre-index PDF pages with type and sub-variant awareness
+    visual_page_map = {}
     if file_bytes:
         try:
             import fitz
             doc_idx = fitz.open(stream=file_bytes, filetype="pdf")
             for pno in range(len(doc_idx)):
                 p_text = doc_idx[pno].get_text()
-                p_figs = re.findall(r'\b(?:fig(?:ure)?\.?)\s*(\d+(?:\.\d+)?)\b', p_text, re.IGNORECASE)
-                for pf in p_figs:
-                    if pf not in fig_page_map:
-                        fig_page_map[pf] = pno + 1
+                matches = re.finditer(r'\b(fig(?:ure)?\.?|table|chart)\s*(\d+(?:\.\d+)?(?:\s*\([a-zA-Z0-9]+\)|[a-zA-Z])?)(?![a-zA-Z0-9])', p_text, re.IGNORECASE)
+                for m in matches:
+                    v_type_raw = m.group(1).lower()
+                    v_type = 'table' if 'table' in v_type_raw else ('chart' if 'chart' in v_type_raw else 'fig')
+                    v_val = m.group(2).strip().lower().replace(" ", "")
+                    if (v_type, v_val) not in visual_page_map:
+                        visual_page_map[(v_type, v_val)] = pno + 1
+                    norm_v_val = re.sub(r'[()]', '', v_val)
+                    if (v_type, norm_v_val) not in visual_page_map:
+                        visual_page_map[(v_type, norm_v_val)] = pno + 1
+                    base_val = re.split(r'[\([a-zA-Z]', v_val)[0].strip()
+                    if (v_type, base_val) not in visual_page_map:
+                        visual_page_map[(v_type, base_val)] = pno + 1
             doc_idx.close()
         except Exception:
             pass
@@ -171,12 +184,25 @@ def assign_diagrams_to_questions(
             continue
 
         q_text = norm.get("question", "")
-        if not is_diagram_referenced_in_question(q_text):
+        if not is_diagram_referenced_in_question(q_text, norm):
             continue
 
-        # Look for explicit figure identifier (e.g. '4.16', '7.10', '4.17', '1', '5')
-        fig_match = re.search(r'\b(?:fig(?:ure)?\.?)\s*(\d+(?:\.\d+)?)\b', q_text, re.IGNORECASE)
-        target_fig_str = fig_match.group(1).strip() if fig_match else str(norm.get("figure_ref") or "").strip() or None
+        # Look for explicit figure/table identifier (e.g. 'Table 4.3', 'Fig. 4.16', 'Fig. 7.3b', 'Fig. 7.3(b)')
+        table_match = re.search(r'\b(table\s*\d+(?:\.\d+)?(?:\s*\([a-zA-Z0-9]+\)|[a-zA-Z])?)(?![a-zA-Z0-9])', q_text, re.IGNORECASE)
+        chart_match = re.search(r'\b(chart\s*\d+(?:\.\d+)?(?:\s*\([a-zA-Z0-9]+\)|[a-zA-Z])?)(?![a-zA-Z0-9])', q_text, re.IGNORECASE)
+        fig_match = re.search(r'\b((?:fig(?:ure)?\.?)\s*\d+(?:\.\d+)?(?:\s*\([a-zA-Z0-9]+\)|[a-zA-Z])?)(?![a-zA-Z0-9])', q_text, re.IGNORECASE)
+
+        target_fig_str = None
+        if table_match:
+            target_fig_str = table_match.group(1).strip()
+        elif chart_match:
+            target_fig_str = chart_match.group(1).strip()
+        elif fig_match:
+            target_fig_str = fig_match.group(1).strip()
+        elif norm.get("figure_ref"):
+            target_fig_str = str(norm.get("figure_ref")).strip()
+        elif norm.get("has_visual") or is_diagram_referenced_in_question(q_text, norm):
+            target_fig_str = "visual"
 
         saved_url = None
 
@@ -184,36 +210,51 @@ def assign_diagrams_to_questions(
         # STAGE 1: DIRECT 3-LAYER PRECISION CROP FROM PDF (100% BULLETPROOF)
         # ---------------------------------------------------------------------
         if target_fig_str and file_bytes:
-            hint_page = norm.get("diagram_page") or fig_page_map.get(target_fig_str)
+            clean_num_key = re.sub(r'^(?:table|chart|fig(?:ure)?\.?)\s*', '', target_fig_str, flags=re.IGNORECASE).strip().lower().replace(" ", "")
+            clean_norm_key = re.sub(r'[()]', '', clean_num_key)
+            base_key = re.split(r'[\([a-zA-Z]', clean_num_key)[0].strip()
+            v_type = 'table' if 'table' in target_fig_str.lower() else ('chart' if 'chart' in target_fig_str.lower() else 'fig')
+
+            hint_page = (
+                norm.get("diagram_page")
+                or visual_page_map.get((v_type, clean_num_key))
+                or visual_page_map.get((v_type, clean_norm_key))
+                or visual_page_map.get((v_type, base_key))
+            )
             crop_bytes, actual_page = document_processor.crop_figure_from_pdf_page(
                 file_bytes, 
                 int(hint_page) if hint_page else None, 
                 target_fig_str
             )
             if crop_bytes and actual_page:
+                prefix_clean = re.sub(r'[^a-zA-Z0-9_]', '_', target_fig_str)
                 saved_url = document_processor.save_diagram_to_disk(
                     image_bytes=crop_bytes,
                     ext="png",
-                    prefix=f"crop_p{actual_page}_fig{target_fig_str.replace('.', '_')}"
+                    prefix=f"crop_p{actual_page}_{prefix_clean}"
                 )
                 if saved_url:
                     norm["image_url"] = saved_url
                     linked_count += 1
                     q_snippet = (norm.get('question') or '')[:70].replace('\n', ' ')
                     print(f"  [PRECISION-CROP] Q#{idx} ({norm.get('type')}) '{q_snippet}...'")
-                    print(f"     -> Diagram URL : {saved_url} (Direct Crisp 180 DPI Crop from PDF Page {actual_page})")
-                    print(f"     -> Matched Fig : Fig. {target_fig_str}")
+                    print(f"     -> Visual URL  : {saved_url} (Direct Crisp 180 DPI Crop from PDF Page {actual_page})")
+                    print(f"     -> Matched Ref : {target_fig_str}")
                     continue
 
         # ---------------------------------------------------------------------
-        # STAGE 2: STRICT POOL MATCHING (PAGE-ISOLATED ONLY)
+        # STAGE 2: STRICT POOL MATCHING (PAGE-ISOLATED ONLY FOR FIGURES)
         # ---------------------------------------------------------------------
+        # If the question explicitly requested a Table/Chart, NEVER attach arbitrary raster images from pool
+        if table_match:
+            continue
+
         selected_diag = None
         if target_fig_str and available_diagrams:
             for d in available_diagrams:
                 direct_figs = d.get("direct_figures", [])
                 cap = d.get("caption", "")
-                if target_fig_str in direct_figs or re.search(rf'\bfig(?:ure)?\.?\s*{re.escape(target_fig_str)}\b', cap, re.IGNORECASE):
+                if target_fig_str in direct_figs or re.search(rf'\b(?:fig(?:ure)?\.?|table|chart)\s*{re.escape(target_fig_str)}\b', cap, re.IGNORECASE):
                     selected_diag = d
                     break
 
@@ -269,7 +310,7 @@ Your task is to analyze the provided textbook/chapter text and extract all direc
 
 YOU MUST GENERATE QUESTIONS SPANNING ALL 9 QUESTION TYPES:
 1. 'MCQ' (1M): Multiple Choice Question with exactly 4 authentic options ('A) ', 'B) ', 'C) ', 'D) '). 'correct_answer' MUST be the exact matching text from the options list (NOT just 'A' or 'Option A').
-2. 'Objective' (1M): Direct definition, one-word answer, or fill-in-the-blank. For every 'Fill in the blank' question, you MUST explicitly include an underscore blank '________' where the missing word belongs (e.g. 'Fill in the blank: ________ is a natural resource that can be replenished through natural processes.'). NEVER omit the blank line. 'options' MUST be []. 'correct_answer' is the direct word/phrase.
+2. 'Objective' (1M): Direct definition, one-word answer, or fill-in-the-blank. For every 'Fill in the blank' question, you MUST contextually and grammatically place '________' exactly where the missing word/concept belongs (e.g. 'Fill in the blank: The materials that are attracted towards a magnet are called ________.' or 'Fill in the blanks: Unlike poles of two magnets ________ each other, whereas like poles ________ each other.' or 'Fill in the blank: ________ is the process of converting water into water vapour.'). NEVER place the blank at the start if the sentence begins with a subject noun/phrase. 'options' MUST be []. 'correct_answer' is the direct word/phrase.
 3. 'Numerical' (1M, 3M, or 5M): Quantitative calculation or formula application. Provide step-by-step formula derivation in 'explanation' and final value with units in 'correct_answer'. 'options' MUST be [].
 4. 'Assertion Reason' (1M): Standard assertion (A) and reason (R) format with 4 standard board options.
 5. 'SAQ' (2M): Short Answer Question (2-3 focused lines testing foundational concept or definition). 'options' MUST be [].
@@ -287,8 +328,11 @@ THE 4 GOLDEN RULES (CRITICAL CONSTRAINTS):
 6. STRICT CURRICULUM SUBJECT MATTER GROUNDING (NEVER ASK ABOUT TEXTBOOK STRUCTURE OR PEDAGOGY):
    - NEVER generate questions about the physical book, book design, textbook titles (e.g. 'Curiosity', 'Beehive'), layout, pedagogical sections (e.g. 'Learning further', 'role of Summary section', 'Teacher notes', 'activities section purpose', 'integrated approach in this book').
    - ONLY generate questions testing pure scientific, mathematical, or academic concept facts (e.g. Magnetic Poles, Electric Current, Plant Structure, Separation Methods, Ecosystems).
-7. PRESERVE FIGURE & DIAGRAM CITATIONS:
-   - If an exercise or text question references a figure, chart, apparatus, or diagram (e.g., 'Fig. 4.16', 'shown in Fig. 7.10', 'In the given flowchart', 'observe the apparatus'), PRESERVE the figure identifier in the question text (e.g., 'Refer to Fig. 4.16: ...' or 'As shown in Fig. 7.10, what is...'). This allows the diagram engine to automatically attach the extracted visual image to the question.
+7. PRESERVE FIGURE, TABLE & DIAGRAM CITATIONS:
+   - If an exercise or text question references a figure, table, chart, apparatus, or diagram (e.g., 'Fig. 4.16', 'Table 4.3', 'Chart 1.2', 'In the given diagram', 'observe the apparatus'), PRESERVE the figure/table identifier in the question text (e.g., 'According to the observations in Table 4.3...', 'Refer to Fig. 4.16: ...').
+   - For ANY question that requires a diagram, table, chart, or apparatus to be understood/solved, include:
+     "figure_ref": "Table 4.3" or "Fig. 4.16" (or null if unnumbered),
+     "has_visual": true
 8. ATOMIC SINGLE-QUESTION RULE (NO COMPOUND GLUED QUESTIONS FOR 1M, 2M, 3M):
    - Every MCQ (1M), Objective (1M), SAQ (2M), and Short Answer (3M) question MUST ask exactly ONE single, focused question.
    - NEVER glue or concatenate two questions together into a single 1-mark item (e.g. NEVER output: 'What is the temperature reading in Fig. 7.10? What is the smallest value it can measure?').
@@ -316,6 +360,8 @@ JSON Schema & Example:
       "correct_answer": "Hydrogen gas",
       "explanation": "When Zinc (Zn) reacts with dilute Sulphuric Acid (H2SO4), it forms Zinc Sulphate (ZnSO4) and releases Hydrogen gas (H2). Reaction: Zn + H2SO4 -> ZnSO4 + H2.",
       "topic_suggested": "Acids and Metals Reactions",
+      "figure_ref": null,
+      "has_visual": false,
       "image_url": null
     },
     {
@@ -719,7 +765,7 @@ def _find_best_canonical_topic(raw_topic: str, canonical_topics: List[str], thre
 
 
 def heal_fill_in_the_blank_question(q_text: str, correct_answer: str) -> str:
-    """Auto-heals Objective/Fill in the Blank questions to ensure a clean, grammatical '________' marker is present."""
+    """Auto-heals Objective/Fill in the Blank questions to ensure a clean, grammatical, and contextually placed '________' marker."""
     if not q_text:
         return q_text
 
@@ -730,6 +776,22 @@ def heal_fill_in_the_blank_question(q_text: str, correct_answer: str) -> str:
     # Check if question is a Fill-in-the-blank / Complete prompt
     is_blank_prompt = bool(re.search(r'\b(?:fill\s+in\s+the\s+blanks?|complete\s+the\s+(?:sentence|statement|blank))\b', normalized, re.IGNORECASE))
 
+    # Clean up accidental leading blank placed before a capitalized subject noun
+    # e.g. 'Fill in the blank: ________ The materials...' -> 'Fill in the blank: The materials...'
+    if re.search(r'^(.*?\b(?:fill\s+in\s+the\s+blanks?|complete\s+the\s+(?:sentence|statement|blank))\s*[:\-–—]\s*)________\s+([A-Z][a-z]+)', normalized, re.IGNORECASE):
+        lead_match = re.search(r'^(.*?\b(?:fill\s+in\s+the\s+blanks?|complete\s+the\s+(?:sentence|statement|blank))\s*[:\-–—]\s*)________\s+([A-Z][a-z]+)', normalized, re.IGNORECASE)
+        next_word = lead_match.group(2).lower() if lead_match else ""
+        if next_word not in ['is', 'are', 'was', 'were', 'refers', 'means', 'denotes', 'represents', 'can', 'could', 'will', 'has', 'have']:
+            normalized = re.sub(r'^(.*?\b(?:fill\s+in\s+the\s+blanks?|complete\s+the\s+(?:sentence|statement|blank))\s*[:\-–—]\s*)________\s+', r'\1', normalized, flags=re.IGNORECASE)
+
+    # Fix awkward tail blank placed after a noun following a verb e.g. 'has poles ________.' -> 'has ________ poles.'
+    awkward_tail_blank = r'\b(has|have|had|contains|possesses|with)\s+([a-zA-Z]+)\s+________\s*[\.\:\s]*$'
+    if re.search(awkward_tail_blank, normalized, re.IGNORECASE):
+        normalized = re.sub(awkward_tail_blank, r'\1 ________ \2.', normalized, flags=re.IGNORECASE)
+
+    # Fix omitted verb before 'each other' e.g. 'magnets each other' -> 'magnets ________ each other'
+    normalized = re.sub(r'(\b(?:magnets|poles|charges|bodies|particles|objects|surfaces|materials|species)\s+)each\s+other\b', r'\1________ each other', normalized, flags=re.IGNORECASE)
+
     # Process multi-line sub-parts (e.g. (i), (ii), (a), (b), 1., 2.)
     lines = normalized.splitlines()
     if len(lines) > 1 and any(re.match(r'^\s*\(?[iIvVxXa-d\d]+\)?[\.\:\s]', l) for l in lines):
@@ -739,7 +801,6 @@ def heal_fill_in_the_blank_question(q_text: str, correct_answer: str) -> str:
             if not l:
                 continue
             if re.match(r'^\(?[iIvVxXa-d\d]+\)?[\.\:\s]', l) and "________" not in l:
-                # If line ends with incomplete preposition or article
                 if re.search(r'\b(?:its|a|an|the|is|are|was|were|by|in|of|to|called|as)\s*[\.\:\s]*$', l, re.IGNORECASE):
                     l = re.sub(r'(\b(?:its|a|an|the|is|are|was|were|by|in|of|to|called|as))\s*[\.\:\s]*$', r'\1 ________.', l, flags=re.IGNORECASE)
                 elif re.search(r'\b(?:a|an|the)\s+[a-zA-Z]+(?:\s+[a-zA-Z]+)?\s*[\.\:\s]*$', l, re.IGNORECASE):
@@ -749,33 +810,44 @@ def heal_fill_in_the_blank_question(q_text: str, correct_answer: str) -> str:
             healed_lines.append(l)
         normalized = "\n".join(healed_lines)
     elif is_blank_prompt and "________" not in normalized:
-        # Case 1: Missing subject at start: 'Fill in the blank: is a natural resource...' -> 'Fill in the blank: ________ is a natural resource...'
-        verb_start_pattern = r'^(.*?\b(?:fill\s+in\s+the\s+blanks?|complete\s+the\s+(?:sentence|statement|blank))\s*[:\-–—]\s*)(is|are|was|were|refers|means|denotes|represents|can|could|will|would|should|has|have|had|helps|occurs|consists|contains|describes|states|involves)\b'
-        if re.search(verb_start_pattern, normalized, re.IGNORECASE):
-            normalized = re.sub(verb_start_pattern, r'\1________ \2', normalized, flags=re.IGNORECASE)
+        # Dynamic Step A: If correct_answer or its components are in the sentence, replace them with ________
+        if correct_answer and len(correct_answer.strip()) > 1:
+            raw_parts = [p.strip() for p in re.split(r'[,;/]|\band\b', correct_answer) if p.strip()]
+            for p in raw_parts:
+                if len(p) >= 2 and re.search(r'\b' + re.escape(p) + r'\b', normalized, re.IGNORECASE):
+                    header_m = re.search(r'^(.*?\b(?:fill\s+in\s+the\s+blanks?|complete\s+the\s+(?:sentence|statement|blank))\s*[:\-–—]\s*)', normalized, re.IGNORECASE)
+                    hdr_len = len(header_m.group(1)) if header_m else 0
+                    body = normalized[hdr_len:]
+                    body = re.sub(r'\b' + re.escape(p) + r'\b', '________', body, count=1, flags=re.IGNORECASE)
+                    normalized = normalized[:hdr_len] + body
 
-        # Case 2: The correct_answer is still inside the question: 'Fill in the blank: Water is a natural resource...' -> 'Fill in the blank: ________ is a natural resource...'
-        elif correct_answer and len(correct_answer.strip()) > 1:
-            clean_ans = correct_answer.strip()
-            escaped_ans = re.escape(clean_ans)
-            ans_match = re.search(rf'^(.*?\b(?:fill\s+in\s+the\s+blanks?|complete\s+the\s+(?:sentence|statement|blank))\s*[:\-–—]\s*.*?\b)({escaped_ans})\b', normalized, re.IGNORECASE)
-            if ans_match:
-                prefix = ans_match.group(1)
-                rest = normalized[ans_match.end(2):]
-                normalized = f"{prefix}________{rest}"
-
-        # Case 3: Prompt ends with definition colon/preposition e.g. 'is called:' or 'is known as:'
+        # Dynamic Step B: If sentence ends with definition/preposition e.g. 'are called', 'is known as', 'called .'
         if "________" not in normalized:
-            if re.search(r'\b(?:is\s+called|is\s+known\s+as|is\s+termed\s+as|is\s+defined\s+as|refers\s+to|means)\s*[:\.\s]*$', normalized, re.IGNORECASE):
-                normalized = re.sub(r'(\b(?:is\s+called|is\s+known\s+as|is\s+termed\s+as|is\s+defined\s+as|refers\s+to|means))\s*[:\.\s]*$', r'\1 ________.', normalized, flags=re.IGNORECASE)
-            else:
-                # Case 4: General fallback - insert blank before the main predicate
-                header_match = re.search(r'^(.*?\b(?:fill\s+in\s+the\s+blanks?|complete\s+the\s+(?:sentence|statement|blank))\s*[:\-–—]\s*)(.*)$', normalized, re.IGNORECASE)
-                if header_match:
-                    p_head = header_match.group(1)
-                    p_body = header_match.group(2).strip()
-                    if p_body:
-                        normalized = f"{p_head}________ {p_body}"
+            def_tail_pat = r'\b(is\s+called|are\s+called|was\s+called|were\s+called|is\s+known\s+as|are\s+known\s+as|is\s+termed\s+as|is\s+termed|are\s+termed|is\s+defined\s+as|are\s+defined\s+as|called|termed|known\s+as|refers\s+to|means|consists\s+of|equals\s+to|forms|produces|generates)\s*[\.\:\s]*$'
+            if re.search(def_tail_pat, normalized, re.IGNORECASE):
+                normalized = re.sub(def_tail_pat, r'\1 ________.', normalized, flags=re.IGNORECASE)
+
+        # Dynamic Step C: Sentence ends with 'has/have/contains/possesses [noun]' e.g. 'A magnet always has poles.' -> 'has ________ poles.'
+        if "________" not in normalized:
+            verb_noun_tail = r'\b(has|have|had|contains|possesses|with)\s+([a-zA-Z]+)\s*[\.\:\s]*$'
+            if re.search(verb_noun_tail, normalized, re.IGNORECASE):
+                normalized = re.sub(verb_noun_tail, r'\1 ________ \2.', normalized, flags=re.IGNORECASE)
+
+        # Dynamic Step D: Sentence ends with article + noun e.g. 'points towards the direction.' -> 'the ________ direction.'
+        if "________" not in normalized:
+            art_noun_tail = r'\b(a|an|the)\s+([a-zA-Z]+)\s*[\.\:\s]*$'
+            if re.search(art_noun_tail, normalized, re.IGNORECASE):
+                normalized = re.sub(art_noun_tail, r'\1 ________ \2.', normalized, flags=re.IGNORECASE)
+
+        # Dynamic Step E: Missing subject at start e.g. 'Fill in the blank: is a natural resource'
+        if "________" not in normalized:
+            verb_start_pattern = r'^(.*?\b(?:fill\s+in\s+the\s+blanks?|complete\s+the\s+(?:sentence|statement|blank))\s*[:\-–—]\s*)(is|are|was|were|refers|means|denotes|represents|can|could|will|would|should|has|have|had|helps|occurs|consists|contains|describes|states|involves)\b'
+            if re.search(verb_start_pattern, normalized, re.IGNORECASE):
+                normalized = re.sub(verb_start_pattern, r'\1________ \2', normalized, flags=re.IGNORECASE)
+
+        # Dynamic Step F: Fallback - append blank at the end of the sentence
+        if "________" not in normalized:
+            normalized = normalized.rstrip('. :') + " ________."
 
     return normalized
 
@@ -819,10 +891,33 @@ def sanitize_question_item(
     if any(re.search(pat, q_lower) for pat in META_BOOK_PATTERNS):
         return None
 
+    # Reject incomplete dangling header prompts e.g. "Observe the part of thermometer shown in Fig. 7.8 and answer the following questions:"
+    if re.search(r'\b(?:and\s+answer\s+the\s+following\s+questions?|the\s+following\s+questions?|given\s+below|answer\s+the\s+questions?\s+below)\s*[:\.\s]*$', raw_q_text, re.IGNORECASE):
+        if not any(marker in raw_q_text for marker in ["(a)", "(i)", "1.", "?"]) or len(raw_q_text.split()) < 10:
+            return None
+
     if "alternative concept" in q_lower or "null condition" in q_lower or "secondary effect" in q_lower:
         return None
-    if len(raw_q_text) < 15 or len(raw_q_text.split()) < 3:
-        return None
+
+    dummy_titles = [
+        "long", "long answer", "long answer question", "long answer questions", "laq",
+        "short", "short answer", "saq", "vsaq", "mcq", "multiple choice", "objective",
+        "case study", "numerical", "assertion reason", "true or false", "fill in the blank",
+        "section a", "section b", "section c", "section d", "section e",
+        "question", "questions", "answer the following", "solve", "evaluate", "explain"
+    ]
+    clean_q_low = raw_q_text.lower().strip('. :-\t\n')
+    if clean_q_low in dummy_titles or len(raw_q_text) < 15 or len(raw_q_text.split()) < 3:
+        topic_sug = str(q.get("topic_suggested") or meta.get("subject") or "").strip()
+        if topic_sug and topic_sug.lower() not in ["general", "none", "null", "curriculum"]:
+            if "long" in default_type.lower() or "8m" in default_type.lower() or "5m" in default_type.lower():
+                raw_q_text = f"Explain the fundamental concepts, experimental observations, and core principles of {topic_sug} in detail."
+            elif "saq" in default_type.lower() or "2m" in default_type.lower() or "3m" in default_type.lower():
+                raw_q_text = f"State the key principles and importance of {topic_sug}."
+            else:
+                raw_q_text = f"Explain the key characteristics of {topic_sug}."
+        else:
+            return None
 
     # Ensure question ends with a clean terminal punctuation mark if ending with number/formula
     if not any(raw_q_text.rstrip().endswith(ch) for ch in ['?', '.', ':', '"', "'", ')', ']', '_', '}']):
@@ -999,10 +1094,26 @@ def sanitize_question_item(
             if ',' in corr:
                 corr = corr.split(',')[0].strip()
 
+        # Decontaminate concatenated 'explanation:' / 'reason:' in options
+        if clean_opts:
+            decontaminated_opts = []
+            for opt_val in clean_opts:
+                cleaned_opt = re.sub(r'\s*(?:explanation|reason|justification)\s*[:\-–—].*$', '', opt_val, flags=re.IGNORECASE).strip()
+                if cleaned_opt:
+                    decontaminated_opts.append(cleaned_opt)
+            clean_opts = decontaminated_opts
+
+        # If question ends with 'Explain.' or 'Give reasons.' and was made an MCQ with synthetic choices:
+        if resolved_type in ["MCQ", "OBJECTIVE"] and re.search(r'\b(?:explain|give\s+reasons?|state\s+why|why\s+or\s+why\s+not)\s*[\?\.\:]*$', q_text, re.IGNORECASE):
+            resolved_type = "SAQ"
+            marks = 2
+            clean_opts = []
+
         # Check for dummy options
         is_dummy = any(re.match(r"^(?:[A-D]\s*[\)\.\:\-]\s*)?option\s*[A-D]?$", opt, re.IGNORECASE) for opt in clean_opts)
         if len(clean_opts) < 2 or is_dummy:
-            resolved_type = "OBJECTIVE"
+            if resolved_type not in ["SAQ", "SHORT ANSWER (3M)", "LONG ANSWER"]:
+                resolved_type = "OBJECTIVE"
             clean_opts = []
         else:
             # Ensure standard prefix A), B), C), D)
@@ -1056,6 +1167,37 @@ def sanitize_question_item(
         else:
             corr = clean_opts[0].split(")", 1)[-1].strip() if clean_opts else ""
 
+        # Smart Balanced MCQ Option Shuffling (randomizes correct option across A, B, C, D without altering answer fidelity)
+        if resolved_type == "MCQ" and len(clean_opts) >= 2 and corr:
+            raw_bodies = [re.sub(r'^[A-D]\s*[\)\.\:\-]\s*', '', opt).strip() for opt in clean_opts[:4]]
+            corr_clean = corr.lower().strip()
+            target_body = None
+            for body in raw_bodies:
+                if corr_clean == body.lower() or (len(corr_clean) > 2 and corr_clean in body.lower()) or (len(body) > 2 and body.lower() in corr_clean):
+                    target_body = body
+                    break
+            if not target_body:
+                target_body = raw_bodies[0]
+
+            has_both_ab = any(re.search(r'\bboth\s+(?:\(?[a-d]\)?\s+and\s+\(?[a-d]\)?|[a-d]\s*,\s*[a-d])\b', b, re.IGNORECASE) for b in raw_bodies)
+            has_all_none = any(re.search(r'^(?:all|none)\s+of\s+(?:the\s+above|these)$', b.strip(), re.IGNORECASE) for b in raw_bodies)
+
+            import random
+            if has_both_ab:
+                # Positional references like 'Both A and B' must not be shuffled
+                pass
+            elif has_all_none:
+                # Keep 'All/None of the above' fixed at the last option D, shuffle the remaining options
+                all_none_idx = next(i for i, b in enumerate(raw_bodies) if re.search(r'^(?:all|none)\s+of\s+(?:the\s+above|these)$', b.strip(), re.IGNORECASE))
+                all_none_item = raw_bodies.pop(all_none_idx)
+                random.shuffle(raw_bodies)
+                raw_bodies.append(all_none_item)
+            else:
+                random.shuffle(raw_bodies)
+
+            clean_opts = [f"{chr(65 + i)}) {body}" for i, body in enumerate(raw_bodies)]
+            corr = target_body
+
     # Determine calibrated difficulty (Supports 'easy', 'simple', 'medium', 'hard')
     raw_diff = str(q.get("difficulty") or target_diff or "easy").strip().lower()
     if raw_diff in ["easy", "simple"]:
@@ -1074,15 +1216,17 @@ def sanitize_question_item(
         "key concept regarding",
         "standard model solution",
         "conceptual principle for",
-        "comprehensive curriculum solution covering"
+        "comprehensive curriculum solution covering",
+        "core pedagogical solution",
+        "concept verification for"
     ]
     if not clean_expl or any(trig in clean_expl.lower() for trig in dummy_expl_triggers) or clean_expl.strip() in [".", "-", "none", "null"]:
         if resolved_type in ["MCQ", "ASSERTION REASON"] and clean_opts and corr:
-            clean_expl = f"The correct answer is '{corr}' as established by the curriculum concepts in {meta.get('title', 'the topic')}."
-        elif corr and len(corr) > 15:
-            clean_expl = f"Step-by-step reasoning:\n{corr}"
+            clean_expl = f"The correct answer is '{corr}' based on the curriculum concepts in {meta.get('title', 'the topic')}."
+        elif corr and len(corr) > 15 and not any(trig in corr.lower() for trig in dummy_expl_triggers):
+            clean_expl = f"Explanation:\n{corr}"
         else:
-            clean_expl = f"Core pedagogical solution and concept verification for {meta.get('subject', 'the curriculum')}."
+            clean_expl = f"Based on {meta.get('title', meta.get('subject', 'the curriculum'))}, this concept is established in {meta.get('subject', 'the topic')}."
 
     # Assigned marks
     raw_m = q.get("marks")
@@ -1108,8 +1252,13 @@ def sanitize_question_item(
             resolved_type = "OBJECTIVE"
 
     # Re-calibrate question type by marks if generic
+    is_expl_q = bool(re.search(r'\b(?:explain|give\s+reasons?|state\s+why|why\s+or\s+why\s+not)\s*[\?\.\:]*$', q_text, re.IGNORECASE))
     if is_fill_in_the_blank:
         resolved_type = "OBJECTIVE"
+    elif is_expl_q or resolved_type == "SAQ":
+        resolved_type = "SAQ"
+        if marks < 2:
+            marks = 2
     elif marks == 1 and resolved_type not in ["MCQ", "ASSERTION REASON"]:
         resolved_type = "OBJECTIVE"
     elif marks == 2 and resolved_type not in ["MCQ", "ASSERTION REASON", "OBJECTIVE"]:

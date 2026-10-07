@@ -17,7 +17,7 @@ Your task is to analyze the provided curriculum document text and generate high-
 
 YOU MUST GENERATE QUESTIONS SPANNING ALL 9 QUESTION TYPES:
 1. 'MCQ' (1M): Multiple Choice Question with exactly 4 distinct, authentic options ('A) ', 'B) ', 'C) ', 'D) '). 'correct_answer' MUST be the exact matching text of the correct choice (NOT just 'A' or 'Option A').
-2. 'Objective' (1M): Direct definition, one-word answer, or fill-in-the-blank. 'options' MUST be []. 'correct_answer' is the direct word/phrase.
+2. 'Objective' (1M): Direct definition, one-word answer, or fill-in-the-blank. For every 'Fill in the blank' question, you MUST contextually and grammatically place '________' exactly where the missing word/concept belongs (e.g. 'Fill in the blank: The materials that are attracted towards a magnet are called ________.' or 'Fill in the blanks: Unlike poles of two magnets ________ each other, whereas like poles ________ each other.' or 'Fill in the blank: ________ is the process of converting water into water vapour.'). NEVER place the blank at the start if the sentence begins with a subject noun/phrase. 'options' MUST be []. 'correct_answer' is the direct word/phrase.
 3. 'Numerical' (1M, 3M, or 5M): Quantitative calculation or formula application. Provide step-by-step formula derivation in 'explanation' and final value with units in 'correct_answer'. 'options' MUST be [].
 4. 'Assertion Reason' (1M): Standard assertion (A) and reason (R) format with 4 standard board options.
 5. 'SAQ' (2M): Short Answer Question (2-3 focused lines testing foundational concept or definition). 'options' MUST be [].
@@ -32,6 +32,12 @@ THE 5 GOLDEN RULES (CRITICAL CONSTRAINTS):
 3. STANDALONE QUESTIONS: Every question must be fully complete on its own. Never output bare prompts like 'Fill in the blank.' or 'the following questions:'. Combine the prompt with the target sentence.
 4. PRESERVE MATH & SCIENCE: Keep LaTeX expressions (\\frac, \\sqrt, x^2, \\Omega, \\alpha, \\beta), chemical notations (H2O, CaCl2, CO2), and units intact.
 5. STRICT OBJECTIVE VS SAQ SEGREGATION: 'Fill in the blanks', 'Complete the sentence', 'True or False', or questions requiring filling '________' MUST ALWAYS have type='Objective'. NEVER classify Fill in the blanks as 'SAQ'. 'SAQ' (2M) MUST ALWAYS be an authentic conceptual or descriptive question. NEVER paste answer keys into the question prompt.
+6. STRICT FIGURE & TABLE GROUNDING (NEVER HALLUCINATE NUMBERS):
+   - If a question references a figure, table, chart, or apparatus (e.g. 'Fig. 4.16', 'Table 4.3', 'Table 7.4'), you MUST write the EXACT number as printed in the textbook text.
+   - NEVER invent, change, or increment numbers (e.g. NEVER write 'Table 7.5' if the text says 'Table 7.4').
+   - For ANY question that requires a diagram, table, chart, or apparatus to be understood/solved, include:
+     "figure_ref": "Table 4.3" or "Fig. 4.16" (or null if unnumbered),
+     "has_visual": true
 
 JSON Schema:
 {
@@ -50,6 +56,8 @@ JSON Schema:
       "correct_answer": "Hydrogen gas",
       "explanation": "When Zinc (Zn) reacts with dilute Sulphuric Acid (H2SO4), it forms Zinc Sulphate (ZnSO4) and releases Hydrogen gas (H2). Reaction: Zn + H2SO4 -> ZnSO4 + H2.",
       "topic_suggested": "Acids and Metals Reactions",
+      "figure_ref": null,
+      "has_visual": false,
       "image_url": null
     }
   ]
@@ -118,16 +126,6 @@ def _sanitize_single_question(q: Any, default_type: str, target_diff: str, meta:
 
     corr = str(q.get("correct_answer") or "").strip()
 
-    # Smart Sentence Merger: If question text is just an instruction and correct_answer has the sentence/blank
-    if re.search(r"^(?:(?:A|B|C|D|Q\d+)?\.?\s*)?(?:complete\s+the\s+sentence|fill\s+in\s+the\s+blank|choose\s+the\s+correct\s+word|state\s+whether|give\s+one\s+word|change\s+the\s+tense)", q_text, re.IGNORECASE):
-        if "_" in corr or ("(" in corr and ")" in corr and len(corr.split()) >= 3):
-            q_text = f"{q_text.rstrip('. :')}: {corr}"
-            bracket_match = re.search(r'\(([^)]+)\)', corr)
-            if bracket_match:
-                corr = bracket_match.group(1).strip()
-            else:
-                corr = "Refer to the completed sentence."
-
     raw_type = str(q.get("type") or default_type or "MCQ").strip().upper()
     if "ASSERTION" in raw_type or "REASON" in raw_type:
         resolved_type = "Assertion Reason"
@@ -159,6 +157,53 @@ def _sanitize_single_question(q: Any, default_type: str, target_diff: str, meta:
     else:
         resolved_type = default_type if default_type != "ALL" else "MCQ"
         default_m = 1
+
+    # Anti-Dummy / Anti-Truncation Guardrail for ALL question types
+    # Prevents section labels like "Long", "SAQ", "MCQ", "Question", etc. from becoming bare question statements
+    dummy_titles = [
+        "long", "long answer", "long answer question", "long answer questions", "laq",
+        "short", "short answer", "saq", "vsaq", "mcq", "multiple choice", "objective",
+        "case study", "numerical", "assertion reason", "true or false", "fill in the blank",
+        "section a", "section b", "section c", "section d", "section e",
+        "question", "questions", "answer the following", "solve", "evaluate", "explain"
+    ]
+    clean_q_low = q_text.lower().strip('. :-\t\n')
+    if clean_q_low in dummy_titles or len(q_text) < 12 or len(q_text.split()) < 3:
+        # Check if the correct_answer or topic_suggested can heal it
+        candidate_q = None
+        if corr and any(corr.strip().lower().startswith(kw) for kw in ["explain", "describe", "what is", "why does", "state the", "differentiate", "how does", "derive", "discuss"]):
+            cand_parts = re.split(r'[\n\.\?]', corr.strip(), 1)
+            if len(cand_parts) > 1 and len(cand_parts[0].strip()) >= 15:
+                candidate_q = cand_parts[0].strip() + "?"
+                corr = cand_parts[1].strip()
+
+        topic_sug = str(q.get("topic_suggested") or meta.get("subject") or "").strip()
+        if not candidate_q and topic_sug and topic_sug.lower() not in ["general", "none", "null", "curriculum"]:
+            if "long" in resolved_type.lower() or "8m" in resolved_type.lower():
+                candidate_q = f"Explain the fundamental concepts, experimental observations, and core principles of {topic_sug} in detail."
+            elif "case" in resolved_type.lower():
+                candidate_q = f"Read the scenario regarding {topic_sug} and answer the comprehensive questions that follow."
+            elif "saq" in resolved_type.lower():
+                candidate_q = f"State the key principles and importance of {topic_sug}."
+            elif "objective" in resolved_type.lower():
+                candidate_q = f"Define the core scientific term associated with {topic_sug}."
+            else:
+                candidate_q = f"Explain the key characteristics of {topic_sug}."
+
+        if candidate_q:
+            q_text = candidate_q
+        else:
+            return None
+
+    # Smart Sentence Merger: If question text is just an instruction and correct_answer has the sentence/blank
+    if re.search(r"^(?:(?:A|B|C|D|Q\d+)?\.?\s*)?(?:complete\s+the\s+sentence|fill\s+in\s+the\s+blank|choose\s+the\s+correct\s+word|state\s+whether|give\s+one\s+word|change\s+the\s+tense)", q_text, re.IGNORECASE):
+        if "_" in corr or ("(" in corr and ")" in corr and len(corr.split()) >= 3):
+            q_text = f"{q_text.rstrip('. :')}: {corr}"
+            bracket_match = re.search(r'\(([^)]+)\)', corr)
+            if bracket_match:
+                corr = bracket_match.group(1).strip()
+            else:
+                corr = "Refer to the completed sentence."
 
     # Clean options
     q_opts = q.get("options")
