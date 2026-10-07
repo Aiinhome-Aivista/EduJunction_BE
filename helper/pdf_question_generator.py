@@ -588,7 +588,8 @@ RULES:
 2. List 4 to 8 core concepts, 3 to 6 key formulas/rules, and 3 to 5 common misconceptions/traps.
 3. Identify at least 3 to 6 key conceptual relationships/dependencies for the Knowledge Graph.
 4. Generate 6 to 12 high-yield examination questions covering Simple (foundational/easy), Medium (standard), and Hard (HOTS/board-level) across all uploaded chapters.
-5. Output STRICTLY valid JSON with no markdown wrapping or extra commentary.
+5. STANDALONE QUESTION TEXT ONLY: The "question" field MUST ALWAYS be a complete, authentic question sentence (e.g. 'Explain the process of...', 'Calculate the resistance...', 'Which of the following...'). NEVER put section titles, marks, or category tags (such as 'MCQ', 'SAQ', 'Short', 'Long', '5 Marks', 'Section A') as the question text.
+6. Output STRICTLY valid JSON with no markdown wrapping or extra commentary.
 """
 
 

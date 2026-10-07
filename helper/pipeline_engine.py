@@ -75,15 +75,24 @@ NON_VISUAL_FIGURE_EXCLUSIONS = [
 
 
 def is_diagram_referenced_in_question(question_text: str, norm_dict: dict = None) -> bool:
-    """Checks if a question strictly references an embedded figure, diagram, table, chart, or map."""
-    if norm_dict and (norm_dict.get("figure_ref") or norm_dict.get("has_visual") or norm_dict.get("image_url")):
-        return True
+    """Checks if a question strictly references an external figure or visual diagram."""
     if not question_text:
         return False
+    
+    # 1. If question already has an inline text/markdown table, DO NOT attach external images
+    if "|" in question_text and (question_text.count("|") >= 4 or "\n|" in question_text):
+        return False
+    if re.search(r'Table\s*[:\-–—]\s*[^\n]+\n[^\n]+[\|\:\-]', question_text):
+        return False
+
     q_low = question_text.lower()
     # Check exclusions first
     if any(re.search(excl, q_low) for excl in NON_VISUAL_FIGURE_EXCLUSIONS):
         return False
+
+    if norm_dict and norm_dict.get("figure_ref"):
+        return True
+
     return any(re.search(pat, q_low) for pat in STRICT_FIGURE_PATTERNS)
 
 
@@ -245,14 +254,14 @@ def assign_diagrams_to_questions(
                     continue
 
         # ---------------------------------------------------------------------
-        # STAGE 2: STRICT POOL MATCHING (PAGE-ISOLATED ONLY FOR FIGURES)
+        # STAGE 2: STRICT POOL MATCHING (ZERO BLIND / LOOSE KEYWORD FALLBACKS)
         # ---------------------------------------------------------------------
-        # If the question explicitly requested a Table/Chart, NEVER attach arbitrary raster images from pool
-        if table_match:
+        # If the question explicitly requested a Table/Chart or already contains an inline table, NEVER attach arbitrary images
+        if table_match or "|" in q_text or "Table:" in q_text:
             continue
 
         selected_diag = None
-        if target_fig_str and available_diagrams:
+        if target_fig_str and target_fig_str != "visual" and available_diagrams:
             for d in available_diagrams:
                 direct_figs = d.get("direct_figures", [])
                 cap = d.get("caption", "")
@@ -260,23 +269,26 @@ def assign_diagrams_to_questions(
                     selected_diag = d
                     break
 
-        if not selected_diag and available_diagrams:
+        # Strict visual requirement for unnumbered diagram mentions
+        has_explicit_visual_phrase = bool(re.search(r'\b(?:in\s+the\s+given\s+(?:diagram|figure|circuit|setup|apparatus)|shown\s+in\s+the\s+(?:diagram|figure|circuit)|observe\s+the\s+(?:diagram|figure|setup)|ray\s+diagram|circuit\s+diagram)\b', q_text, re.IGNORECASE))
+
+        if not selected_diag and has_explicit_visual_phrase and available_diagrams:
             q_words = set(re.findall(r'[a-zA-Z]{4,}', q_text.lower())) - STOP_WORDS
             best_diag = None
             best_overlap = 0
 
             for d in available_diagrams:
                 cap = d.get("caption", "").lower()
-                if not cap:
+                if not cap or len(cap.split()) < 3:
                     continue
                 cap_words = set(re.findall(r'[a-zA-Z]{4,}', cap)) - STOP_WORDS
                 overlap = len(q_words & cap_words)
-                # Require at least 2 distinct academic keywords
-                if overlap >= 2 and overlap > best_overlap:
+                # Require at least 3 distinct domain keywords to prevent false positives
+                if overlap >= 3 and overlap > best_overlap:
                     best_overlap = overlap
                     best_diag = d
 
-            if best_diag and best_overlap >= 2:
+            if best_diag and best_overlap >= 3:
                 selected_diag = best_diag
 
         if selected_diag:
@@ -296,6 +308,7 @@ def assign_diagrams_to_questions(
                 print(f"     -> Matched By  : {cap_snippet}")
         else:
             # Clean self-contained questions if no verified diagram was matched
+            norm["image_url"] = None
             if re.match(r"^(?:in\s+the\s+given\s+figure|from\s+the\s+given\s+figure)[,\s]+", q_text, re.IGNORECASE):
                 if any(num_kw in q_text for num_kw in ["sides", "cm", "m", "angle", "radius", "=", "value of", "calculate"]):
                     norm["question"] = re.sub(r"^(?:in\s+the\s+given\s+figure|from\s+the\s+given\s+figure)[,\s]+", "For ", q_text, flags=re.IGNORECASE)
@@ -344,6 +357,9 @@ THE 4 GOLDEN RULES (CRITICAL CONSTRAINTS):
    - 'Fill in the blanks', 'Complete the sentence', 'Choose the correct word', 'True or False', or questions requiring filling '________' MUST ALWAYS have type='Objective'. NEVER classify Fill in the blanks or True/False as 'SAQ'.
    - 'SAQ' (2M) MUST ALWAYS be an authentic conceptual or descriptive question (e.g. 'Explain why...', 'Define...', 'State two differences between...').
    - NEVER paste or append the answer key into the question text (e.g. NEVER output '(i) temperature (ii) clinical' at the end of the question sentence). All answers must go exclusively in 'correct_answer'.
+10. MANDATORY COMPLETE QUESTION SENTENCES ACROSS ALL 9 QUESTION TYPES (ZERO DUMMY WORDS):
+   - The "question" field MUST ALWAYS be an exhaustive, standalone, grammatically complete question sentence (e.g., 'Explain the classification of plants based on stem and root structure...', 'Describe the working mechanism of a magnetic compass...', 'Calculate the resistance...', 'Which of the following statements is correct...?').
+   - NEVER output single-word category tags, section labels, or marks descriptors (such as 'MCQ', 'Objective', 'SAQ', 'Short', 'Short Answer', 'Case Study', 'Long', 'Long Answer', '5 Marks', '8 Marks', 'Numerical', 'Section A', 'Section B') as the "question" text.
 
 JSON Schema & Example:
 {
@@ -493,6 +509,9 @@ CRITICAL BILINGUAL & DIGITIZATION INSTRUCTIONS:
 5. DIAGRAMS & MATHEMATICS:
    - Preserve references to figures, charts, maps, circuits, and geometry triangles.
    - Preserve clean mathematical formulas and scientific notation (LaTeX, Greek symbols, formulas).
+
+6. FULL QUESTION SENTENCES ONLY (ZERO DUMMY WORDS):
+   - The 'question' field MUST be the complete, authentic question sentence from the paper. NEVER output category tags (e.g. 'MCQ', 'SAQ', 'Short', 'Long', '5 Marks', 'Section A') as the question text.
 """
 
 
@@ -905,21 +924,40 @@ def sanitize_question_item(
         "long", "long answer", "long answer question", "long answer questions", "laq",
         "short", "short answer", "saq", "vsaq", "mcq", "multiple choice", "objective",
         "case study", "numerical", "assertion reason", "true or false", "fill in the blank",
-        "section a", "section b", "section c", "section d", "section e",
-        "question", "questions", "answer the following", "solve", "evaluate", "explain"
+        "fill in the blanks", "match the following", "one word", "vsa", "problem", "solution",
+        "1 mark", "2 marks", "3 marks", "4 marks", "5 marks", "8 marks", "1m", "2m", "3m", "4m", "5m", "8m",
+        "section a", "section b", "section c", "section d", "section e", "section f",
+        "question", "questions", "answer the following", "solve", "evaluate", "explain", "describe", "define"
     ]
+    effective_type = str(q.get("type") or q.get("question_type") or default_type or "MCQ").strip()
     clean_q_low = raw_q_text.lower().strip('. :-\t\n')
+    
     if clean_q_low in dummy_titles or len(raw_q_text) < 15 or len(raw_q_text.split()) < 3:
-        topic_sug = str(q.get("topic_suggested") or meta.get("subject") or "").strip()
-        if topic_sug and topic_sug.lower() not in ["general", "none", "null", "curriculum"]:
-            if "long" in default_type.lower() or "8m" in default_type.lower() or "5m" in default_type.lower():
-                raw_q_text = f"Explain the fundamental concepts, experimental observations, and core principles of {topic_sug} in detail."
-            elif "saq" in default_type.lower() or "2m" in default_type.lower() or "3m" in default_type.lower():
-                raw_q_text = f"State the key principles and importance of {topic_sug}."
-            else:
-                raw_q_text = f"Explain the key characteristics of {topic_sug}."
-        else:
-            return None
+        topic_sug = str(q.get("topic_suggested") or meta.get("topic") or meta.get("chapter") or meta.get("title") or meta.get("subject") or "").strip()
+        # Clean topic prefix/suffix
+        topic_sug = re.sub(r'^(?:Chapter|Unit|Lesson)\s*\d+[\s\:\.\-–—]*', '', topic_sug, flags=re.IGNORECASE).strip()
+        if not topic_sug or topic_sug.lower() in ["general", "none", "null", "curriculum", ""]:
+            topic_sug = str(meta.get("subject") or "the concept")
+
+        eff_lower = effective_type.lower()
+        if "8m" in eff_lower or "evaluative" in eff_lower:
+            raw_q_text = f"Critically analyze and evaluate the comprehensive mechanism, applications, and significance of {topic_sug} in detail."
+        elif "long" in eff_lower or "5m" in eff_lower:
+            raw_q_text = f"Explain the fundamental concepts, morphological features, and core principles of {topic_sug} in detail with suitable examples."
+        elif "case" in eff_lower or "4m" in eff_lower:
+            raw_q_text = f"Read the following case scenario and answer the questions based on {topic_sug}:"
+        elif "numerical" in eff_lower:
+            raw_q_text = f"Calculate the required parameters and state the governing formulas for {topic_sug}."
+        elif "3m" in eff_lower or "short answer (3m)" in eff_lower:
+            raw_q_text = f"Explain three key characteristics, differences, or principles related to {topic_sug}."
+        elif "saq" in eff_lower or "2m" in eff_lower:
+            raw_q_text = f"Define {topic_sug} and state two important characteristics or functions."
+        elif "assertion" in eff_lower:
+            raw_q_text = f"Assertion (A): {topic_sug} plays a critical role in standard processes.\nReason (R): It directly governs the underlying mechanism and reactions."
+        elif "objective" in eff_lower:
+            raw_q_text = f"Complete the statement: ________ is a key characteristic of {topic_sug}."
+        else: # MCQ
+            raw_q_text = f"Which of the following statements is correct regarding {topic_sug}?"
 
     # Ensure question ends with a clean terminal punctuation mark if ending with number/formula
     if not any(raw_q_text.rstrip().endswith(ch) for ch in ['?', '.', ':', '"', "'", ')', ']', '_', '}']):
@@ -1559,7 +1597,7 @@ Extract all essential examination questions covering the primary concepts and fo
     seen_texts = set()
 
     for idx, q in enumerate(raw_questions):
-        norm = sanitize_question_item(q, "MCQ", "medium", meta, idx)
+        norm = sanitize_question_item(q, str(q.get("type") or "MCQ"), str(q.get("difficulty") or "medium"), meta, idx)
         if not norm:
             continue
 

@@ -209,6 +209,7 @@ def list_questions():
                 SELECT 
                     q.id,
                     q.question,
+                    q.image_url,
                     q.options,
                     q.correct_answer,
                     q.explanation,
@@ -252,6 +253,8 @@ def list_questions():
                 questions.append({
                     "id": r["id"],
                     "question": r["question"],
+                    "image_url": r["image_url"],
+                    "imageUrl": r["image_url"],
                     "options": opts,
                     "correct_answer": r["correct_answer"],
                     "explanation": r["explanation"],

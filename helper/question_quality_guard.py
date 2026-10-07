@@ -86,6 +86,17 @@ _DUMMY_EXPL_PATTERNS = [
 _COMPILED_DUMMY_EXPLS = [re.compile(p, re.IGNORECASE) for p in _DUMMY_EXPL_PATTERNS]
 
 
+_DUMMY_CATEGORY_TITLES = {
+    "long", "long answer", "long answer question", "long answer questions", "laq",
+    "short", "short answer", "saq", "vsaq", "mcq", "multiple choice", "objective",
+    "case study", "numerical", "assertion reason", "true or false", "fill in the blank",
+    "fill in the blanks", "match the following", "one word", "vsa", "problem", "solution",
+    "1 mark", "2 marks", "3 marks", "4 marks", "5 marks", "8 marks", "1m", "2m", "3m", "4m", "5m", "8m",
+    "section a", "section b", "section c", "section d", "section e", "section f",
+    "question", "questions", "answer the following", "solve", "evaluate"
+}
+
+
 def validate_question_quality(q: Dict[str, Any], requested_subject: Optional[str] = None) -> Tuple[bool, Optional[str]]:
     """Validates a candidate question for pedagogical sanity, UI compatibility and completeness.
     
@@ -97,6 +108,10 @@ def validate_question_quality(q: Dict[str, Any], requested_subject: Optional[str
     q_text = str(q.get("question_text") or q.get("question") or q.get("questionText") or "").strip()
     if len(q_text) < 12:
         return False, f"Question text too short ({len(q_text)} chars)"
+
+    clean_q_low = q_text.lower().strip('. :-\t\n')
+    if clean_q_low in _DUMMY_CATEGORY_TITLES or len(q_text.split()) < 3:
+        return False, f"Question text '{q_text}' is a dummy category placeholder or header"
 
     # 1. Exam paper instructions and publisher / copyright junk check
     for pat in _COMPILED_JUNK_PATTERNS:
