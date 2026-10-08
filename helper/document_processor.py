@@ -501,19 +501,50 @@ def crop_figure_from_pdf_page(file_bytes: bytes, page_num: int | None, fig_label
                         grid_x0 = t_rect.x0 - 20
                         grid_x1 = t_rect.x1 + 20
 
-                    # Include Table row labels on the left & data cells inside grid
+                    # Include Table row labels & data cells with Sentence Length & Vertical Gap Guards
                     included_blocks = 0
+
+                    # Sort candidates vertically for progressive row-by-row scanning
+                    candidate_blocks = []
                     for b in page_blocks:
                         b_r = fitz.Rect(b[:4])
                         b_str = b[4].strip()
-                        if b_str == t_text:
+                        if not b_str or b_str == t_text:
                             continue
                         if re.match(r'^(?:\d+[\.\)]\s+[A-Z]|Activity|Fig|Q\.)', b_str):
                             continue
                         if grid_y0 <= b_r.y0 and b_r.y1 <= grid_y1 + 10:
                             if (grid_x0 - 55 <= b_r.x0 <= grid_x1 + 25) and (b_r.x1 <= grid_x1 + 25):
-                                table_box = table_box | b_r
-                                included_blocks += 1
+                                candidate_blocks.append((b_r, b_str))
+
+                    if is_footer_caption:
+                        candidate_blocks.sort(key=lambda x: x[0].y1, reverse=True)
+                    else:
+                        candidate_blocks.sort(key=lambda x: x[0].y0)
+
+                    last_row_pos = t_rect.y0 if is_footer_caption else t_rect.y1
+                    for b_r, b_str in candidate_blocks:
+                        # 1. Sentence Word-Count Filter: Table cells have concise text (<= 8 words).
+                        # Skip paragraphs with full sentences or > 8 words (e.g. "You might have noticed that...")
+                        words = b_str.split()
+                        if len(words) > 8 and not any(pipe in b_str for pipe in ["|", "•", "\t"]):
+                            # Paragraph detected below table - stop extending table downward!
+                            break
+
+                        # 2. Row-to-Row Vertical Gap Detection: if vertical gap > 18px, break to prevent bleeding
+                        if not is_footer_caption:
+                            vertical_gap = b_r.y0 - last_row_pos
+                            if included_blocks > 0 and vertical_gap > 18:
+                                break
+                            last_row_pos = max(last_row_pos, b_r.y1)
+                        else:
+                            vertical_gap = last_row_pos - b_r.y1
+                            if included_blocks > 0 and vertical_gap > 18:
+                                break
+                            last_row_pos = min(last_row_pos, b_r.y0)
+
+                        table_box = table_box | b_r
+                        included_blocks += 1
 
                     # Table Structure Verification: must have drawings or data cells
                     if not table_drawings_box and included_blocks == 0:
