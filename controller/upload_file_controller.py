@@ -1082,7 +1082,7 @@ def export_knowledge_graph_html_api():
             mode=mode,
         )
         html_content = generate_standalone_k_graph_html(payload)
-        return Response(html_content, mimetype="text/html")
+        return Response(html_content, mimetype="text/html; charset=utf-8")
 
 
 @token_required
