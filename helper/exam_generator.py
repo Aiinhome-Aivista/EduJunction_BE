@@ -216,6 +216,7 @@ def _fetch_questions_from_db(
                         q.correct_answer,
                         q.explanation,
                         q.marks,
+                        q.image_url,
                         COALESCE(q.importance_score, 7.00) AS importance_score,
                         COALESCE(qt.question_type_name, 'MCQ') AS question_type,
                         COALESCE(dl.difficulty_level_name, 'medium') AS difficulty,
@@ -260,6 +261,7 @@ def _fetch_questions_from_db(
                         q.correct_answer,
                         q.explanation,
                         q.marks,
+                        q.image_url,
                         COALESCE(q.importance_score, 7.00) AS importance_score,
                         COALESCE(qt.question_type_name, 'MCQ') AS question_type,
                         COALESCE(dl.difficulty_level_name, 'medium') AS difficulty,
@@ -304,6 +306,7 @@ def _fetch_questions_from_db(
                         q.correct_answer,
                         q.explanation,
                         q.marks,
+                        q.image_url,
                         COALESCE(q.importance_score, 7.00) AS importance_score,
                         COALESCE(qt.question_type_name, 'MCQ') AS question_type,
                         COALESCE(dl.difficulty_level_name, 'medium') AS difficulty,
@@ -375,6 +378,7 @@ def _fetch_questions_from_db(
                         q.correct_answer,
                         q.explanation,
                         q.marks,
+                        q.image_url,
                         COALESCE(q.importance_score, 7.00) AS importance_score,
                         COALESCE(qt.question_type_name, 'MCQ') AS question_type,
                         COALESCE(dl.difficulty_level_name, 'medium') AS difficulty,
@@ -468,6 +472,7 @@ def _fetch_questions_from_db(
                 final_type = "saq"
                 final_marks = 2
 
+        img_url = q.get("image_url") or q.get("imageUrl") or None
         formatted_questions.append({
             "id": q.get("question_id") or q.get("id"),
             "questionNumber": idx + 1,
@@ -479,6 +484,8 @@ def _fetch_questions_from_db(
             "topic": q.get("topic_name") or q.get("chapter_name") or clean_subj,
             "difficulty": q.get("difficulty") or clean_diff,
             "marks": final_marks,
+            "image_url": img_url,
+            "imageUrl": img_url,
             "importance_score": float(q.get("importance_score") or 7.00),
             "origin": "db",
         })
@@ -818,6 +825,7 @@ def generate_exam(
                 topic=q.get("topic", subject),
                 reference_links=ref_links_default,
                 hint=q.get("hint"),
+                image_url=q.get("image_url") or q.get("imageUrl") or None,
                 importance_score=q.get("importance_score", 7.00),
             )
         )
@@ -851,6 +859,8 @@ def exam_to_public_dict(exam: Exam) -> dict:
                 "marks": q.marks,
                 "topic": q.topic,
                 "hint": q.hint,
+                "image_url": q.image_url,
+                "imageUrl": q.image_url,
                 # NOTE: correctAnswer / explanation deliberately omitted (§14).
             }
             for q in sorted(exam.questions, key=lambda x: x.question_number)

@@ -68,6 +68,8 @@ def submission_to_dict(submission: ExamSubmission, include_details: bool = True)
                 "feedback": getattr(ev, 'feedback', None),
                 "referenceLinks": q.reference_links if q else [],
                 "topic": q.topic if q else (submission.exam.subject if submission.exam else "General"),
+                "imageUrl": getattr(q, 'image_url', None) if q else None,
+                "image_url": getattr(q, 'image_url', None) if q else None,
             })
         evaluations_list.sort(key=lambda x: int(x.get("questionNumber") or 0))
 

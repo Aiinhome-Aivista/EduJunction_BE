@@ -190,6 +190,7 @@ def _fetch_model_paper_questions_from_db(
                 q.correct_answer,
                 q.explanation,
                 q.marks,
+                q.image_url,
                 COALESCE(qt.question_type_name, 'MCQ') AS question_type,
                 COALESCE(dl.difficulty_level_name, 'medium') AS difficulty,
                 s.subject_name,
@@ -266,6 +267,7 @@ def _fetch_model_paper_questions_from_db(
 
             q_type = str(r.get("question_type") or "MCQ").upper()
             marks = int(r.get("marks") or 1)
+            img_url = r.get("image_url") or None
 
             q_obj = {
                 "question": r.get("question_text", ""),
@@ -275,6 +277,8 @@ def _fetch_model_paper_questions_from_db(
                 "marks": marks,
                 "type": q_type.lower(),
                 "topic": r.get("topic_name") or r.get("chapter_name") or clean_subj,
+                "image_url": img_url,
+                "imageUrl": img_url,
             }
 
             if marks == 1 or "MCQ" in q_type or "OBJECTIVE" in q_type or "ASSERTION" in q_type:

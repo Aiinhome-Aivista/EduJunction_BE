@@ -202,6 +202,7 @@ def generate_mock_test():
                 q.correct_answer,
                 q.explanation,
                 q.marks,
+                q.image_url,
                 COALESCE(qt.question_type_name, 'MCQ') AS question_type,
                 COALESCE(dl.difficulty_level_name, 'medium') AS difficulty,
                 s.subject_name,
@@ -268,6 +269,7 @@ def generate_mock_test():
                     except Exception:
                         options_list = [opt.strip() for opt in raw_options.split("|") if opt.strip()]
 
+            img_url = r.get("image_url") or None
             q_obj = {
                 "questionId": r.get("question_id"),
                 "questionText": r.get("question_text"),
@@ -277,6 +279,8 @@ def generate_mock_test():
                 "chapterName": r.get("chapter_name"),
                 "topicName": r.get("topic_name"),
                 "difficulty": r.get("difficulty") or difficulty,
+                "imageUrl": img_url,
+                "image_url": img_url,
             }
 
             if "saq" in raw_type or "short" in raw_type or int(r.get("marks", 1)) == 2:

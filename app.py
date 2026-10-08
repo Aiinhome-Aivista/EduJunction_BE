@@ -4,6 +4,7 @@ app.py defines all API route endpoints explicitly with @app.route
 and delegates execution directly to their respective controller functions.
 """
 from flask import jsonify, send_from_directory
+import os
 import time
 
 from flask import Flask, g, request
@@ -572,7 +573,7 @@ def create_app() -> Flask:
     @app.route("/uploads/<path:filename>", methods=["GET"])
     @app.route("/edujunction/uploads/<path:filename>", methods=["GET"])
     def uploaded_file(filename):
-        return send_from_directory(config.UPLOAD_DIR, filename)
+        return upload_file_controller.serve_uploaded_file(filename)
 
     @app.route("/api/v1/files/<document_id>", methods=["GET"])
     def api_files_get_status(document_id):
