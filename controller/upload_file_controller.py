@@ -17,6 +17,37 @@ from utils.config import config
 ALLOWED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/webp", "image/gif"}
 
 
+def serve_uploaded_file(filename: str):
+    """Serves uploaded media files with resilient auto-healing prefix resolution for diagrams."""
+    from flask import send_from_directory
+    target_path = os.path.join(config.UPLOAD_DIR, filename)
+    if os.path.exists(target_path):
+        return send_from_directory(config.UPLOAD_DIR, filename)
+
+    # Fallback: Auto-heal diagram crops if hash differs across pipeline runs
+    dirname = os.path.dirname(filename)
+    basename = os.path.basename(filename)
+    dir_full_path = os.path.join(config.UPLOAD_DIR, dirname)
+
+    if os.path.exists(dir_full_path):
+        name_parts = basename.rsplit("_", 1)
+        if len(name_parts) == 2:
+            prefix = name_parts[0] + "_"
+            for existing_file in os.listdir(dir_full_path):
+                if existing_file.startswith(prefix) and any(existing_file.endswith(ext) for ext in [".png", ".jpg", ".jpeg"]):
+                    return send_from_directory(dir_full_path, existing_file)
+
+        # Secondary fallback by table/fig tokens
+        clean_req = basename.lower().replace("-", "_").replace(" ", "_")
+        for existing_file in os.listdir(dir_full_path):
+            clean_exist = existing_file.lower().replace("-", "_").replace(" ", "_")
+            tokens = [t for t in clean_req.split("_") if len(t) > 2 and not t.endswith(".png")]
+            if len(tokens) >= 2 and all(tok in clean_exist for tok in tokens[:3]):
+                return send_from_directory(dir_full_path, existing_file)
+
+    return send_from_directory(config.UPLOAD_DIR, filename)
+
+
 @token_required
 @roles_required("ADMIN", "SUPER_ADMIN", "AUTHOR")
 def upload_blog_image():

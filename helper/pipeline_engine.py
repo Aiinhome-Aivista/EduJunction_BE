@@ -1051,44 +1051,46 @@ def sanitize_question_item(
 
     is_fill_in_the_blank = bool(re.search(r'\b(?:fill\s+in\s+the\s+blanks?|complete\s+the\s+(?:sentence|statement|blank)|choose\s+the\s+correct\s+word|state\s+whether|true\s+or\s+false)\b', q_text, re.IGNORECASE)) or "________" in q_text
 
-    raw_type = str(q.get("type") or default_type or "MCQ").strip().upper()
-    if is_fill_in_the_blank:
-        resolved_type = "OBJECTIVE"
-        default_m = 1
-    elif "CASE" in raw_type:
-        resolved_type = "CASE STUDY"
-        default_m = 4
-    elif "ASSERT" in raw_type:
-        resolved_type = "ASSERTION REASON"
-        default_m = 1
-    elif "LONG EVALUATIVE" in raw_type or "8M" in raw_type:
-        resolved_type = "LONG EVALUATIVE"
-        default_m = 8
-    elif "LONG" in raw_type or "LAQ" in raw_type:
-        resolved_type = "LONG ANSWER"
-        default_m = 5
-    elif "SHORT ANSWER (3M)" in raw_type or "3M" in raw_type or int(q.get("marks") or 0) == 3:
-        resolved_type = "SHORT ANSWER (3M)"
-        default_m = 3
-    elif "NUM" in raw_type:
-        resolved_type = "NUMERICAL"
-        default_m = int(q.get("marks") or 3)
-    elif "SAQ" in raw_type or "SHORT" in raw_type:
-        resolved_type = "SAQ"
-        default_m = 2
-    elif raw_type in ["TRUE_FALSE", "TRUE/FALSE", "TF", "OBJECTIVE", "ONE_WORD", "FILL_IN"]:
-        resolved_type = "OBJECTIVE"
-        default_m = 1
-    else:
-        resolved_type = "MCQ"
-        default_m = 1
-
-    # Assigned marks
+    # 1. Parse raw marks from LLM / Metadata
     raw_m = q.get("marks")
     try:
-        marks = int(raw_m if raw_m and str(raw_m).isdigit() else (extracted_marks or default_m))
+        marks = int(raw_m if raw_m and str(raw_m).isdigit() else (extracted_marks or 1))
     except (ValueError, TypeError):
-        marks = extracted_marks or default_m
+        marks = extracted_marks or 1
+    if marks <= 0:
+        marks = 1
+
+    # 2. Check options structure
+    q_opts = q.get("options")
+    has_opts = bool(isinstance(q_opts, (list, tuple)) and len([opt for opt in q_opts if str(opt).strip()]) >= 2)
+
+    # 3. Dynamic Question Type Resolution aligned with question_type_master default_marks
+    raw_type = str(q.get("type") or default_type or "MCQ").strip().upper()
+    is_fill_in_the_blank = bool(re.search(r'\b(?:fill\s+in\s+the\s+blanks?|complete\s+the\s+(?:sentence|statement|blank)|choose\s+the\s+correct\s+word|state\s+whether|true\s+or\s+false)\b', q_text, re.IGNORECASE)) or "________" in q_text
+
+    if marks == 8 or "8M" in raw_type or "EVALUATIVE" in raw_type:
+        resolved_type = "LONG EVALUATIVE (8M)"
+        marks = 8
+    elif marks == 5 or "LONG" in raw_type or "LAQ" in raw_type:
+        resolved_type = "LONG ANSWER"
+        marks = 5
+    elif marks == 4 or "CASE" in raw_type:
+        resolved_type = "CASE STUDY"
+        marks = 4
+    elif marks == 3 or "3M" in raw_type:
+        resolved_type = "NUMERICAL" if "NUM" in raw_type else "SHORT ANSWER (3M)"
+        marks = 3
+    elif marks == 2 or "SAQ" in raw_type or "2M" in raw_type:
+        resolved_type = "SAQ"
+        marks = 2
+    else:  # marks == 1
+        marks = 1
+        if "ASSERT" in raw_type:
+            resolved_type = "ASSERTION REASON"
+        elif is_fill_in_the_blank or not has_opts or raw_type in ["OBJECTIVE", "TRUE_FALSE", "ONE_WORD"]:
+            resolved_type = "OBJECTIVE"
+        else:
+            resolved_type = "MCQ"
 
     # Clean options
     q_opts = q.get("options")
@@ -1271,9 +1273,9 @@ def sanitize_question_item(
     # Assigned marks
     raw_m = q.get("marks")
     try:
-        marks = int(raw_m if raw_m and str(raw_m).isdigit() else (extracted_marks or default_m))
+        marks = int(raw_m if raw_m and str(raw_m).isdigit() else (extracted_marks or marks or 1))
     except (ValueError, TypeError):
-        marks = extracted_marks or default_m
+        marks = extracted_marks or marks or 1
 
     # Subject-aware validation for NUMERICAL:
     sub_lower = str(meta.get("subject") or "").lower()
@@ -1685,6 +1687,12 @@ def _ensure_curriculum_tables(session: Session):
         # Ensure image_url column exists in existing tables
         try:
             session.execute(text("ALTER TABLE question_master ADD COLUMN image_url VARCHAR(500) NULL"))
+            session.commit()
+        except Exception:
+            session.rollback()
+
+        try:
+            session.execute(text("ALTER TABLE questions ADD COLUMN image_url VARCHAR(500) NULL"))
             session.commit()
         except Exception:
             session.rollback()
@@ -2156,20 +2164,24 @@ def process_curriculum_document_pipeline(
     for q in final_questions:
         q_topic_id = match_question_to_topic_id(topic_map, q, default_topic_id)
 
-        q_type_upper = str(q.get("type", "MCQ")).upper()
+        q_type_upper = str(q.get("type", "MCQ")).strip().upper()
+        q_marks = int(q.get("marks") or 1)
         q_type_id = types_map.get(q_type_upper)
         if not q_type_id:
-            if "CASE" in q_type_upper:
-                q_type_id = types_map.get("CASE STUDY", types_map.get("SAQ", 2))
+            if "8M" in q_type_upper or "EVALUATIVE" in q_type_upper or q_marks == 8:
+                q_type_id = types_map.get("LONG EVALUATIVE (8M)", types_map.get("LONG EVALUATIVE", 9))
+            elif "LONG" in q_type_upper or "LAQ" in q_type_upper or q_marks == 5:
+                q_type_id = types_map.get("LONG ANSWER", 3)
+            elif "CASE" in q_type_upper or q_marks == 4:
+                q_type_id = types_map.get("CASE STUDY", 7)
+            elif "3M" in q_type_upper or ("SHORT" in q_type_upper and q_marks == 3) or q_marks == 3:
+                q_type_id = types_map.get("SHORT ANSWER (3M)", types_map.get("SAQ", 6))
+            elif "SAQ" in q_type_upper or "2M" in q_type_upper or q_marks == 2:
+                q_type_id = types_map.get("SAQ", 2)
             elif "ASSERT" in q_type_upper:
-                q_type_id = types_map.get("ASSERTION REASON", types_map.get("MCQ", 1))
-            elif "LONG" in q_type_upper:
-                q_type_id = types_map.get("LONG ANSWER", types_map.get("LONG EVALUATIVE (8M)", 3))
-            elif "SHORT" in q_type_upper or "SAQ" in q_type_upper:
-                if int(q.get("marks", 2)) == 3:
-                    q_type_id = types_map.get("SHORT ANSWER (3M)", types_map.get("SAQ", 2))
-                else:
-                    q_type_id = types_map.get("SAQ", 2)
+                q_type_id = types_map.get("ASSERTION REASON", 8)
+            elif "OBJECTIVE" in q_type_upper:
+                q_type_id = types_map.get("OBJECTIVE", 4)
             elif "NUM" in q_type_upper:
                 q_type_id = types_map.get("NUMERICAL", 5)
             else:
@@ -2595,20 +2607,24 @@ def save_curriculum_extracted_questions_pipeline(
     for q in questions:
         q_topic_id = match_question_to_topic_id(topic_map, q, default_topic_id)
 
-        q_type_upper = str(q.get("type", "MCQ")).upper()
+        q_type_upper = str(q.get("type", "MCQ")).strip().upper()
+        q_marks = int(q.get("marks") or 1)
         q_type_id = types_map.get(q_type_upper)
         if not q_type_id:
-            if "CASE" in q_type_upper:
-                q_type_id = types_map.get("CASE STUDY", types_map.get("SAQ", 2))
+            if "8M" in q_type_upper or "EVALUATIVE" in q_type_upper or q_marks == 8:
+                q_type_id = types_map.get("LONG EVALUATIVE (8M)", types_map.get("LONG EVALUATIVE", 9))
+            elif "LONG" in q_type_upper or "LAQ" in q_type_upper or q_marks == 5:
+                q_type_id = types_map.get("LONG ANSWER", 3)
+            elif "CASE" in q_type_upper or q_marks == 4:
+                q_type_id = types_map.get("CASE STUDY", 7)
+            elif "3M" in q_type_upper or ("SHORT" in q_type_upper and q_marks == 3) or q_marks == 3:
+                q_type_id = types_map.get("SHORT ANSWER (3M)", types_map.get("SAQ", 6))
+            elif "SAQ" in q_type_upper or "2M" in q_type_upper or q_marks == 2:
+                q_type_id = types_map.get("SAQ", 2)
             elif "ASSERT" in q_type_upper:
-                q_type_id = types_map.get("ASSERTION REASON", types_map.get("MCQ", 1))
-            elif "LONG" in q_type_upper:
-                q_type_id = types_map.get("LONG ANSWER", types_map.get("LONG EVALUATIVE (8M)", 3))
-            elif "SHORT" in q_type_upper or "SAQ" in q_type_upper:
-                if int(q.get("marks", 2)) == 3:
-                    q_type_id = types_map.get("SHORT ANSWER (3M)", types_map.get("SAQ", 2))
-                else:
-                    q_type_id = types_map.get("SAQ", 2)
+                q_type_id = types_map.get("ASSERTION REASON", 8)
+            elif "OBJECTIVE" in q_type_upper:
+                q_type_id = types_map.get("OBJECTIVE", 4)
             elif "NUM" in q_type_upper:
                 q_type_id = types_map.get("NUMERICAL", 5)
             else:
