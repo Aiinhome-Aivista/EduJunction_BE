@@ -2234,6 +2234,9 @@ def process_curriculum_document_pipeline(
             {"t_id": q_topic_id, "q_text": q["question"]}
         ).scalar()
 
+        raw_img = q.get("image_url") or None
+        final_img = document_processor.promote_diagram_from_temp_to_permanent(raw_img)
+
         if existing_id:
             session.execute(
                 text("""
@@ -2252,7 +2255,7 @@ def process_curriculum_document_pipeline(
                     "marks": q["marks"],
                     "diff_id": diff_id,
                     "type_id": q_type_id,
-                    "image_url": q.get("image_url") or None
+                    "image_url": final_img
                 }
             )
             updated_questions_count += 1
@@ -2269,7 +2272,7 @@ def process_curriculum_document_pipeline(
                     "type_id": q_type_id,
                     "diff_id": diff_id,
                     "question": q["question"],
-                    "image_url": q.get("image_url") or None,
+                    "image_url": final_img,
                     "options": options_json,
                     "correct_answer": q["correct_answer"],
                     "explanation": q["explanation"],
@@ -2678,6 +2681,9 @@ def save_curriculum_extracted_questions_pipeline(
             {"t_id": q_topic_id, "q_text": q_text}
         ).scalar()
 
+        raw_img_app = q.get("image_url") or q.get("imageUrl") or None
+        final_img_app = document_processor.promote_diagram_from_temp_to_permanent(raw_img_app)
+
         if existing_id:
             # Update existing with refined explanation and options
             session.execute(
@@ -2697,7 +2703,7 @@ def save_curriculum_extracted_questions_pipeline(
                     "marks": int(q.get("marks", 1)),
                     "diff_id": diff_id,
                     "type_id": q_type_id,
-                    "image_url": q.get("image_url") or q.get("imageUrl") or None
+                    "image_url": final_img_app
                 }
             )
             updated_count += 1
@@ -2715,7 +2721,7 @@ def save_curriculum_extracted_questions_pipeline(
                     "type_id": q_type_id,
                     "diff_id": diff_id,
                     "question": q_text,
-                    "image_url": q.get("image_url") or q.get("imageUrl") or None,
+                    "image_url": final_img_app,
                     "options": options_json,
                     "correct_answer": q.get("correct_answer", "A"),
                     "explanation": q.get("explanation", ""),

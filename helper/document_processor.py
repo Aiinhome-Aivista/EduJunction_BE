@@ -322,34 +322,134 @@ clean_text = strip_non_academic_preamble
 VALID_IMAGE_EXTS = {"png", "jpg", "jpeg", "webp"}
 
 
-def save_diagram_to_disk(image_bytes: bytes, ext: str = "png", prefix: str = "diag") -> str:
-    """Saves an actively referenced question diagram to uploads/questions/ on disk.
-    
-    Returns the relative URL (/edujunction/uploads/questions/...).
+def save_diagram_to_disk(image_bytes: bytes, ext: str = "png", prefix: str = "diag", is_temp: bool = True) -> str:
+    """Saves an actively referenced question diagram to disk.
+    By default (is_temp=True), saves to staging directory uploads/temp/ for safe preview.
+    When questions are confirmed/saved, promote_diagram_from_temp_to_permanent moves them to uploads/questions/.
+
+    Returns the relative URL (/edujunction/uploads/temp/... or /edujunction/uploads/questions/...).
     """
     if not image_bytes:
         return ""
     try:
         from utils.config import config
         from uuid import uuid4
-        questions_dir = os.path.join(config.UPLOAD_DIR, "questions")
-        os.makedirs(questions_dir, exist_ok=True)
+        subfolder = "temp" if is_temp else "questions"
+        target_dir = os.path.join(config.UPLOAD_DIR, subfolder)
+        os.makedirs(target_dir, exist_ok=True)
 
         clean_ext = ext.lower().replace(".", "")
         if clean_ext not in VALID_IMAGE_EXTS:
             clean_ext = "png"
 
         img_filename = f"{prefix}_{uuid4().hex[:12]}.{clean_ext}"
-        filepath = os.path.join(questions_dir, img_filename)
+        filepath = os.path.join(target_dir, img_filename)
 
         with open(filepath, "wb") as f:
             f.write(image_bytes)
 
-        logger.info(f"Saved linked question diagram: {filepath} ({len(image_bytes)} bytes)")
-        return f"/edujunction/uploads/questions/{img_filename}"
+        logger.info(f"Saved linked question diagram to [{subfolder}]: {filepath} ({len(image_bytes)} bytes)")
+        return f"/edujunction/uploads/{subfolder}/{img_filename}"
     except Exception as e:
         logger.warning(f"Failed to save linked diagram to disk: {e}")
         return ""
+
+
+def promote_diagram_from_temp_to_permanent(img_url: str | None) -> str | None:
+    """Promotes a staged preview diagram from uploads/temp/ to permanent uploads/questions/.
+    Only moves the file when Admin confirms and saves the questions into question_master.
+    """
+    if not img_url or not isinstance(img_url, str):
+        return img_url
+
+    if "/uploads/temp/" not in img_url and "uploads/temp/" not in img_url:
+        return img_url
+
+    try:
+        import shutil
+        from utils.config import config
+
+        # Extract clean filename e.g. /edujunction/uploads/temp/crop_p1_fig1_abc.png -> crop_p1_fig1_abc.png
+        filename = img_url.split("/uploads/temp/")[-1].strip("/")
+        temp_filepath = os.path.join(config.UPLOAD_DIR, "temp", filename)
+
+        if os.path.exists(temp_filepath):
+            questions_dir = os.path.join(config.UPLOAD_DIR, "questions")
+            os.makedirs(questions_dir, exist_ok=True)
+            perm_filepath = os.path.join(questions_dir, filename)
+
+            shutil.move(temp_filepath, perm_filepath)
+            logger.info(f"Successfully promoted confirmed diagram: {filename} -> uploads/questions/")
+            return f"/edujunction/uploads/questions/{filename}"
+        else:
+            # If already moved or exists in permanent store, map to questions
+            questions_dir = os.path.join(config.UPLOAD_DIR, "questions")
+            if os.path.exists(os.path.join(questions_dir, filename)):
+                return f"/edujunction/uploads/questions/{filename}"
+    except Exception as e:
+        logger.warning(f"Failed to promote diagram {img_url} to permanent: {e}")
+
+def delete_temp_diagrams(image_urls: list[str] | None = None, delete_all: bool = False) -> int:
+    """Instantly deletes unconfirmed preview diagrams from uploads/temp/ on user cancel or session discard."""
+    deleted_count = 0
+    try:
+        from utils.config import config
+        temp_dir = os.path.join(config.UPLOAD_DIR, "temp")
+        if not os.path.exists(temp_dir):
+            return 0
+
+        if delete_all or not image_urls:
+            # Purge every unconfirmed file in uploads/temp/ immediately
+            for fname in os.listdir(temp_dir):
+                fpath = os.path.join(temp_dir, fname)
+                if os.path.isfile(fpath):
+                    try:
+                        os.remove(fpath)
+                        deleted_count += 1
+                        logger.info(f"Purged unconfirmed temp file: {fname}")
+                    except Exception as err:
+                        logger.warning(f"Failed removing temp file {fname}: {err}")
+            return deleted_count
+
+        for url in image_urls:
+            if not url or not isinstance(url, str):
+                continue
+            if "/uploads/temp/" in url or "uploads/temp/" in url:
+                filename = url.split("/uploads/temp/")[-1].strip("/")
+            else:
+                filename = os.path.basename(url.strip("/"))
+            filepath = os.path.join(temp_dir, filename)
+            if os.path.exists(filepath):
+                try:
+                    os.remove(filepath)
+                    deleted_count += 1
+                    logger.info(f"Cleaned up unconfirmed temp diagram on cancel: {filename}")
+                except Exception as err:
+                    logger.warning(f"Failed removing temp diagram {filename}: {err}")
+    except Exception as e:
+        logger.warning(f"Error deleting temp diagrams: {e}")
+    return deleted_count
+
+
+def purge_stale_temp_files(max_age_hours: int = 2) -> int:
+    """Background garbage collector: Purges stray files in uploads/temp/ older than max_age_hours."""
+    purged_count = 0
+    try:
+        import time
+        from utils.config import config
+        temp_dir = os.path.join(config.UPLOAD_DIR, "temp")
+        if not os.path.exists(temp_dir):
+            return 0
+
+        cutoff = time.time() - (max_age_hours * 3600)
+        for fname in os.listdir(temp_dir):
+            fpath = os.path.join(temp_dir, fname)
+            if os.path.isfile(fpath) and os.path.getmtime(fpath) < cutoff:
+                os.remove(fpath)
+                purged_count += 1
+    except Exception as e:
+        logger.warning(f"Error in purge_stale_temp_files: {e}")
+    return purged_count
 
 
 def crop_figure_from_pdf_page(file_bytes: bytes, page_num: int | None, fig_label: str) -> tuple[bytes | None, int | None]:
@@ -957,18 +1057,104 @@ def clean_text(raw_text: str) -> str:
 
 
 def chunk_text(text: str, chunk_size: int = CHUNK_SIZE_CHARS, overlap: int = CHUNK_OVERLAP_CHARS) -> list[str]:
+    """Recursively splits text respecting semantic and syntactic boundaries:
+    1. Paragraphs (\n\n)
+    2. Section / Line breaks (\n)
+    3. Sentence terminators (. , ? , ! , । [Bengali dāri])
+    4. Sub-clauses (; , :)
+    5. Words (space)
+
+    Ensures that questions, mathematical formulas, options, and sentences
+    are never cut off mid-thought, while maintaining target chunk size and overlap.
+    """
     if not text:
         return []
-    chunks = []
-    start = 0
-    length = len(text)
-    while start < length:
-        end = min(start + chunk_size, length)
-        chunks.append(text[start:end])
-        if end == length:
-            break
-        start = end - overlap
-    return chunks
+
+    cleaned = text.strip()
+    if len(cleaned) <= chunk_size:
+        return [cleaned]
+
+    separators = ["\n\n", "\n", ". ", "? ", "! ", "। ", "; ", ": ", " "]
+
+    def _split_recursive(t: str, sep_idx: int) -> list[str]:
+        t = t.strip()
+        if not t:
+            return []
+        if len(t) <= chunk_size or sep_idx >= len(separators):
+            # If still larger than chunk_size and no more separators, hard-slice with overlap
+            if len(t) > chunk_size:
+                slices = []
+                step = max(1, chunk_size - overlap)
+                for i in range(0, len(t), step):
+                    sub = t[i:i + chunk_size].strip()
+                    if sub:
+                        slices.append(sub)
+                return slices
+            return [t]
+
+        sep = separators[sep_idx]
+        raw_parts = t.split(sep)
+        parts = []
+        for idx, p in enumerate(raw_parts):
+            p_strip = p.strip()
+            if not p_strip:
+                continue
+            # Reattach separator for sentence terminators and sub-clauses so punctuation is preserved
+            if sep in {". ", "? ", "! ", "। ", "; ", ": "} and idx < len(raw_parts) - 1:
+                parts.append(p_strip + sep.strip())
+            else:
+                parts.append(p_strip)
+
+        results = []
+        current_chunk = ""
+
+        for part in parts:
+            joiner = "\n\n" if sep == "\n\n" else ("\n" if sep == "\n" else " ")
+            candidate = f"{current_chunk}{joiner}{part}" if current_chunk else part
+
+            if len(candidate) <= chunk_size:
+                current_chunk = candidate
+            else:
+                if current_chunk:
+                    results.append(current_chunk.strip())
+                if len(part) > chunk_size:
+                    # Part itself is bigger than chunk_size, recurse on next separator
+                    deeper_splits = _split_recursive(part, sep_idx + 1)
+                    results.extend(deeper_splits)
+                    current_chunk = ""
+                else:
+                    current_chunk = part
+
+        if current_chunk and current_chunk.strip():
+            results.append(current_chunk.strip())
+
+        return [r for r in results if r]
+
+    raw_chunks = _split_recursive(cleaned, 0)
+    if not raw_chunks:
+        return []
+
+    # Apply smart overlap between consecutive chunks without splitting words
+    if overlap > 0 and len(raw_chunks) > 1:
+        final_chunks = [raw_chunks[0]]
+        for i in range(1, len(raw_chunks)):
+            prev_chunk = raw_chunks[i - 1]
+            curr_chunk = raw_chunks[i]
+
+            # Extract trailing context from previous chunk up to overlap length
+            if len(prev_chunk) > overlap:
+                overlap_seed = prev_chunk[-overlap:].strip()
+                # Find first space to avoid cutting in middle of a word
+                first_space = overlap_seed.find(" ")
+                if first_space != -1 and first_space < len(overlap_seed) - 1:
+                    clean_prefix = overlap_seed[first_space + 1:].strip()
+                    if clean_prefix and not curr_chunk.startswith(clean_prefix):
+                        curr_chunk = f"... {clean_prefix}\n{curr_chunk}"
+
+            final_chunks.append(curr_chunk)
+        return final_chunks
+
+    return raw_chunks
 
 
 BOARD_PATTERNS = {
