@@ -442,6 +442,10 @@ def save_generated_questions_api():
                 {"topic_id": target_q_tid, "question": q_text}
             ).mappings().first()
 
+            raw_img_url = q.get("image_url") or q.get("imageUrl") or None
+            from helper.document_processor import promote_diagram_from_temp_to_permanent
+            final_img_url = promote_diagram_from_temp_to_permanent(raw_img_url)
+
             if existing_q:
                 opt_match = (existing_q["options"] == options_json) or (not existing_q["options"] and not options_json)
                 ans_match = (str(existing_q["correct_answer"]).strip().lower() == correct_answer.lower())
@@ -469,7 +473,7 @@ def save_generated_questions_api():
                             "marks": marks,
                             "diff_id": diff_id,
                             "type_id": type_id,
-                            "image_url": q.get("image_url") or q.get("imageUrl") or None
+                            "image_url": final_img_url
                         }
                     )
                     updated_count += 1
@@ -487,7 +491,7 @@ def save_generated_questions_api():
                     "type_id": type_id,
                     "diff_id": diff_id,
                     "question": q_text,
-                    "image_url": q.get("image_url") or q.get("imageUrl") or None,
+                    "image_url": final_img_url,
                     "options": options_json,
                     "correct_answer": correct_answer,
                     "explanation": explanation,
@@ -521,6 +525,29 @@ def save_generated_questions_api():
         "subject_name": subject_name,
         "message": msg
     }, 201)
+
+
+@token_required
+@roles_required("ADMIN", "SUPER_ADMIN", "TEACHER")
+def discard_preview_api():
+    """Discards an unconfirmed preview session and immediately deletes all temporary staged images from uploads/temp/."""
+    from helper.document_processor import delete_temp_diagrams, purge_stale_temp_files
+    data = request.json or {}
+    image_urls = data.get("image_urls") or []
+    questions = data.get("questions") or []
+    discard_all = data.get("discard_all", False if image_urls else True)
+    for q in questions:
+        if isinstance(q, dict):
+            url = q.get("image_url") or q.get("imageUrl")
+            if url and url not in image_urls:
+                image_urls.append(url)
+
+    deleted = delete_temp_diagrams(image_urls=image_urls if not discard_all else None, delete_all=discard_all)
+    return success({
+        "discarded": True,
+        "deleted_temp_files": deleted,
+        "message": f"Preview session discarded and {deleted} temp files cleaned up."
+    })
 
 
 @token_required
@@ -974,9 +1001,9 @@ def save_extracted_curriculum_questions_api():
                 f_key_formulas = file_item.get("key_formulas_or_rules") or key_formulas_or_rules
                 f_common_traps = file_item.get("common_traps") or common_traps
                 
-                # Questions belonging to this file, or all questions if not partitioned
-                f_questions = file_item.get("questions") or [q for q in questions if q.get("source_file") == f_name]
-                if not f_questions:
+                # Questions strictly derived from active user-approved list (respects deletions/edits)
+                f_questions = [q for q in questions if q.get("source_file") == f_name]
+                if not f_questions and len(files_payload) == 1:
                     f_questions = questions
 
                 res = save_curriculum_extracted_questions_pipeline(

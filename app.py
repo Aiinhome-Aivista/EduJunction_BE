@@ -499,6 +499,11 @@ def create_app() -> Flask:
     def api_curriculum_save_extracted_questions():
         return upload_file_controller.save_extracted_curriculum_questions_api()
 
+    @app.route("/api/v1/curriculum/discard-preview", methods=["POST"])
+    @app.route("/api/v1/admin/rag/discard-preview", methods=["POST"])
+    def api_curriculum_discard_preview():
+        return upload_file_controller.discard_preview_api()
+
     @app.route("/api/v1/admin/rag/process-document", methods=["POST"])
     def api_admin_rag_process_document():
         return upload_file_controller.process_curriculum_document_api()

@@ -481,36 +481,41 @@ JSON Schema & Example:
 
 OLD_QUESTION_PAPER_PROMPT = """You are a senior national board paper evaluator, bilingual digitizer, and curriculum expert (CBSE, ICSE, ISC, State Boards).
 Your task is to parse the provided Question Paper / Question Bank / PYQ text, faithfully extract and digitize EVERY single question present in the document with 100% fidelity, exact printed marks, options, and diagrams.
+DO NOT SYNTHESIZE OR INVENT NEW QUESTIONS. DIGITIZE ONLY THE QUESTIONS PRINTED IN THE DOCUMENT.
 
-CRITICAL BILINGUAL & DIGITIZATION INSTRUCTIONS:
-1. BILINGUAL PAPERS (Hindi/Bengali + English):
-   - For general subjects (Science, Physics, Chemistry, Biology, Mathematics, Social Studies, Physical Education, Computer Science), extract the clean ENGLISH version of the question text and options.
-   - Strip out parallel Hindi, Bengali, or regional duplicate sentences, headers (e.g. 'अथवा / OR', 'प्रश्न 1.'), and option translations (e.g. '(A) कोयला / Coal' -> 'A) Coal').
-   - For Language subjects (e.g., Hindi Course A/B, Bengali Language, Sanskrit), preserve the respective native language of the subject.
+CRITICAL DIGITIZATION & QUESTION NUMBERING INSTRUCTIONS:
+1. PRESERVE NUMBERED QUESTION INTEGRITY (NEVER SPLIT A NUMBERED QUESTION):
+   - Every numbered question (e.g. 1, 2, ..., 37, 38, 39) MUST remain EXACTLY ONE question item.
+   - DO NOT split compound multi-sentence questions into separate mini-questions (e.g. '37. Describe the different sources of water. Explain how groundwater is recharged?' is ONE unified 5-mark Long Answer question, NOT two separate 1-mark questions).
+   - DO NOT split internal choices ('OR' choices) into separate questions. Keep the whole 'Part 1 ... OR ... Part 2' together within that single question item.
+   - For Section D Case Studies (e.g., 34, 35, 36), include the full scenario passage and its numbered sub-questions together as a SINGLE 4-mark 'Case Study' question item.
+   - For Section E Long Answers (e.g., 37, 38, 39), keep the entire question together with marks: 5 and type: 'Long Answer'.
+   - The total number of extracted questions MUST match the official question count in the paper (e.g., if the paper consists of 39 questions, extract EXACTLY 39 questions).
 
-2. MARKS-WISE & QUESTION TYPE MAPPING:
-   - Assign exact official marks (1, 2, 3, 4, 5, or 8) and matching question type:
-     • 1 Mark: 'MCQ', 'Assertion Reason', or 'Objective'
-     • 2 Marks: 'SAQ' (Short Answer Question - 2M)
-     • 3 Marks: 'Short Answer (3M)' or 'Numerical'
-     • 4 Marks: 'Case Study' (Case-based / passage-based with sub-questions)
-     • 5 Marks: 'Long Answer'
-     • 8 Marks: 'Long Evaluative (8M)'
+2. QUESTION-LEVEL TYPE EVALUATION (IGNORE SECTION HEADINGS):
+   - In many board question papers, Section A is titled "Objective Type Questions" but contains Multiple Choice Questions (with options a, b, c, d).
+   - NEVER classify questions with multiple choices as "Objective". If a question has 4 options (a, b, c, d), you MUST set "type": "MCQ" and extract all 4 options in the "options" array.
+   - If a question contains Assertion (A) and Reason (R), set "type": "Assertion Reason".
+   - If a 1-Mark question has NO options (e.g., direct 1-word definition, fill-in-the-blank without options, True/False without options), set "type": "Objective" and "options": [].
+   - 2 Marks: 'SAQ' (Short Answer Question - 2M), "options": []
+   - 3 Marks: 'Short Answer (3M)' or 'Numerical', "options": []
+   - 4 Marks: 'Case Study' (Case-based / passage-based with sub-questions), "options": []
+   - 5 Marks: 'Long Answer', "options": []
+   - 8 Marks: 'Long Evaluative (8M)', "options": []
 
-3. OPTIONS & AUTHENTIC MODEL ANSWERS:
+3. SUBJECT-WISE LANGUAGE HANDLING:
+   - For Language subjects (e.g. Hindi, Bengali, Sanskrit, English), extract questions in that exact native target language.
+   - For STEM / General subjects (Science, Mathematics, Social Science, History, Geography, Physics, Chemistry, Biology):
+     • If the paper is in English or Bilingual (English + Hindi / English + Bengali), extract the clean ENGLISH version of the question text and options, stripping parallel regional translations/duplicate lines.
+     • If the paper is purely in a regional medium (e.g., 100% Bengali or 100% Hindi), preserve the authentic text in that language without altering technical terms.
+
+4. OPTIONS & AUTHENTIC MODEL ANSWERS:
    - For Multiple Choice Questions (MCQ), extract all 4 options labeled 'A) ', 'B) ', 'C) ', 'D) '.
    - 'correct_answer' MUST contain the exact authentic text of the correct choice (e.g. 'Hydrogen gas', NOT 'Option A' or 'A').
-   - If a question does NOT have options, extract it strictly as SAQ, Objective, Numerical, or Long Answer. NEVER invent fake dummy options.
+   - If a question does NOT have options, extract it strictly as SAQ, Objective, Numerical, Case Study, or Long Answer. NEVER invent fake dummy options.
    - For descriptive questions, provide a genuine, comprehensive model answer in 'correct_answer' and detailed step-by-step explanation in 'explanation'.
 
-4. 100% COMPLETE EXTRACTION:
-   - Extract EVERY distinguishable question and sub-question (e.g., Q1(a), Q1(b), Q2(i), Q2(ii)) present in the text sequentially without skipping any question.
-
-5. DIAGRAMS & MATHEMATICS:
-   - Preserve references to figures, charts, maps, circuits, and geometry triangles.
-   - Preserve clean mathematical formulas and scientific notation (LaTeX, Greek symbols, formulas).
-
-6. FULL QUESTION SENTENCES ONLY (ZERO DUMMY WORDS):
+5. FULL QUESTION SENTENCES ONLY (ZERO DUMMY WORDS):
    - The 'question' field MUST be the complete, authentic question sentence from the paper. NEVER output category tags (e.g. 'MCQ', 'SAQ', 'Short', 'Long', '5 Marks', 'Section A') as the question text.
 """
 
@@ -568,7 +573,13 @@ def perform_contextual_analysis(
             pass
 
     chapters_ref_prompt = ""
-    if official_chapters:
+    if document_type in ["old_question_paper", "question_bank"]:
+        chapters_ref_prompt = """
+QUESTION BANK / EXAM PAPER TITLE REQUIREMENT:
+- This document is a Question Bank / Exam Question Paper spanning multiple topics/chapters across the syllabus.
+- Set "title" to "Question Bank".
+"""
+    elif official_chapters:
         chapters_ref_prompt = f"""
 Official Curriculum Chapters for this Subject ({subject}):
 {json.dumps(official_chapters, indent=2)}
@@ -598,7 +609,7 @@ Analyze the provided educational document excerpt and accurately determine:
 
 Return strictly a JSON object with this exact structure:
 {{
-  "title": "Clear Title of Chapter or Question Paper",
+  "title": "Clear Title of Chapter or Question Bank",
   "summary": "2-3 concise sentences summarizing the core content, concepts covered, and educational scope.",
   "detected_subject": "{subject}",
   "detected_topics": ["Topic 1", "Topic 2", "Topic 3", "Topic 4"],
@@ -610,6 +621,8 @@ Note: recommended_question_count should be between 20 (minimum) and 30 (maximum)
     try:
         res = mistral_client.generate_json(system_prompt, user_prompt, temperature=0.2, scenario="pdf_generation")
         if isinstance(res, dict) and "title" in res:
+            if document_type in ["old_question_paper", "question_bank"]:
+                res["title"] = "Question Bank"
             rec_q = res.get("recommended_question_count")
             if isinstance(rec_q, (int, float)):
                 res["recommended_question_count"] = max(15, min(35, int(rec_q)))
@@ -622,8 +635,7 @@ Note: recommended_question_count should be between 20 (minimum) and 30 (maximum)
     # Fallback contextual analysis with regex
     meta = document_processor.detect_curriculum_metadata(raw_text[:4000])
     detected_sub = meta.get("subject") or subject
-    first_lines = [line.strip() for line in raw_text.splitlines() if line.strip()][:5]
-    guessed_title = first_lines[0] if first_lines else filename.rsplit(".", 1)[0]
+    guessed_title = "Question Bank" if document_type in ["old_question_paper", "question_bank"] else ((raw_text.splitlines() or ["Curriculum"])[0][:120])
     return {
         "title": guessed_title[:120],
         "summary": f"Curriculum document for {board} {class_grade} {subject} containing {len(raw_text)} characters.",
@@ -1000,21 +1012,26 @@ def sanitize_question_item(
         except Exception:
             extracted_marks = None
 
-    # Handle unparsed JSON string inside correct_answer
-    raw_corr = str(q.get("correct_answer") or "").strip()
-    if raw_corr and (raw_corr.startswith("{") or '{"' in raw_corr or '"explanation":' in raw_corr):
+    # Handle unparsed JSON string or dict inside correct_answer
+    raw_corr = q.get("correct_answer")
+    if isinstance(raw_corr, dict):
+        raw_corr = raw_corr.get("text") or raw_corr.get("answer") or raw_corr.get("correct_answer") or raw_corr.get("value") or raw_corr.get("label") or str(raw_corr)
+    raw_corr_str = str(raw_corr or "").strip()
+    if raw_corr_str and (raw_corr_str.startswith("{") or '{"' in raw_corr_str or '"explanation":' in raw_corr_str or '"text":' in raw_corr_str):
         try:
-            parsed_corr = json.loads(raw_corr)
+            parsed_corr = json.loads(raw_corr_str)
             if isinstance(parsed_corr, dict):
-                raw_corr = str(parsed_corr.get("answer") or parsed_corr.get("correct_answer") or raw_corr)
+                raw_corr_str = str(parsed_corr.get("text") or parsed_corr.get("answer") or parsed_corr.get("correct_answer") or parsed_corr.get("value") or raw_corr_str)
                 if not q.get("explanation") and parsed_corr.get("explanation"):
                     q["explanation"] = str(parsed_corr.get("explanation"))
         except Exception:
-            json_ans_m = re.search(r'"(?:answer|correct_answer)"\s*:\s*"([^"]+)"', raw_corr)
+            json_ans_m = re.search(r'"(?:text|answer|correct_answer|value)"\s*:\s*"([^"]+)"', raw_corr_str)
             if json_ans_m:
-                raw_corr = json_ans_m.group(1)
+                raw_corr_str = json_ans_m.group(1)
 
-    corr = clean_human_readable_text(raw_corr)
+    raw_corr_str = re.sub(r'^(?:label\s*[\:\=]\s*[A-Da-d1-4]?[\)\.\:\-\s]*|text\s*[\:\=]\s*|value\s*[\:\=]\s*|option\s+[A-Da-d1-4]?\s*[\:\.\-]?\s*|[\(\[]?[A-Da-d1-4][\)\]\.\:\-]\s*)+', '', raw_corr_str, flags=re.IGNORECASE).strip()
+    raw_corr_str = re.sub(r'^label\s*[:\-–—]\s*[^\n]+\n+text\s*[:\-–—]\s*', '', raw_corr_str, flags=re.IGNORECASE).strip()
+    corr = clean_human_readable_text(raw_corr_str)
 
     # Smart Sentence Merger: If question text is just an instruction and correct_answer has the sentence/blank
     if re.search(r"^(?:(?:A|B|C|D|Q\d+)?\.?\s*)?(?:complete\s+the\s+sentence|fill\s+in\s+the\s+blank|choose\s+the\s+correct\s+word|state\s+whether|give\s+one\s+word|change\s+the\s+tense)", q_text, re.IGNORECASE):
@@ -1087,7 +1104,9 @@ def sanitize_question_item(
         marks = 1
         if "ASSERT" in raw_type:
             resolved_type = "ASSERTION REASON"
-        elif is_fill_in_the_blank or not has_opts or raw_type in ["OBJECTIVE", "TRUE_FALSE", "ONE_WORD"]:
+        elif has_opts:
+            resolved_type = "MCQ"
+        elif is_fill_in_the_blank or raw_type in ["OBJECTIVE", "TRUE_FALSE", "ONE_WORD"] or not has_opts:
             resolved_type = "OBJECTIVE"
         else:
             resolved_type = "MCQ"
@@ -1098,7 +1117,18 @@ def sanitize_question_item(
     if resolved_type in ["MCQ", "ASSERTION REASON"]:
         if isinstance(q_opts, list):
             for opt in q_opts:
-                opt_str = clean_human_readable_text(opt)
+                if isinstance(opt, dict):
+                    opt_str = opt.get("text") or opt.get("value") or opt.get("body") or opt.get("statement") or opt.get("ans")
+                    if not opt_str:
+                        for k, v in opt.items():
+                            if str(k).lower() not in ["label", "option", "key", "id", "index", "type"]:
+                                opt_str = v
+                                break
+                    if not opt_str:
+                        opt_str = list(opt.values())[-1] if opt.values() else ""
+                    opt_str = clean_human_readable_text(opt_str)
+                else:
+                    opt_str = clean_human_readable_text(opt)
                 if opt_str:
                     clean_opts.append(opt_str)
         elif isinstance(q_opts, dict):
@@ -1154,91 +1184,79 @@ def sanitize_question_item(
         # Check for dummy options
         is_dummy = any(re.match(r"^(?:[A-D]\s*[\)\.\:\-]\s*)?option\s*[A-D]?$", opt, re.IGNORECASE) for opt in clean_opts)
         if len(clean_opts) < 2 or is_dummy:
-            if resolved_type not in ["SAQ", "SHORT ANSWER (3M)", "LONG ANSWER"]:
+            if resolved_type not in ["SAQ", "SHORT ANSWER (3M)", "LONG ANSWER", "LONG EVALUATIVE (8M)", "CASE STUDY", "NUMERICAL"]:
                 resolved_type = "OBJECTIVE"
             clean_opts = []
         else:
-            # Ensure standard prefix A), B), C), D)
-            formatted_opts = []
-            for opt_idx, opt_val in enumerate(clean_opts[:4]):
-                prefix = chr(65 + opt_idx)  # A, B, C, D
-                if not re.match(r"^[A-D][\)\.\:\s]", opt_val, re.IGNORECASE):
-                    formatted_opts.append(f"{prefix}) {opt_val}")
-                else:
-                    formatted_opts.append(opt_val)
-            clean_opts = formatted_opts
-    else:
-        clean_opts = []
+            # 1. EXTRACT PURE OPTION BODIES (Thoroughly strip pre-existing label/text, a), b), (c), 1), A., option A:, etc.)
+            raw_bodies = []
+            for opt_val in clean_opts[:4]:
+                cleaned_body = re.sub(r'^(?:label\s*[\:\=]\s*[A-Da-d1-4]?[\)\.\:\-\s]*|text\s*[\:\=]\s*|value\s*[\:\=]\s*|option\s+[A-Da-d1-4]?\s*[\:\.\-]?\s*|[\(\[]?[A-Da-d1-4][\)\]\.\:\-]\s*)+', '', opt_val.strip(), flags=re.IGNORECASE).strip()
+                cleaned_body = re.sub(r'^label\s*[:\-–—]\s*[^\n]+\n+text\s*[:\-–—]\s*', '', cleaned_body, flags=re.IGNORECASE).strip()
+                if not cleaned_body:
+                    cleaned_body = opt_val.strip()
+                raw_bodies.append(cleaned_body)
 
-    # Clean correct_answer
-    if resolved_type in ["MCQ", "ASSERTION REASON"] and clean_opts:
-        if corr:
-            # Check if corr is a letter like 'A' or 'B' or '(A)'
-            match_letter = re.match(r"^[\(]?([A-D])[\)\.\:\s]?$", corr.strip(), re.IGNORECASE)
+            # 2. RESOLVE PURE TARGET CORRECT ANSWER BODY BEFORE SHUFFLING
+            corr_clean = corr.strip() if corr else ""
+            target_body = None
+
+            # Check if corr is a pure letter like 'A', 'B', '(C)', 'd)'
+            match_letter = re.match(r"^[\(\[]?([A-Da-d])[\)\]\.\:\s]?$", corr_clean, re.IGNORECASE)
             if match_letter:
                 target_letter = match_letter.group(1).upper()
                 target_idx = ord(target_letter) - 65
-                if 0 <= target_idx < len(clean_opts):
-                    opt_raw = clean_opts[target_idx]
-                    corr = opt_raw.split(")", 1)[-1].strip() if ")" in opt_raw else opt_raw
-                else:
-                    corr = clean_opts[0].split(")", 1)[-1].strip()
+                if 0 <= target_idx < len(raw_bodies):
+                    target_body = raw_bodies[target_idx]
             else:
-                # corr contains text: match it against options
-                matched_text = None
-                corr_clean = corr.lower().strip()
-                for opt_str in clean_opts:
-                    opt_body = opt_str.split(")", 1)[-1].strip()
-                    if corr_clean == opt_body.lower() or (len(corr_clean) > 3 and corr_clean in opt_body.lower()) or (len(opt_body) > 3 and opt_body.lower() in corr_clean):
-                        matched_text = opt_body
+                # Strip prefix from corr if it has one e.g. "c) Oxygen" -> "Oxygen"
+                pure_corr = re.sub(r'^(?:[\(\[]?[A-Da-d1-4][\)\]\.\:\-]\s*|option\s+[A-Da-d1-4]\s*[\:\.\-]?\s*)+', '', corr_clean, flags=re.IGNORECASE).strip()
+                pure_corr_lower = pure_corr.lower()
+
+                # Match against raw_bodies (First try EXACT match, then normalized match)
+                for body in raw_bodies:
+                    b_lower = body.lower().strip()
+                    if pure_corr_lower == b_lower:
+                        target_body = body
                         break
-                if matched_text:
-                    corr = matched_text
-                else:
-                    # If corr does not match ANY of the options:
-                    # Check if this question is actually a descriptive/passage question that AI wrongly formatted as MCQ
-                    is_descriptive_q = bool(re.search(r'\b(?:rewrite|explain|describe|what is the life cycle|state the|why do|how does|give reason|summarize|list the)\b', q_text.lower()))
-                    is_long_corr = len(corr.split()) >= 4 or len(corr) > 30
-                    if is_descriptive_q or is_long_corr:
-                        # Auto-convert to SAQ or Objective with authentic descriptive answer preserved and unrelated options cleared
-                        resolved_type = "SAQ" if marks >= 2 else "OBJECTIVE"
-                        clean_opts = []
-                    else:
-                        # If authentic short MCQ, lock corr to the first option
-                        corr = clean_opts[0].split(")", 1)[-1].strip() if clean_opts else corr
-        else:
-            corr = clean_opts[0].split(")", 1)[-1].strip() if clean_opts else ""
 
-        # Smart Balanced MCQ Option Shuffling (randomizes correct option across A, B, C, D without altering answer fidelity)
-        if resolved_type == "MCQ" and len(clean_opts) >= 2 and corr:
-            raw_bodies = [re.sub(r'^[A-D]\s*[\)\.\:\-]\s*', '', opt).strip() for opt in clean_opts[:4]]
-            corr_clean = corr.lower().strip()
-            target_body = None
-            for body in raw_bodies:
-                if corr_clean == body.lower() or (len(corr_clean) > 2 and corr_clean in body.lower()) or (len(body) > 2 and body.lower() in corr_clean):
-                    target_body = body
-                    break
+                if not target_body:
+                    p_norm = re.sub(r'[^a-zA-Z0-9]', '', pure_corr_lower)
+                    for body in raw_bodies:
+                        b_norm = re.sub(r'[^a-zA-Z0-9]', '', body.lower().strip())
+                        if p_norm and b_norm and p_norm == b_norm:
+                            target_body = body
+                            break
+
             if not target_body:
-                target_body = raw_bodies[0]
+                target_body = raw_bodies[0] if raw_bodies else corr_clean
 
+            # 3. BALANCED MCQ SHUFFLING
             has_both_ab = any(re.search(r'\bboth\s+(?:\(?[a-d]\)?\s+and\s+\(?[a-d]\)?|[a-d]\s*,\s*[a-d])\b', b, re.IGNORECASE) for b in raw_bodies)
             has_all_none = any(re.search(r'^(?:all|none)\s+of\s+(?:the\s+above|these)$', b.strip(), re.IGNORECASE) for b in raw_bodies)
 
             import random
+            shuffled_bodies = list(raw_bodies)
             if has_both_ab:
                 # Positional references like 'Both A and B' must not be shuffled
                 pass
             elif has_all_none:
                 # Keep 'All/None of the above' fixed at the last option D, shuffle the remaining options
-                all_none_idx = next(i for i, b in enumerate(raw_bodies) if re.search(r'^(?:all|none)\s+of\s+(?:the\s+above|these)$', b.strip(), re.IGNORECASE))
-                all_none_item = raw_bodies.pop(all_none_idx)
-                random.shuffle(raw_bodies)
-                raw_bodies.append(all_none_item)
+                try:
+                    all_none_idx = next(i for i, b in enumerate(shuffled_bodies) if re.search(r'^(?:all|none)\s+of\s+(?:the\s+above|these)$', b.strip(), re.IGNORECASE))
+                    all_none_item = shuffled_bodies.pop(all_none_idx)
+                    random.shuffle(shuffled_bodies)
+                    shuffled_bodies.append(all_none_item)
+                except StopIteration:
+                    random.shuffle(shuffled_bodies)
             else:
-                random.shuffle(raw_bodies)
+                random.shuffle(shuffled_bodies)
 
-            clean_opts = [f"{chr(65 + i)}) {body}" for i, body in enumerate(raw_bodies)]
+            # 4. FORMAT CLEAN OUTPUT WITH STANDARD A), B), C), D) PREFIXES (ZERO DOUBLE PREFIXES)
+            clean_opts = [f"{chr(65 + i)}) {body}" for i, body in enumerate(shuffled_bodies)]
             corr = target_body
+    else:
+        clean_opts = []
 
     # Determine calibrated difficulty (Supports 'easy', 'simple', 'medium', 'hard')
     raw_diff = str(q.get("difficulty") or target_diff or "easy").strip().lower()
@@ -1398,8 +1416,8 @@ def extract_questions_from_document_text(
 
     if document_type in ["old_question_paper", "question_bank"]:
         # QUESTION BANK / PYQ MODE: Extract 100% of all questions across chunks
-        chunk_window = 12000
-        overlap = 1000
+        chunk_window = 20000
+        overlap = 600
         text_len = len(cleaned_text)
 
         chunks = []
@@ -1424,7 +1442,6 @@ def extract_questions_from_document_text(
 - Board: {board}
 - Class/Grade: {class_grade}
 - Subject: {subject}
-- Chapter/Paper Title: {title}{topics_guide}
 - Document Mode: {document_type}
 - Section: {section_label}
 
@@ -1433,12 +1450,13 @@ def extract_questions_from_document_text(
 --- END DOCUMENT CONTENT ---
 
 CRITICAL INSTRUCTIONS:
-1. Extract and digitize EVERY single question present in this text section without skipping any.
-2. If there are Multiple Choice Questions (MCQ), extract all options ('A) ', 'B) ', 'C) ', 'D) ') and identify the correct option letter.
-3. For Short Answer (2M or 3M), Case Studies (4M), Long Answer (5M or 8M), Numerical, Assertion Reason, or Objective questions, extract full question text and write accurate model solutions in 'correct_answer' and 'explanation'.
-4. Extract all distinguishable questions present in this section without an artificial limit."""
+1. Extract and digitize EVERY numbered question (e.g. Q1 through Q39) as a SINGLE unified question item. DO NOT INVENT NEW QUESTIONS.
+2. DO NOT split compound multi-sentence questions, sub-parts, or 'OR' choices into separate items. Keep each numbered question complete as printed with its official marks (Section E = 5 Marks Long Answer, Section D = 4 Marks Case Study).
+3. If a question has Multiple Choice options (a, b, c, d), set "type": "MCQ", extract all 4 options into 'options' array, and set 'correct_answer' to the matching option text.
+4. If a question has Assertion and Reason, set "type": "Assertion Reason".
+5. For 2M (SAQ), 3M (Short Answer 3M), 4M (Case Study), 5M (Long Answer) questions without choices, extract full question text and provide accurate model solutions in 'correct_answer' and 'explanation'."""
             try:
-                response_json = mistral_client.generate_json(system_prompt, user_prompt, temperature=0.25, scenario="pdf_generation")
+                response_json = mistral_client.generate_json(system_prompt, user_prompt, temperature=0.20, scenario="pdf_generation")
                 q_list = response_json.get("questions", []) if isinstance(response_json, dict) else []
                 if isinstance(q_list, list) and q_list:
                     print(f"    -> [{section_label}] Extracted {len(q_list)} question(s)")
@@ -1458,6 +1476,17 @@ CRITICAL INSTRUCTIONS:
             for item in enumerate(chunks):
                 _, q_list = _process_qb_chunk(item)
                 raw_questions.extend(q_list)
+
+        # Deduplicate identical questions across chunk seams
+        if raw_questions:
+            seen_q_texts = set()
+            unique_raw_questions = []
+            for q_item in raw_questions:
+                q_stmt = re.sub(r'[^a-zA-Z0-9]', '', str(q_item.get("question") or "")[:70]).lower()
+                if q_stmt and q_stmt not in seen_q_texts:
+                    seen_q_texts.add(q_stmt)
+                    unique_raw_questions.append(q_item)
+            raw_questions = unique_raw_questions
 
         # Fallback question detection if LLM returned 0 questions
         if not raw_questions:
@@ -2205,6 +2234,9 @@ def process_curriculum_document_pipeline(
             {"t_id": q_topic_id, "q_text": q["question"]}
         ).scalar()
 
+        raw_img = q.get("image_url") or None
+        final_img = document_processor.promote_diagram_from_temp_to_permanent(raw_img)
+
         if existing_id:
             session.execute(
                 text("""
@@ -2223,7 +2255,7 @@ def process_curriculum_document_pipeline(
                     "marks": q["marks"],
                     "diff_id": diff_id,
                     "type_id": q_type_id,
-                    "image_url": q.get("image_url") or None
+                    "image_url": final_img
                 }
             )
             updated_questions_count += 1
@@ -2240,7 +2272,7 @@ def process_curriculum_document_pipeline(
                     "type_id": q_type_id,
                     "diff_id": diff_id,
                     "question": q["question"],
-                    "image_url": q.get("image_url") or None,
+                    "image_url": final_img,
                     "options": options_json,
                     "correct_answer": q["correct_answer"],
                     "explanation": q["explanation"],
@@ -2649,6 +2681,9 @@ def save_curriculum_extracted_questions_pipeline(
             {"t_id": q_topic_id, "q_text": q_text}
         ).scalar()
 
+        raw_img_app = q.get("image_url") or q.get("imageUrl") or None
+        final_img_app = document_processor.promote_diagram_from_temp_to_permanent(raw_img_app)
+
         if existing_id:
             # Update existing with refined explanation and options
             session.execute(
@@ -2668,7 +2703,7 @@ def save_curriculum_extracted_questions_pipeline(
                     "marks": int(q.get("marks", 1)),
                     "diff_id": diff_id,
                     "type_id": q_type_id,
-                    "image_url": q.get("image_url") or q.get("imageUrl") or None
+                    "image_url": final_img_app
                 }
             )
             updated_count += 1
@@ -2686,7 +2721,7 @@ def save_curriculum_extracted_questions_pipeline(
                     "type_id": q_type_id,
                     "diff_id": diff_id,
                     "question": q_text,
-                    "image_url": q.get("image_url") or q.get("imageUrl") or None,
+                    "image_url": final_img_app,
                     "options": options_json,
                     "correct_answer": q.get("correct_answer", "A"),
                     "explanation": q.get("explanation", ""),

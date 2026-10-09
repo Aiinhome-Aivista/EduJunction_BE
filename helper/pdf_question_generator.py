@@ -148,6 +148,9 @@ def _sanitize_single_question(q: Any, default_type: str, target_diff: str, meta:
     elif "SAQ" in raw_type or "SHORT" in raw_type:
         resolved_type = "SAQ"
         default_m = 2
+    elif isinstance(q.get("options"), (list, tuple, dict)) and len(q.get("options") or []) >= 2:
+        resolved_type = "MCQ"
+        default_m = 1
     elif raw_type in ["TRUE_FALSE", "TRUE/FALSE", "TF", "OBJECTIVE", "ONE_WORD", "FILL_IN"]:
         resolved_type = "Objective"
         default_m = 1
@@ -210,7 +213,21 @@ def _sanitize_single_question(q: Any, default_type: str, target_diff: str, meta:
     clean_opts: List[str] = []
     if resolved_type in ["MCQ", "Assertion Reason"]:
         if isinstance(q_opts, list):
-            clean_opts = [str(opt).strip() for opt in q_opts if str(opt).strip()]
+            for opt in q_opts:
+                if isinstance(opt, dict):
+                    opt_str = opt.get("text") or opt.get("value") or opt.get("body") or opt.get("statement") or opt.get("ans")
+                    if not opt_str:
+                        for k, v in opt.items():
+                            if str(k).lower() not in ["label", "option", "key", "id", "index", "type"]:
+                                opt_str = v
+                                break
+                    if not opt_str:
+                        opt_str = list(opt.values())[-1] if opt.values() else ""
+                    opt_str = str(opt_str).strip()
+                else:
+                    opt_str = str(opt).strip()
+                if opt_str:
+                    clean_opts.append(opt_str)
         elif isinstance(q_opts, dict):
             clean_opts = [f"{k}) {v}" for k, v in q_opts.items()]
 
@@ -220,15 +237,16 @@ def _sanitize_single_question(q: Any, default_type: str, target_diff: str, meta:
             resolved_type = "Objective"
             clean_opts = []
         else:
-            # Ensure standard prefix A), B), C), D)
-            formatted_opts = []
-            for opt_idx, opt_val in enumerate(clean_opts[:4]):
-                prefix = chr(65 + opt_idx)
-                if not re.match(r"^[A-D][\)\.\:\s]", opt_val, re.IGNORECASE):
-                    formatted_opts.append(f"{prefix}) {opt_val}")
-                else:
-                    formatted_opts.append(opt_val)
-            clean_opts = formatted_opts
+            # 1. EXTRACT PURE OPTION BODIES (Thoroughly strip pre-existing label/text, a), b), (c), 1), A., option A:, etc.)
+            raw_bodies = []
+            for opt_val in clean_opts[:4]:
+                cleaned_body = re.sub(r'^(?:label\s*[\:\=]\s*[A-Da-d1-4]?[\)\.\:\-\s]*|text\s*[\:\=]\s*|value\s*[\:\=]\s*|option\s+[A-Da-d1-4]?\s*[\:\.\-]?\s*|[\(\[]?[A-Da-d1-4][\)\]\.\:\-]\s*)+', '', opt_val.strip(), flags=re.IGNORECASE).strip()
+                cleaned_body = re.sub(r'^label\s*[:\-–—]\s*[^\n]+\n+text\s*[:\-–—]\s*', '', cleaned_body, flags=re.IGNORECASE).strip()
+                if not cleaned_body:
+                    cleaned_body = opt_val.strip()
+                raw_bodies.append(cleaned_body)
+
+            clean_opts = [f"{chr(65 + idx)}) {body}" for idx, body in enumerate(raw_bodies)]
     else:
         clean_opts = []
 
