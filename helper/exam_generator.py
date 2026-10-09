@@ -202,7 +202,7 @@ def _fetch_questions_from_db(
     sp_rows = []
 
     # 0. Branch-specific query for CBSE Science (Physics, Chemistry, Biology)
-    if clean_branch in ["Physics", "Chemistry", "Biology"] and "sci" in clean_subj.lower():
+    if clean_branch in ["Physics", "Chemistry", "Biology"] and clean_subj.lower().strip() == "science":
         try:
             from utils.constants import SCIENCE_BRANCH_KEYWORDS
             keywords = SCIENCE_BRANCH_KEYWORDS.get(clean_branch, [])
