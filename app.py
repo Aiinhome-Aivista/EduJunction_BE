@@ -536,6 +536,14 @@ def create_app() -> Flask:
     def api_generate_free_mock_test():
         return mock_test_controller.generate_free_mock_test()
 
+    @app.route("/api/v1/mock-tests/quick-demo", methods=["GET"])
+    def api_get_quick_demo():
+        return mock_test_controller.get_quick_demo_questions()
+
+    @app.route("/api/v1/mock-tests/quick-demo/evaluate", methods=["POST"])
+    def api_evaluate_quick_demo():
+        return mock_test_controller.evaluate_quick_demo_test()
+
     @app.route("/api/v1/admin/mock-tests", methods=["GET"])
     def api_admin_list_mock_tests():
         return mock_test_controller.list_mock_tests()
