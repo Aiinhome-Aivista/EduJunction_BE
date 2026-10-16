@@ -292,6 +292,164 @@ def send_registration_email(
     return True
 
 
+def send_quick_test_report_email(
+    to_email: str,
+    name: str = "",
+    username: str = "",
+    role_name: str = "STUDENT",
+    password: str = "",
+    test_history: list = None,
+    login_method: str = "Standard"
+) -> bool:
+    """Sends a personalized welcome email with full report cards of completed quick tests and a CTA button to take another test."""
+    if not to_email or not to_email.strip():
+        return False
+
+    display_name = name.strip() if name else "Learner"
+    subject = "🎓 Welcome to EduJunction! Your Quick Demo Test Report"
+    test_history = test_history or []
+    frontend_url = getattr(config, "FRONTEND_URL", "http://localhost:5173").rstrip("/")
+    quick_test_url = f"{frontend_url}/quick-test"
+
+    username_info = f"<p style='margin: 4px 0;'><strong>Username:</strong> <code style='background: #e2e8f0; padding: 2px 6px; border-radius: 4px; font-weight: bold;'>{username}</code></p>" if username else ""
+    role_info = f"<p style='margin: 4px 0;'><strong>Account Type:</strong> {role_name.title()}</p>" if role_name else ""
+    
+    if password:
+        password_info = f"<p style='margin: 4px 0;'><strong>Password:</strong> <code style='background: #fef08a; color: #854d0e; padding: 2px 6px; border-radius: 4px; font-weight: bold;'>{password}</code></p>"
+    elif login_method == "Google":
+        password_info = "<p style='margin: 4px 0;'><strong>Login Method:</strong> <span style='color: #2563eb; font-weight: 600;'>Google 1-Click Sign-in</span> (No separate password required)</p>"
+    else:
+        password_info = ""
+
+    # Build test report cards HTML & generate downloadable PDF attachments
+    from helper.quick_test_pdf_helper import build_quick_test_pdf
+    tests_html = ""
+    plain_tests = ""
+    attachments = []
+
+    for idx, test in enumerate(test_history, start=1):
+        board = test.get("board", "Board")
+        class_grade = test.get("classGrade", "Class")
+        subject_name = test.get("subject", "Subject")
+        score = test.get("score", 0)
+        total_marks = test.get("totalMarks", 5)
+        percentage = test.get("percentage", 0)
+        time_taken = test.get("timeTakenSeconds", 0)
+        time_str = f"{time_taken // 60}m {time_taken % 60}s" if time_taken else "N/A"
+
+        score_color = "#15803d" if percentage >= 70 else ("#b45309" if percentage >= 40 else "#b91c1c")
+        bg_card = "#f0fdf4" if percentage >= 70 else ("#fffbeb" if percentage >= 40 else "#fef2f2")
+        border_color = "#86efac" if percentage >= 70 else ("#fde68a" if percentage >= 40 else "#fecaca")
+
+        # Generate individual PDF report attachment for this test
+        pdf_filename = None
+        try:
+            pdf_filename, pdf_bytes = build_quick_test_pdf(test, display_name, idx)
+            attachments.append({
+                "filename": pdf_filename,
+                "content": pdf_bytes,
+                "maintype": "application",
+                "subtype": "pdf",
+            })
+        except Exception as pdf_err:
+            print(f"[!] Warning: Failed to generate PDF for test #{idx}: {pdf_err}", flush=True)
+
+        attached_info_html = ""
+        if pdf_filename:
+            attached_info_html = f"""
+            <div style="margin-top: 10px; padding: 6px 12px; background: #ffffff; border: 1px dashed {border_color}; border-radius: 8px; font-size: 12px; color: #334155;">
+                📎 <strong>Attached Report:</strong> <span style="font-family: monospace; font-weight: 700; color: #0f172a;">{pdf_filename}</span> <em>(Download attached PDF to view questions, options & step-by-step solutions)</em>
+            </div>
+            """
+
+        tests_html += f"""
+        <div style="background: {bg_card}; border: 1px solid {border_color}; border-radius: 12px; padding: 14px 18px; margin-bottom: 12px;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                <span style="font-weight: 800; color: #1e293b; font-size: 15px;">Test #{idx}: {subject_name}</span>
+                <span style="background: #ffffff; color: {score_color}; font-size: 12px; font-weight: 800; padding: 3px 10px; border-radius: 999px; border: 1px solid {border_color};">
+                    Score: {score} / {total_marks} ({percentage}%)
+                </span>
+            </div>
+            <div style="font-size: 13px; color: #64748b; margin-top: 4px;">
+                <span>📚 <strong>Curriculum:</strong> {board} • {class_grade}</span> | 
+                <span>⏱️ <strong>Time Taken:</strong> {time_str}</span>
+            </div>
+            {attached_info_html}
+        </div>
+        """
+        plain_tests += f"\n- Test #{idx}: {subject_name} ({board} {class_grade}) | Score: {score}/{total_marks} ({percentage}%) | Time: {time_str}"
+        if pdf_filename:
+            plain_tests += f" | Attached PDF: {pdf_filename}"
+
+    content_html = f"""
+        <h2 style="color: #1e293b; margin-top: 0;">Welcome to EduJunction, {display_name}! 🎉</h2>
+        <p>Great job practicing with our <strong>Quick Demo Tests</strong>! We have saved all your past attempts and synced them directly to your new student profile.</p>
+
+        <!-- Credentials Summary -->
+        <div class="card" style="border-left: 4px solid #eab308; background: #fffbeb; padding: 16px 20px; border-radius: 10px; margin: 18px 0;">
+            <h3 style="margin-top: 0; font-size: 14px; color: #854d0e; text-transform: uppercase; letter-spacing: 0.5px;">📋 Your Account Details</h3>
+            <p style="margin: 4px 0;"><strong>Email:</strong> {to_email}</p>
+            {username_info}
+            {password_info}
+            {role_info}
+        </div>
+
+        <!-- Quick Tests Scorecard Section -->
+        <div style="margin: 24px 0 16px;">
+            <h3 style="color: #0f172a; font-size: 16px; margin-bottom: 8px; display: flex; align-items: center; gap: 8px;">
+                📊 Your Quick Test Performance Report ({len(test_history)} tests taken)
+            </h3>
+            <div style="background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 10px; padding: 10px 14px; margin-bottom: 14px; font-size: 13px; color: #1e40af; line-height: 1.5;">
+                📥 <strong>Downloadable Report PDFs Attached:</strong> Detailed scorecard PDFs with itemized question reviews, your answers, and step-by-step model solutions are attached to this email. You can download and save them for offline revision!
+            </div>
+            {tests_html}
+        </div>
+
+        <!-- THE KEY CTA BUTTON -->
+        <div style="text-align: center; margin: 32px 0 24px;">
+            <a href="{quick_test_url}" 
+               style="display: inline-block; background: #f59e0b; color: #000000; text-decoration: none; font-weight: 900; font-size: 16px; padding: 15px 36px; border-radius: 12px; box-shadow: 0 4px 14px rgba(245, 158, 11, 0.45); letter-spacing: -0.2px;">
+                🚀 Want to take another test
+            </a>
+            <p style="margin: 8px 0 0; font-size: 12px; color: #64748b;">
+                Click above to challenge yourself with more practice questions anytime!
+            </p>
+        </div>
+
+        <hr style="border: none; border-top: 1px solid #e2e8f0; margin: 24px 0;" />
+
+        <p style="font-size: 13px; color: #475569;">
+            With your new EduJunction account, you can also explore:
+        </p>
+        <ul style="color: #475569; font-size: 13px; padding-left: 20px;">
+            <li>Unlimited chapter-wise and term-end full-syllabus mock exams.</li>
+            <li>Detailed mistake analysis and personalized tips to improve your score.</li>
+            <li>Instant doubt clearing and easy explanations for tough textbook topics.</li>
+        </ul>
+
+        <p style="font-size: 12px; color: #64748b; margin-top: 20px;">
+            🔒 <em>Security Tip: Keep your login credentials safe. You can change your password anytime from your profile settings.</em>
+        </p>
+
+        <p><strong>Happy Learning! 🚀</strong><br>All The Best From EduJunction</p>
+    """
+
+    plain_text = (
+        f"Welcome to EduJunction, {display_name}!\n\n"
+        f"Thank you for registering on EduJunction. Here is your Quick Demo Test Report:\n"
+        f"{plain_tests}\n\n"
+        f"Your Credentials:\n"
+        f"Email: {to_email}\n"
+        f"Username: {username}\n"
+        + (f"Password: {password}\n" if password else (f"Login Method: Google 1-Click Sign-in\n" if login_method == "Google" else ""))
+        + f"\nWant to take another test? Visit: {quick_test_url}\n\n"
+        f"Best regards,\nThe EduJunction Team"
+    )
+
+    send_email_async(to_email, subject, content_html, plain_text, attachments=attachments)
+    return True
+
+
 def send_child_registration_email(
     to_parent_email: str,
     parent_name: str,

@@ -7,13 +7,13 @@ from flask import request, g
 from sqlalchemy import text, func
 
 from .email_controller import (
-    send_email, send_registration_email, send_login_email,
+    send_email, send_registration_email, send_quick_test_report_email, send_login_email,
     send_password_changed_email, send_password_reset_otp_email
 )
 
 from database.dbConnection import get_session
 from middleware.authMiddleware import token_required
-from model.models import User, Role, Parent, Student
+from model.models import User, Role, Parent, Student, Exam, ExamSubmission
 from utils.config import config
 from utils.errors import AppError, UnauthorizedError
 from utils.response import success
@@ -147,6 +147,86 @@ def get_page_access_for_role(session, role_name: str, user_id: int = None) -> li
 _get_page_access = get_page_access_for_role
 
 
+def _sync_guest_test_history(session, student_id: int, history_list: list):
+    """Syncs guest tests taken on Quick Test page into exams and exam_submissions tables."""
+    if not history_list or not isinstance(history_list, list):
+        return
+
+    import uuid
+    total_new_exams = 0
+    total_score = 0.0
+    total_possible = 0.0
+
+    for test in history_list:
+        if not isinstance(test, dict):
+            continue
+        board = str(test.get("board", "CBSE")).strip()
+        class_grade = str(test.get("classGrade", "Class 10")).strip()
+        subject_name = str(test.get("subject", "General")).strip()
+        score = float(test.get("score", 0.0))
+        total_marks = int(test.get("totalMarks", 5))
+        percentage = float(test.get("percentage", (score / total_marks * 100) if total_marks else 0.0))
+        time_taken = int(test.get("timeTakenSeconds", 60))
+
+        exam_id = str(uuid.uuid4())
+        exam = Exam(
+            id=exam_id,
+            student_id=student_id,
+            title=f"{subject_name} Quick Assessment",
+            board=board,
+            class_grade=class_grade,
+            subject=subject_name,
+            difficulty="medium",
+            total_marks=total_marks,
+            question_count=total_marks,
+            time_limit_minutes=5,
+            source="rag-engine-curated",
+            status="SUBMITTED",
+        )
+        session.add(exam)
+        session.flush()
+
+        submission_id = str(uuid.uuid4())
+        submission = ExamSubmission(
+            id=submission_id,
+            exam_id=exam.id,
+            student_id=student_id,
+            answers=test.get("answers", {}),
+            marks_obtained=score,
+            total_marks=total_marks,
+            accuracy_percentage=percentage,
+            time_taken_seconds=time_taken,
+        )
+        session.add(submission)
+        session.flush()
+
+        # Populate Question and QuestionEvaluation records so report reviews and explanations are fully visible
+        try:
+            from helper.guest_exam_sync_helper import populate_guest_exam_evaluations
+            populate_guest_exam_evaluations(
+                session=session,
+                exam=exam,
+                submission=submission,
+                raw_answers=test.get("answers", {}),
+                reviews=test.get("reviews", []),
+            )
+        except Exception as sync_eval_err:
+            print(f"[!] Warning: Failed to populate guest evaluations for exam {exam.id}: {sync_eval_err}", flush=True)
+
+        total_new_exams += 1
+        total_score += score
+        total_possible += total_marks
+
+    # Update student record totals
+    student = session.query(Student).filter(Student.id == student_id).first()
+    if student and total_new_exams > 0:
+        student.total_exams_taken = (student.total_exams_taken or 0) + total_new_exams
+        student.xp = (student.xp or 0) + (total_new_exams * 50)
+        if total_possible > 0:
+            student.average_score = round((total_score / total_possible) * 100, 2)
+        session.flush()
+
+
 def get_captcha():
     captcha_data = generate_math_captcha()
     return success(captcha_data, message="Captcha generated successfully")
@@ -257,19 +337,40 @@ def register():
                 from utils.logger import logger
                 logger.warning(f"Auto-assign mock tests failed for self-registered student {student.id}: {e}")
 
+            # Sync guest test history if provided
+            guest_history = payload.get("guestTestHistory") or []
+            if guest_history:
+                try:
+                    _sync_guest_test_history(session, student.id, guest_history)
+                except Exception as sync_err:
+                    from utils.logger import logger
+                    logger.warning(f"Failed to sync guest tests for student {student.id}: {sync_err}")
+
         tokens = _issue_tokens(session, user.id, role_name)
         page_access = _get_page_access(session, role_name, user.id)
         session.commit()
 
-        # Send registration welcome email with credentials
-        send_registration_email(
-            to_email=user.email,
-            name=user.name,
-            username=user.username,
-            role_name=role_name,
-            password=payload["password"],
-            login_method="Standard"
-        )
+        # Send registration welcome email with credentials & test reports if any
+        guest_history = payload.get("guestTestHistory") or []
+        if guest_history:
+            send_quick_test_report_email(
+                to_email=user.email,
+                name=user.name,
+                username=user.username,
+                role_name=role_name,
+                password=payload.get("password", ""),
+                test_history=guest_history,
+                login_method="Standard"
+            )
+        else:
+            send_registration_email(
+                to_email=user.email,
+                name=user.name,
+                username=user.username,
+                role_name=role_name,
+                password=payload.get("password", ""),
+                login_method="Standard"
+            )
 
         return success(
             {
@@ -872,15 +973,34 @@ def google_auth():
             if not student_rec or not student_rec.target_board or student_rec.target_board in ("PENDING", "") or not student_rec.class_grade or student_rec.class_grade in ("PENDING", ""):
                 is_onboarded = False
 
+        guest_history = payload.get("guestTestHistory") or []
+        if is_new_user and user_role_name.upper() == "STUDENT" and guest_history:
+            try:
+                _sync_guest_test_history(session, user.id, guest_history)
+                session.commit()
+            except Exception as sync_err:
+                from utils.logger import logger
+                logger.warning(f"Failed to sync guest tests in google login: {sync_err}")
+
         # Send Google registration welcome or login notification email
         if is_new_user:
-            send_registration_email(
-                to_email=user.email,
-                name=user.name,
-                username=user.username,
-                role_name=user_role_name,
-                login_method="Google"
-            )
+            if guest_history:
+                send_quick_test_report_email(
+                    to_email=user.email,
+                    name=user.name,
+                    username=user.username,
+                    role_name=user_role_name,
+                    test_history=guest_history,
+                    login_method="Google"
+                )
+            else:
+                send_registration_email(
+                    to_email=user.email,
+                    name=user.name,
+                    username=user.username,
+                    role_name=user_role_name,
+                    login_method="Google"
+                )
         else:
             send_login_email(to_email=user.email, name=user.name, login_type="Google")
 

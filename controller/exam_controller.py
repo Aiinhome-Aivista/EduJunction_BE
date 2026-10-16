@@ -650,5 +650,20 @@ def get_submission(submission_id):
         elif g.current_user_role == "PARENT":
             assert_owns_student(session, submission.student_id, current_uid)
 
+        # Auto-heal legacy or synced guest test submissions if evaluations are missing
+        if not submission.evaluations and submission.answers:
+            try:
+                from helper.guest_exam_sync_helper import populate_guest_exam_evaluations
+                populate_guest_exam_evaluations(
+                    session=session,
+                    exam=submission.exam,
+                    submission=submission,
+                    raw_answers=submission.answers,
+                )
+                session.commit()
+            except Exception as auto_heal_err:
+                session.rollback()
+                print(f"[!] Auto-heal guest evaluations error: {auto_heal_err}", flush=True)
+
         return success(submission_to_dict(submission, include_details=True))
 
