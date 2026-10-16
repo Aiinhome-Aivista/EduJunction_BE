@@ -426,6 +426,14 @@ def create_app() -> Flask:
     def api_admin_list_audit_logs():
         return admin_controller.list_audit_logs()
 
+    @app.route("/api/v1/admin/test-submissions", methods=["GET"])
+    def api_admin_list_test_submissions():
+        return admin_controller.list_test_submissions()
+
+    @app.route("/api/v1/admin/test-submissions/<submission_id>", methods=["GET"])
+    def api_admin_get_test_submission_details(submission_id):
+        return admin_controller.get_submission_details(submission_id)
+
     # ============================================================
     # 11.5 Curriculum & Question Bank Endpoints
     # ============================================================

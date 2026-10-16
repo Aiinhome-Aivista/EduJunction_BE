@@ -383,3 +383,242 @@ def list_audit_logs():
         return success(paginated_response(items, total, page, limit))
 
 
+@token_required
+@roles_required("ADMIN", "SUPER_ADMIN")
+def list_test_submissions():
+    """Fetches paginated student test submissions with filters using SP or ORM fallback."""
+    from flask import request
+    from sqlalchemy import text, or_
+    import json
+
+    page, limit, offset = get_pagination_params()
+    search = request.args.get("search", "").strip()
+    subject = request.args.get("subject", "").strip()
+    board = request.args.get("board", "").strip()
+    grade = request.args.get("classGrade") or request.args.get("grade", "").strip()
+
+    with get_session() as session:
+        try:
+            # 1. Primary: Stored Procedure execution
+            sp_res = session.execute(
+                text("CALL sp_admin_get_test_submissions(:p_search, :p_subject, :p_board, :p_grade, :p_limit, :p_offset)"),
+                {
+                    "p_search": search or None,
+                    "p_subject": subject or None,
+                    "p_board": board or None,
+                    "p_grade": grade or None,
+                    "p_limit": limit,
+                    "p_offset": offset,
+                }
+            ).mappings().all()
+
+            total = 0
+            items = []
+            for row in sp_res:
+                if total == 0 and "total_count" in row:
+                    total = int(row["total_count"] or 0)
+
+                sub_date = row.get("submitted_at")
+                time_sec = int(row.get("time_taken_seconds") or 0)
+                m, s = divmod(time_sec, 60)
+                time_formatted = f"{m}m {s}s" if m > 0 else f"{s}s"
+
+                items.append({
+                    "submissionId": str(row.get("submission_id")),
+                    "studentName": row.get("student_name") or "Student",
+                    "studentEmail": row.get("student_email") or row.get("student_username") or "—",
+                    "studentUsername": row.get("student_username"),
+                    "classGrade": row.get("class_grade") or "—",
+                    "targetBoard": row.get("target_board") or "—",
+                    "examId": str(row.get("exam_id")),
+                    "examTitle": row.get("exam_title") or "Mock Assessment",
+                    "subject": (row.get("exam_subject") or "General").strip().title(),
+                    "board": row.get("exam_board") or "—",
+                    "difficulty": (row.get("exam_difficulty") or "medium").lower(),
+                    "marksObtained": float(row.get("marks_obtained") or 0.0),
+                    "totalMarks": int(row.get("total_marks") or 10),
+                    "accuracyPercentage": float(row.get("accuracy_percentage") or 0.0),
+                    "timeTakenSeconds": time_sec,
+                    "timeTakenFormatted": time_formatted,
+                    "submittedAt": sub_date.isoformat() if hasattr(sub_date, "isoformat") else str(sub_date) if sub_date else None,
+                    "submittedAtFormatted": sub_date.strftime("%d %b %Y, %I:%M %p") if hasattr(sub_date, "strftime") else str(sub_date) if sub_date else None,
+                })
+
+            if total == 0 and items:
+                total = len(items)
+
+            res_data = paginated_response(items, total, page, limit)
+            res_data["total"] = total
+            return success(res_data)
+
+        except Exception:
+            # 2. Defensive Fallback to ORM
+            query = session.query(
+                ExamSubmission, Exam, Student, User
+            ).join(
+                Exam, ExamSubmission.exam_id == Exam.id
+            ).join(
+                Student, ExamSubmission.student_id == Student.id
+            ).join(
+                User, Student.id == User.id
+            )
+
+            if search:
+                pattern = f"%{search}%"
+                query = query.filter(or_(User.name.ilike(pattern), User.email.ilike(pattern), Exam.title.ilike(pattern)))
+            if subject and subject.upper() != "ALL":
+                query = query.filter(Exam.subject.ilike(subject))
+            if board and board.upper() != "ALL":
+                query = query.filter(Exam.board.ilike(board))
+            if grade and grade.upper() != "ALL":
+                query = query.filter(Student.class_grade.ilike(grade))
+
+            total = query.count()
+            rows = query.order_by(ExamSubmission.submitted_at.desc()).offset(offset).limit(limit).all()
+
+            items = []
+            for sub, ex, st, u in rows:
+                time_sec = int(sub.time_taken_seconds or 0)
+                m, s = divmod(time_sec, 60)
+                time_formatted = f"{m}m {s}s" if m > 0 else f"{s}s"
+                sub_date = sub.submitted_at
+                items.append({
+                    "submissionId": str(sub.id),
+                    "studentName": u.name or u.username or "Student",
+                    "studentEmail": u.email or u.username or "—",
+                    "studentUsername": u.username,
+                    "classGrade": st.class_grade or "—",
+                    "targetBoard": st.target_board or "—",
+                    "examId": str(ex.id),
+                    "examTitle": ex.title or "Mock Assessment",
+                    "subject": (ex.subject or "General").strip().title(),
+                    "board": ex.board or "—",
+                    "difficulty": (ex.difficulty or "medium").lower(),
+                    "marksObtained": float(sub.marks_obtained or 0.0),
+                    "totalMarks": int(sub.total_marks or 10),
+                    "accuracyPercentage": float(sub.accuracy_percentage or 0.0),
+                    "timeTakenSeconds": time_sec,
+                    "timeTakenFormatted": time_formatted,
+                    "submittedAt": sub_date.isoformat() if hasattr(sub_date, "isoformat") else str(sub_date) if sub_date else None,
+                    "submittedAtFormatted": sub_date.strftime("%d %b %Y, %I:%M %p") if hasattr(sub_date, "strftime") else str(sub_date) if sub_date else None,
+                })
+
+            res_data = paginated_response(items, total, page, limit)
+            res_data["total"] = total
+            return success(res_data)
+
+
+@token_required
+@roles_required("ADMIN", "SUPER_ADMIN")
+def get_submission_details(submission_id):
+    """Fetches full question-by-question answer sheet and diagnostic evaluation for a submission."""
+    from sqlalchemy import text
+    from model.models import QuestionEvaluation, Question, DiagnosticAnalysis
+    import json
+
+    with get_session() as session:
+        try:
+            # 1. Primary: Stored Procedure execution
+            sp_res = session.execute(
+                text("CALL sp_admin_get_submission_details(:p_submission_id)"),
+                {"p_submission_id": str(submission_id)}
+            ).mappings().all()
+
+            questions = []
+            diagnostic = None
+
+            for r in sp_res:
+                if diagnostic is None and r.get("overall_band"):
+                    strengths = r.get("strengths")
+                    areas = r.get("areas_to_improve")
+                    if isinstance(strengths, str):
+                        try:
+                            strengths = json.loads(strengths)
+                        except Exception:
+                            pass
+                    if isinstance(areas, str):
+                        try:
+                            areas = json.loads(areas)
+                        except Exception:
+                            pass
+
+                    diagnostic = {
+                        "overallBand": r.get("overall_band"),
+                        "masteryScorePercentage": float(r.get("mastery_score_percentage") or 0.0),
+                        "strengths": strengths or [],
+                        "areasToImprove": areas or [],
+                    }
+
+                opts = r.get("options")
+                if isinstance(opts, str):
+                    try:
+                        opts = json.loads(opts)
+                    except Exception:
+                        pass
+
+                questions.append({
+                    "questionNumber": r.get("question_number"),
+                    "questionText": r.get("question_text"),
+                    "options": opts or [],
+                    "correctAnswer": r.get("correct_answer"),
+                    "studentAnswer": r.get("student_answer"),
+                    "isCorrect": bool(r.get("is_correct")),
+                    "marksAwarded": float(r.get("marks_awarded") or 0.0),
+                    "maxMarks": float(r.get("question_max_marks") or 1.0),
+                    "explanation": r.get("explanation"),
+                    "feedback": r.get("feedback"),
+                    "timeSpentSeconds": int(r.get("time_spent_seconds") or 0),
+                })
+
+            if questions:
+                return success({
+                    "submissionId": str(submission_id),
+                    "questions": questions,
+                    "diagnostic": diagnostic,
+                })
+        except Exception:
+            pass
+
+        # 2. Defensive Fallback to ORM
+        evals = session.query(QuestionEvaluation).filter(
+            QuestionEvaluation.submission_id == str(submission_id)
+        ).join(Question, QuestionEvaluation.question_id == Question.id).order_by(Question.question_number.asc()).all()
+
+        diag = session.query(DiagnosticAnalysis).filter(
+            DiagnosticAnalysis.submission_id == str(submission_id)
+        ).first()
+
+        diagnostic = None
+        if diag:
+            diagnostic = {
+                "overallBand": diag.overall_band,
+                "masteryScorePercentage": float(diag.mastery_score_percentage or 0.0),
+                "strengths": diag.strengths or [],
+                "areasToImprove": diag.areas_to_improve or [],
+            }
+
+        questions = []
+        for qe in evals:
+            q = qe.question
+            questions.append({
+                "questionNumber": q.question_number if q else 1,
+                "questionText": q.question_text if q else "Question text unavailable",
+                "options": q.options if q and q.options else [],
+                "correctAnswer": q.correct_answer if q else "",
+                "studentAnswer": qe.student_answer,
+                "isCorrect": bool(qe.is_correct),
+                "marksAwarded": float(qe.marks_awarded or 0.0),
+                "maxMarks": float(q.marks or 1.0) if q else 1.0,
+                "explanation": q.explanation if q else "",
+                "feedback": qe.feedback,
+                "timeSpentSeconds": int(qe.time_spent_seconds or 0),
+            })
+
+        return success({
+            "submissionId": str(submission_id),
+            "questions": questions,
+            "diagnostic": diagnostic,
+        })
+
+
+
