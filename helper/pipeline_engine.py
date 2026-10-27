@@ -124,6 +124,22 @@ def print_extraction_quality_metrics(
     print(f"{TermColors.BOLD}{TermColors.CYAN}══════════════════════════════════════════════════════════════════════════════{TermColors.END}\n", flush=True)
 
 
+def is_strictly_missing_diagram(q_text: str) -> bool:
+    """Checks if a question strictly references an external figure/diagram that must be visually seen to answer."""
+    if not q_text:
+        return False
+    if re.search(r'\b(?:what\s+is\s+this\s+diagram\s+called|what\s+is\s+a\s+venn\s+diagram|define\s+flowchart)\b', q_text, re.IGNORECASE):
+        return False
+    strict_patterns = [
+        r'\b(?:in|from|observe|study|refer to|look at|see|as shown in|shown in|given in|depicted in)\s+(?:the\s+)?(?:given\s+|above\s+|below\s+|following\s+|adjoining\s+|adjacent\s+)?(?:figure|diagram|picture|image|graph|chart|illustration)\b',
+        r'\b(?:given|following|above|below|adjoining|adjacent)\s+(?:figure|diagram|picture|image|graph|chart)\s+(?:shows|represents|depicts|illustrates|indicates)\b',
+        r'\b(?:marked|labelled|labeled|indicated|numbered)\s+(?:as\s+)?(?:part\s+)?[\'\"“]?[A-Za-z0-9][\'\"”]?\s+(?:in|on)\s+(?:the\s+)?(?:diagram|figure|picture|image)\b',
+        r'\bpart\s+[\'\"“]?[A-Za-z0-9][\'\"”]?\s+(?:in|of)\s+(?:the\s+)?(?:diagram|figure)\b',
+        r'\bwhich\s+part\s+of\s+the\s+(?:diagram|figure|ear|eye|heart|brain|cell|flower|plant|apparatus)\b'
+    ]
+    return any(re.search(p, q_text, re.IGNORECASE) for p in strict_patterns)
+
+
 def assign_diagrams_to_questions(
     questions: list[dict],
     diagram_pool: list[dict],
@@ -360,6 +376,10 @@ THE 4 GOLDEN RULES (CRITICAL CONSTRAINTS):
 10. MANDATORY COMPLETE QUESTION SENTENCES ACROSS ALL 9 QUESTION TYPES (ZERO DUMMY WORDS):
    - The "question" field MUST ALWAYS be an exhaustive, standalone, grammatically complete question sentence (e.g., 'Explain the classification of plants based on stem and root structure...', 'Describe the working mechanism of a magnetic compass...', 'Calculate the resistance...', 'Which of the following statements is correct...?').
    - NEVER output single-word category tags, section labels, or marks descriptors (such as 'MCQ', 'Objective', 'SAQ', 'Short', 'Short Answer', 'Case Study', 'Long', 'Long Answer', '5 Marks', '8 Marks', 'Numerical', 'Section A', 'Section B') as the "question" text.
+11. NO QUESTION TYPE OR NUMBER PREFIXES:
+   - NEVER prefix questions with 'MCQ:', 'MCQs:', 'Objective:', 'SAQ:', 'Q1.', 'Question 1:', or similar labels. The question text must start directly with the question sentence (e.g. 'What was the name of...' NOT 'MCQ: What was the name of...').
+12. NO UNSUPPORTED DIAGRAM/IMAGE DEPENDENCY:
+   - NEVER generate questions that ask the student to inspect or identify an image, figure, or diagram (e.g., 'In the figure below...', 'Identify the part labeled X in the diagram', 'Look at the picture') UNLESS a specific visual figure/diagram is present and explicitly provided. If no visual diagram exists in the source text, formulate the question conceptually without referring to an unseen picture or diagram.
 
 JSON Schema & Example:
 {
@@ -517,6 +537,9 @@ CRITICAL DIGITIZATION & QUESTION NUMBERING INSTRUCTIONS:
 
 5. FULL QUESTION SENTENCES ONLY (ZERO DUMMY WORDS):
    - The 'question' field MUST be the complete, authentic question sentence from the paper. NEVER output category tags (e.g. 'MCQ', 'SAQ', 'Short', 'Long', '5 Marks', 'Section A') as the question text.
+
+6. NO QUESTION TYPE LABELS AS PREFIXES:
+   - NEVER prefix questions with 'MCQ:', 'Objective:', 'SAQ:', 'Q1.', or numbers. The question text must start directly with the question statement.
 """
 
 
@@ -806,8 +829,13 @@ def heal_fill_in_the_blank_question(q_text: str, correct_answer: str) -> str:
     normalized = re.sub(r'\[\s*(?:blank|\.\.\.|_)\s*\]|\(\s*(?:blank|\.\.\.|_)\s*\)', '________', q_text, flags=re.IGNORECASE)
     normalized = re.sub(r'\.{3,}|_{2,}', '________', normalized)
 
-    # Check if question is a Fill-in-the-blank / Complete prompt
-    is_blank_prompt = bool(re.search(r'\b(?:fill\s+in\s+the\s+blanks?|complete\s+the\s+(?:sentence|statement|blank))\b', normalized, re.IGNORECASE))
+    # Check if question is a Fill-in-the-blank / Complete prompt or has parenthetical choices at the end
+    is_blank_prompt = bool(re.search(r'\b(?:fill\s+in\s+the\s+blanks?|complete\s+the\s+(?:sentence|statement|blank)|choose\s+the\s+correct\s+word)\b', normalized, re.IGNORECASE))
+    paren_choice_m = re.search(r'\(([a-zA-Z\s]+,\s*[a-zA-Z\s]+|[a-zA-Z]{3,15})\)\.?$', normalized.strip())
+    if paren_choice_m:
+        paren_text = paren_choice_m.group(1).lower()
+        if any(k in paren_text for k in ['is', 'are', 'was', 'were', 'has', 'have', 'do', 'does', 'cast', 'caste', 'proud', 'high', 'praise', 'finish', 'much', 'many']) or (',' in paren_text):
+            is_blank_prompt = True
 
     # Clean up accidental leading blank placed before a capitalized subject noun
     # e.g. 'Fill in the blank: ________ The materials...' -> 'Fill in the blank: The materials...'
@@ -871,6 +899,26 @@ def heal_fill_in_the_blank_question(q_text: str, correct_answer: str) -> str:
             art_noun_tail = r'\b(a|an|the)\s+([a-zA-Z]+)\s*[\.\:\s]*$'
             if re.search(art_noun_tail, normalized, re.IGNORECASE):
                 normalized = re.sub(art_noun_tail, r'\1 ________ \2.', normalized, flags=re.IGNORECASE)
+
+        # Dynamic Step for Parenthetical Choices (e.g. "...very touching. (is, are)", "...our vote in favour of a candidate... (cast, caste)")
+        if paren_choice_m and "________" not in normalized:
+            body = normalized[:paren_choice_m.start()].strip()
+            replaced = False
+            if correct_answer and len(correct_answer.strip()) > 1:
+                raw_ans_parts = [p.strip() for p in re.split(r'[,;/]|\band\b', correct_answer) if p.strip()]
+                for ap in raw_ans_parts:
+                    if len(ap) >= 2 and re.search(r'\b' + re.escape(ap) + r'\b', body, re.IGNORECASE):
+                        body = re.sub(r'\b' + re.escape(ap) + r'\b', '________', body, count=1, flags=re.IGNORECASE)
+                        replaced = True
+                        break
+            if not replaced:
+                if re.search(r'\b(not|will|shall|can|could|should|would|must|may|might)\s+([a-zA-Z]+)\b', body, re.IGNORECASE):
+                    body = re.sub(r'\b(not|will|shall|can|could|should|would|must|may|might)\s+([a-zA-Z]+)\b', r'\1 ________ \2', body, count=1, flags=re.IGNORECASE)
+                elif re.search(r'\b([a-zA-Z]+)\s+(very|so|too|quite)\b', body, re.IGNORECASE):
+                    body = re.sub(r'\b([a-zA-Z]+)\s+(very|so|too|quite)\b', r'\1 ________ \2', body, count=1, flags=re.IGNORECASE)
+                else:
+                    body = body.rstrip('. :') + " ________."
+            normalized = f"{body} {paren_choice_m.group(0)}"
 
         # Dynamic Step E: Missing subject at start e.g. 'Fill in the blank: is a natural resource'
         if "________" not in normalized:
@@ -998,6 +1046,9 @@ def sanitize_question_item(
 
         # Remove leading Question markers like 'Q1. ', '1. ', 'Question 1: '
         q_text = re.sub(r'^(?:Q(?:uestion)?\.?\s*\d+[\.\:\)]|\d+[\.\)])\s*', '', q_text).strip()
+
+    # Strip artificial question type prefixes e.g. 'MCQ: ', 'MCQs: ', 'MCQ - ', 'Objective: '
+    q_text = re.sub(r'^(?:MCQs?|Objective|SAQ|LAQ|VSAQ)\s*[:\-–—\.]\s*', '', q_text, flags=re.IGNORECASE).strip()
 
     # Strip artificial prompt bleed prefixes (e.g., 'Explain the principle: ')
     q_text = re.sub(r'^(?:explain\s+the\s+principle\s*[:\-–—]\s*|state\s+the\s+concept\s+of\s*[:\-–—]\s*|explain\s+the\s+concept\s+of\s*[:\-–—]\s*)', '', q_text, flags=re.IGNORECASE).strip()
@@ -2126,6 +2177,17 @@ def process_curriculum_document_pipeline(
         except Exception as diag_err:
             logger.warning(f"Diagram extraction notice: {diag_err}")
 
+    # Drop questions that strictly require an image/diagram but have none attached
+    clean_diagram_questions = []
+    for q_item in final_questions:
+        q_body = q_item.get("question", "")
+        has_diagram = bool(q_item.get("image_url") and str(q_item.get("image_url")).strip())
+        if not has_diagram and is_strictly_missing_diagram(q_body):
+            logger.warning(f"Dropping question due to missing required diagram: '{q_body[:65]}...'")
+            continue
+        clean_diagram_questions.append(q_item)
+    final_questions = clean_diagram_questions
+
     # Print comprehensive quality & yield audit in terminal
     print_extraction_quality_metrics(
         raw_text_chars=len(raw_text),
@@ -2477,6 +2539,17 @@ def extract_curriculum_questions_preview(
             )
         except Exception as diag_err:
             logger.warning(f"Diagram extraction notice: {diag_err}")
+
+    # Drop questions that strictly require an image/diagram but have none attached
+    clean_extracted_questions = []
+    for q_item in extracted_questions:
+        q_body = q_item.get("question", "") if isinstance(q_item, dict) else ""
+        has_diagram = bool(q_item.get("image_url") and str(q_item.get("image_url")).strip())
+        if not has_diagram and is_strictly_missing_diagram(q_body):
+            logger.warning(f"Dropping question due to missing required diagram: '{q_body[:65]}...'")
+            continue
+        clean_extracted_questions.append(q_item)
+    extracted_questions = clean_extracted_questions
 
     # Print comprehensive quality & yield audit in terminal
     print_extraction_quality_metrics(

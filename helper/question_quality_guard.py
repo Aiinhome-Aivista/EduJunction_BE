@@ -23,6 +23,9 @@ _IMAGE_REFERENCE_PATTERNS = [
     r"\b(?:from\s+the\s+(?:figure|diagram|graph|chart)\s+(?:given|shown))\b",
     r"\b(?:look\s+at\s+the\s+(?:figure|diagram|image))\b",
     r"\b(?:figure\s+\d+|fig\.\s*\d+)\b",
+    r"\b(?:diagram\s+below|figure\s+below)\b",
+    r"\b(?:identify\s+the\s+part\s+(?:labeled|labelled|marked|indicated)\s+[a-z0-9]+)\b",
+    r"\b(?:part\s+[a-z0-9]+\s+in\s+the\s+(?:given\s+)?(?:diagram|figure))\b",
 ]
 
 _COMPILED_IMAGE_PATTERNS = [re.compile(p, re.IGNORECASE) for p in _IMAGE_REFERENCE_PATTERNS]
@@ -106,6 +109,17 @@ def validate_question_quality(q: Dict[str, Any], requested_subject: Optional[str
         return False, "Malformed question data structure"
 
     q_text = str(q.get("question_text") or q.get("question") or q.get("questionText") or "").strip()
+    # Strip any redundant MCQ: or question type prefixes
+    cleaned_q = re.sub(r"^(?:MCQ[s]?|Objective|SAQ|VSAQ)\s*[:\-–—]\s*", "", q_text, flags=re.IGNORECASE).strip()
+    if cleaned_q != q_text:
+        q_text = cleaned_q
+        if "question" in q:
+            q["question"] = q_text
+        elif "question_text" in q:
+            q["question_text"] = q_text
+        elif "questionText" in q:
+            q["questionText"] = q_text
+
     if len(q_text) < 12:
         return False, f"Question text too short ({len(q_text)} chars)"
 

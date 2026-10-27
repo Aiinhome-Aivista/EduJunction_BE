@@ -33,11 +33,15 @@ THE 5 GOLDEN RULES (CRITICAL CONSTRAINTS):
 4. PRESERVE MATH & SCIENCE: Keep LaTeX expressions (\\frac, \\sqrt, x^2, \\Omega, \\alpha, \\beta), chemical notations (H2O, CaCl2, CO2), and units intact.
 5. STRICT OBJECTIVE VS SAQ SEGREGATION: 'Fill in the blanks', 'Complete the sentence', 'True or False', or questions requiring filling '________' MUST ALWAYS have type='Objective'. NEVER classify Fill in the blanks as 'SAQ'. 'SAQ' (2M) MUST ALWAYS be an authentic conceptual or descriptive question. NEVER paste answer keys into the question prompt.
 6. STRICT FIGURE & TABLE GROUNDING (NEVER HALLUCINATE NUMBERS):
-   - If a question references a figure, table, chart, or apparatus (e.g. 'Fig. 4.16', 'Table 4.3', 'Table 7.4'), you MUST write the EXACT number as printed in the textbook text.
-   - NEVER invent, change, or increment numbers (e.g. NEVER write 'Table 7.5' if the text says 'Table 7.4').
-   - For ANY question that requires a diagram, table, chart, or apparatus to be understood/solved, include:
-     "figure_ref": "Table 4.3" or "Fig. 4.16" (or null if unnumbered),
-     "has_visual": true
+    - If a question references a figure, table, chart, or apparatus (e.g. 'Fig. 4.16', 'Table 4.3', 'Table 7.4'), you MUST write the EXACT number as printed in the textbook text.
+    - NEVER invent, change, or increment numbers (e.g. NEVER write 'Table 7.5' if the text says 'Table 7.4').
+    - For ANY question that requires a diagram, table, chart, or apparatus to be understood/solved, include:
+      "figure_ref": "Table 4.3" or "Fig. 4.16" (or null if unnumbered),
+      "has_visual": true
+7. NO QUESTION TYPE OR NUMBER PREFIXES:
+    - NEVER prefix questions with 'MCQ:', 'MCQs:', 'Objective:', 'SAQ:', 'Q1.', 'Question 1:', or similar labels. The question text must start directly with the question statement.
+8. NO UNSUPPORTED DIAGRAM/IMAGE DEPENDENCY:
+    - NEVER generate questions that ask the student to inspect or identify an image, figure, or diagram (e.g., 'In the figure below...', 'Identify the part labeled X in the diagram', 'Look at the picture') UNLESS a specific visual figure/diagram is present and explicitly provided in the excerpt.
 
 JSON Schema:
 {
@@ -123,6 +127,17 @@ def _sanitize_single_question(q: Any, default_type: str, target_diff: str, meta:
     q_text = (q.get("question") or "").strip()
     if not q_text:
         return None
+
+    # Strip prefixes like MCQ:, Objective:, Q1., etc.
+    q_text = re.sub(r"^(?:MCQ[s]?|Objective|SAQ|VSAQ|Long Answer|Short Answer)\s*[:\-–—]\s*", "", q_text, flags=re.IGNORECASE).strip()
+    q_text = re.sub(r"^(?:Q(?:uestion)?\s*\d+[\.\:\)\-]?|\d+[\.\)\-]\s*)", "", q_text, flags=re.IGNORECASE).strip()
+
+    # Drop questions strictly requiring an external figure/diagram if no image is attached
+    has_image = bool(q.get("image_url") or q.get("imageUrl") or q.get("image"))
+    if not has_image:
+        from helper.pipeline_engine import is_strictly_missing_diagram
+        if is_strictly_missing_diagram(q_text):
+            return None
 
     corr = str(q.get("correct_answer") or "").strip()
 
