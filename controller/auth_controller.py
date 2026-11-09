@@ -509,6 +509,14 @@ def admin_login():
     payload = request.get_json(force=True, silent=True) or {}
     require_fields(payload, ["email", "password"])
 
+    # Verify Math Captcha if provided
+    captcha_id = payload.get("captchaId")
+    captcha_ans = payload.get("captchaAnswer")
+    if captcha_id is not None or captcha_ans is not None:
+        valid, err_msg = verify_math_captcha(captcha_id, captcha_ans)
+        if not valid:
+            raise AppError("INVALID_CAPTCHA", err_msg, 400)
+
     email = payload["email"].strip()
 
     with get_session() as session:
