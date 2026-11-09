@@ -31,6 +31,7 @@ from controller import (
     subscription_controller,
     llm_config_controller,
     seo_controller,
+    telemetry_controller,
 )
 from middleware.dbContext import register_db_teardown
 from middleware.errorMiddleware import register_error_handlers
@@ -77,6 +78,31 @@ def create_app() -> Flask:
             duration_ms,
             getattr(g, "current_user_id", None),
         )
+
+        # Telemetry Session Tracking (Non-blocking async)
+        session_id = request.headers.get("x-session-id")
+        if session_id and not request.path.startswith(("/static", "/api/v1/admin", "/api/v1/health", "/api/v1/seo/metadata")):
+            try:
+                from helper.telemetry_service import extract_client_ip, record_event_async
+                user_id = getattr(g, "current_user_id", None)
+                user_role = getattr(g, "current_user_role", None)
+                status_str = "SUCCESS" if status_code < 400 else "FAILURE"
+                record_event_async(
+                    session_id=session_id,
+                    user_id=user_id,
+                    user_role=user_role,
+                    event_name=f"{request.method} {request.path}",
+                    event_category="API_CALL" if request.path.startswith("/api/") else "NAVIGATION",
+                    input_payload=request.get_json(silent=True) if request.is_json else None,
+                    result_summary={"statusCode": status_code},
+                    status=status_str,
+                    execution_time_ms=int(duration_ms),
+                    ip_address=extract_client_ip(request),
+                    user_agent=request.headers.get("User-Agent"),
+                )
+            except Exception:
+                pass
+
         # Secure headers
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["X-Frame-Options"] = "DENY"
@@ -755,6 +781,25 @@ def create_app() -> Flask:
     @app.route("/api/v1/admin/seo/<int:seo_id>", methods=["DELETE"])
     def api_delete_seo_metadata(seo_id):
         return seo_controller.delete_seo_metadata(seo_id)
+
+    # ============================================================
+    # 17. User Session Tracking & Telemetry Audit Endpoints
+    # ============================================================
+    @app.route("/api/v1/admin/telemetry/stats", methods=["GET"])
+    def api_admin_telemetry_stats():
+        return telemetry_controller.get_stats()
+
+    @app.route("/api/v1/admin/telemetry/sessions", methods=["GET"])
+    def api_admin_telemetry_sessions():
+        return telemetry_controller.get_sessions()
+
+    @app.route("/api/v1/admin/telemetry/sessions/<session_id>/timeline", methods=["GET"])
+    def api_admin_telemetry_timeline(session_id):
+        return telemetry_controller.get_timeline(session_id)
+
+    @app.route("/api/v1/track/event", methods=["POST"])
+    def api_track_event():
+        return telemetry_controller.track_event()
 
     return app
 

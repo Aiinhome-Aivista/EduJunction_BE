@@ -799,6 +799,46 @@ class SeoMetadata(Base):
     updated_at = Column(DateTime, default=get_ist_now, onupdate=get_ist_now)
 
 
+# ------------------------------------------------------------
+# 19. User Session Tracking & Telemetry Audit Logs
+# ------------------------------------------------------------
+class UserSession(Base):
+    __tablename__ = "user_sessions"
+
+    id = Column(String(64), primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    ip_address = Column(String(45), nullable=True)
+    user_agent = Column(Text, nullable=True)
+    device_type = Column(String(20), default="desktop", nullable=False)
+    started_at = Column(DateTime, default=get_ist_now, nullable=False, index=True)
+    last_activity_at = Column(DateTime, default=get_ist_now, onupdate=get_ist_now, nullable=False, index=True)
+    is_active = Column(Boolean, default=True, nullable=False, index=True)
+
+    user = relationship("User", foreign_keys=[user_id])
+    event_logs = relationship("UserEventLog", back_populates="session", cascade="all, delete-orphan", order_by="UserEventLog.created_at.asc()")
+
+
+class UserEventLog(Base):
+    __tablename__ = "user_event_logs"
+
+    id = Column(String(36), primary_key=True, default=gen_uuid)
+    session_id = Column(String(64), ForeignKey("user_sessions.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    event_name = Column(String(100), nullable=False, index=True)
+    event_category = Column(String(50), default="NAVIGATION", nullable=False, index=True)
+    input_payload = Column(JSON, nullable=True)
+    result_summary = Column(JSON, nullable=True)
+    status = Column(Enum("SUCCESS", "FAILURE", "PENDING", "CANCELLED", name="event_status_enum"), default="SUCCESS", nullable=False, index=True)
+    execution_time_ms = Column(Integer, default=0, nullable=False)
+    error_message = Column(Text, nullable=True)
+    ip_address = Column(String(45), nullable=True)
+    created_at = Column(DateTime, default=get_ist_now, nullable=False, index=True)
+
+    session = relationship("UserSession", back_populates="event_logs")
+    user = relationship("User", foreign_keys=[user_id])
+
+
+
 
 
 
